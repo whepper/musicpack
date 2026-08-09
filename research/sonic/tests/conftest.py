@@ -52,6 +52,20 @@ require_decoders = pytest.mark.skipif(
     reason="mpcdec binary not built (run cmake build first)",
 )
 
+
+def _openl3_importable() -> bool:
+    try:
+        import openl3  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+openl3 = pytest.mark.skipif(
+    not _openl3_importable(),
+    reason="openl3/TensorFlow not installed (run bootstrap_env.sh)",
+)
+
 require_ffmpeg = pytest.mark.skipif(
     not any(
         os.access(c, os.X_OK)

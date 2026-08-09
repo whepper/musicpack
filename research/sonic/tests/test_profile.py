@@ -35,7 +35,6 @@ def test_any_model_param_changes_fingerprint():
         ("model_sample_rate", 16000),
         ("frontend", "librosa"),
         ("center", False),
-        ("audio_crop", True),
         ("model_weights_sha256", "deadbeef"),
         ("distance", "euclidean"),
     ]:

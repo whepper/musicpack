@@ -71,7 +71,6 @@ class Profile:
     model_sample_rate: int = 48000
     frontend: str = "kapre"  # "kapre" | "librosa"
     center: bool = True
-    audio_crop: bool = False
     model_weights_sha256: str = ""
     distance: str = DISTANCE_COSINE
     pooling: PoolingParams = field(default_factory=PoolingParams)
