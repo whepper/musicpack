@@ -1,0 +1,33 @@
+[package]
+name = "musicpack-author"
+version = "0.1.0"
+description = "MusicPack Author — the desktop GUI for authoring .mpack releases"
+authors = ["The MusicPack Development Team"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "musicpack_author_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[features]
+# This feature is used for production builds where a bundler is expected to
+# ship a browser. Its absence means `tauri dev` uses the dev server URL.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+strip = true

@@ -42,6 +42,12 @@ The guiding rule of this repository:
   your collection by album and edition, then play it with Musepack
   demand-driven WASM decoding, BS.1770 album normalization, gapless album
   playback and Media Session integration.
+- **The desktop authoring GUI** — `author/` is **MusicPack Author**, a Tauri 2
+  desktop app for turning a tagged Musepack album into a curated, validated
+  `.mpack` release. It calls the existing `musicpack` implementation through
+  the CLI's JSON draft modes (`inspect`, `validate-draft`, `build-draft`,
+  `identify-draft`) behind a clean service, so `libmusicpack` stays the only
+  authority on package semantics.
 - **WASM + demo** — the decoder builds to WebAssembly (Emscripten); `demo/` is
   a low-level playback proof-of-concept kept as a development/test artifact.
 
@@ -311,7 +317,8 @@ ctest --test-dir build
 - `include/musepack/` — stable `libmusepack` public API
 - `include/mpc/` — historical public headers (installed for compatibility)
 - `libmusicpack/` — `.mpack` package library (`libmusicpack`)
-- `musicpack/` — `musicpack` CLI
+- `musicpack/` — `musicpack` CLI (info/verify/create/import/update-metadata + the authoring draft commands `inspect`/`validate-draft`/`build-draft`/`identify-draft`)
+- `author/` — **MusicPack Author**: the Tauri 2 + Svelte 5 desktop authoring GUI (`author/README.md`)
 - `server/` — `musicpack-server`: scanner, SQLite collector library, HTTP API v1, direct streaming (vendored SQLite in `server/vendor/`)
 - `web/` — the Phase 6 web client (Svelte 5 + Vite + TS): the digital record shelf
 - `wasm/` — Emscripten build of the decoder + WASM wrapper + smoke test
