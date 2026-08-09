@@ -64,6 +64,12 @@
 
 #define ABOUT "musicpack - MusicPack package tool " MUSICPACK_VERSION "\n"
 
+/* Version of the JSON authoring surface consumed by MusicPack Author. The
+   GUI refuses to talk to a backend whose authorApi does not match, so the
+   CLI and the GUI can evolve independently without coupling to exact patch
+   versions. */
+#define MUSICPACK_AUTHOR_API 1
+
 static int usage_error(const char *msg)
 {
     fprintf(stderr, "%s: %s\n", ABOUT, msg);
@@ -3297,7 +3303,7 @@ main(int argc, char **argv)
 
     fprintf(stderr, "%s", ABOUT);
     if (argc < 2) {
-        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata> ...\n");
+        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|author-api-version> ...\n");
         return 2;
     }
     cmd = argv[1];
@@ -3434,6 +3440,21 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_identify_draft(draft_path, mbid, barcode, mbjson, json);
+    }
+    if (strcmp(cmd, "author-api-version") == 0) {
+        /* Machine-readable capability handshake for MusicPack Author. */
+        cJSON *root = cJSON_CreateObject();
+        char *out = 0;
+        if (root == 0)
+            return 1;
+        cJSON_AddStringToObject(root, "musicpackVersion", MUSICPACK_VERSION);
+        cJSON_AddNumberToObject(root, "authorApi", MUSICPACK_AUTHOR_API);
+        out = cJSON_PrintUnformatted(root);
+        if (out == 0) { cJSON_Delete(root); return 1; }
+        puts(out);
+        free(out);
+        cJSON_Delete(root);
+        return 0;
     }
     return usage_error("unknown command");
 }

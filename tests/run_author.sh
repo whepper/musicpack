@@ -248,6 +248,21 @@ else
     fail "identified draft builds with exact identity"
 fi
 
+# 7. author-API capability handshake is machine-readable and versioned
+if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
+   && $PY - "$TMP/api.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["authorApi"] == 1, "author API version"
+assert d["musicpackVersion"], "musicpack version present"
+print("ok")
+EOF
+then
+    pass "author-api-version reports the author API handshake"
+else
+    fail "author-api-version reports the author API handshake"
+fi
+
 echo
 echo "== $PASSED passed, $FAILED failed =="
 [ "$FAILED" -eq 0 ]
