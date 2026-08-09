@@ -79,6 +79,35 @@ class Profile:
     def dimensions(self) -> int:
         return self.model_embedding_size
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Profile":
+        """Rebuild a Profile from ``canonical()``/``asdict`` output."""
+        pooling = d.get("pooling") or {}
+        silence = pooling.get("silence") or {}
+        return cls(
+            model=d.get("model", "openl3"),
+            model_content=d.get("model_content", "music"),
+            model_input_repr=d.get("model_input_repr", "mel256"),
+            model_embedding_size=d.get("model_embedding_size", 512),
+            model_sample_rate=d.get("model_sample_rate", 48000),
+            frontend=d.get("frontend", "kapre"),
+            center=d.get("center", True),
+            model_weights_sha256=d.get("model_weights_sha256", ""),
+            distance=d.get("distance", DISTANCE_COSINE),
+            pooling=PoolingParams(
+                strategy=pooling.get("strategy", POOL_MEAN_NORM),
+                hop_seconds=pooling.get("hop_seconds", 1.0),
+                window_seconds=pooling.get("window_seconds", 1.0),
+                robust_trim=pooling.get("robust_trim", 0.0),
+                silence=SilenceParams(
+                    enabled=silence.get("enabled", False),
+                    threshold_db=silence.get("threshold_db", -20.0),
+                    relative_to_median=silence.get("relative_to_median", True),
+                    window_seconds=silence.get("window_seconds", 1.0),
+                ),
+            ),
+        )
+
     def canonical(self) -> Dict[str, Any]:
         return asdict(self)
 
