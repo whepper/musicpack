@@ -524,6 +524,123 @@ def gzip_bytes(raw: bytes) -> bytes:
     return gzip.compress(raw, compresslevel=9)
 
 
+# --------------------------------------------------------------------------
+# human evaluation
+# --------------------------------------------------------------------------
+def cmd_human(args) -> int:
+    if args.aggregate:
+        return _aggregate_ratings(args)
+
+    import numpy as np
+
+    from metrics import nearest
+
+    library = scan(args.library)
+    tracks = _tracks(library)
+    if args.limit:
+        tracks = tracks[:args.limit]
+    cache = Cache(args.cache)
+
+    all_profiles = [canonical_profile(p, args.models) for p in _profile_index(args)]
+    primary = [p for p in all_profiles
+               if (p.pooling.strategy == POOL_MEAN_NORM
+                   and p.pooling.hop_seconds == 1.0
+                   and not p.pooling.silence.enabled)]
+    methods = primary or all_profiles[:1]
+    if not methods:
+        print("no profiles available; run 'analyze' first")
+        return 2
+
+    emb_by = {}
+    for prof in methods:
+        vecs = []
+        for tr in tracks:
+            v = cache.load_track(audio_sha256(tr.path), prof)
+            if v is not MISSING and v is not None:
+                vecs.append((tr, v))
+        if len(vecs) < 2:
+            print("too few embeddings for %s; skip" % combo_label(prof))
+            continue
+        emb_by[prof.fingerprint()] = vecs
+    if not emb_by:
+        print("no embeddings in cache for the human-eval profile; run analyze")
+        return 2
+
+    seed_idxs = _seed_indexes(tracks, args.seeds)
+    seed_entries = []
+    for idx in seed_idxs:
+        entry = {"index": idx, "label": tracks[idx].label, "nearest": {}}
+        for prof in methods:
+            vecs = emb_by[prof.fingerprint()]
+            query_pos = next((i for i, (t, _) in enumerate(vecs)
+                              if t.id == tracks[idx].id), None)
+            if query_pos is None:
+                continue  # seed has no embedding in this method
+            matrix = np.stack([v for _, v in vecs])
+            labels = [t.label for t, _ in vecs]
+            entry["nearest"][prof.fingerprint()] = nearest(
+                matrix, labels, query_pos, k=args.k)
+        if entry["nearest"]:
+            seed_entries.append(entry)
+
+    profile_ids = {p.fingerprint(): p.id for p in methods}
+    method_names = [p.fingerprint() for p in methods]
+    out_dir = Path(args.report) / "human"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / ("human-eval-%s.html" % methods[0].id[:8])
+    rep.write_human_html(out, seed_entries, method_names, args.blind, profile_ids)
+    print("human evaluation page written to %s (%d seeds x %d methods)"
+          % (out, len(seed_entries), len(methods)))
+    return 0
+
+
+def _seed_indexes(tracks, seeds):
+    if not seeds:
+        return list(range(min(5, len(tracks))))
+    if seeds == ["all"]:
+        return list(range(len(tracks)))
+    found = []
+    for s in seeds:
+        matches = [i for i, t in enumerate(tracks) if s.lower() in t.label.lower()]
+        if not matches:
+            print("no track matches seed %r" % s)
+        found.extend(matches)
+    return sorted(set(found))
+
+
+def _aggregate_ratings(args) -> int:
+    """Aggregate a downloaded ratings JSON into the committed report."""
+    import numpy as np
+    from pathlib import Path as _P
+
+    ratings = json.loads(_P(args.aggregate).read_text())
+    scores = {}
+    wins = {}
+    for seed, data in ratings.items():
+        for m, s in (data.get("score") or {}).items():
+            scores.setdefault(int(m), []).append(s)
+        pref = data.get("pref") or {}
+        for m, p in pref.items():
+            wins.setdefault(int(m), []).append(p)
+    lines = ["# Human evaluation results", "", "Ratings source: %s" % args.aggregate, ""]
+    lines.append("| method | mean score (0-3) | n | wins | ties | losses |")
+    lines.append("|---|---|---|---|---|---|")
+    for m in sorted(scores):
+        s = rep.stats(scores[m])
+        w = wins.get(m, [])
+        lines.append("| Method %s | %.3f | %d | %d | %d | %d |"
+                     % ("ABC"[m], s["mean"], s["n"],
+                        w.count("win"), w.count("tie"), w.count("lose")))
+    lines.append("")
+    out = Path(args.report) / "human-results.md"
+    out.write_text("\n".join(lines))
+    print("aggregate written to %s" % out)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="benchmark", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -588,8 +705,19 @@ def main(argv=None) -> int:
     pr.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs"])
     pr.set_defaults(func=cmd_float_repr)
 
+    ph = sub.add_parser("human", parents=[common])
+    ph.add_argument("--seeds", nargs="*", default=[])
+    ph.add_argument("--k", type=int, default=10)
+    ph.add_argument("--blind", action="store_true")
+    ph.add_argument("--limit", type=int, default=None)
+    ph.add_argument("--aggregate", default=None,
+                    help="path to a downloaded ratings JSON to aggregate")
+    ph.set_defaults(func=cmd_human)
+
     args = ap.parse_args(argv)
-    if args.cmd != "float-repr" and not args.library:
+    needs_library = args.cmd not in ("float-repr",) and not (
+        args.cmd == "human" and args.aggregate)
+    if needs_library and not args.library:
         ap.error("--library is required (or set $MUSIC_LIBRARY)")
     if not args.library:
         args.library = str(ROOT / "research/sonic/fixtures")

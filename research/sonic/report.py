@@ -156,6 +156,145 @@ def write_cross_codec_report(report_root: Path, profile_id: str, rows,
     return out
 
 
+def write_human_html(path: Path, seed_entries, methods: Sequence[str],
+                     blind: bool, profile_ids: Dict[str, str]) -> Path:
+    """Static-HTML human evaluation page.
+
+    Each seed shows top-k neighbours per method. In blind mode the method
+    labels are shown as Method A/B and revealed with a toggle. A tiny
+    vanilla-JS widget lets the reviewer score each method 0-3 and pick
+    A better / B better / tie; ratings persist to localStorage and can be
+    downloaded as JSON (ratings are stored separately from embeddings).
+    """
+    import html as htmlmod
+
+    def esc(s):
+        return htmlmod.escape(str(s))
+
+    method_display = {}
+    for i, m in enumerate(methods):
+        method_display[m] = ("Method %s" % "ABC"[i]) if blind else m
+
+    cards = []
+    for seed in seed_entries:
+        method_cols = []
+        for i, m in enumerate(methods):
+            nn_html = "".join(
+                "<li><span class='sim'>%.3f</span> %s</li>"
+                % (nn["similarity"], esc(nn["label"]))
+                for nn in seed["nearest"][m])
+            method_cols.append(
+                "<td><h3>%s <span class='profile'>(%s)</span></h3>"
+                "<ol>%s</ol>"
+                "<b>score 0–3</b> "
+                "<select class='score' data-m='%d'>"
+                "<option value=''>-</option><option value='0'>0</option>"
+                "<option value='1'>1</option><option value='2'>2</option>"
+                "<option value='3'>3</option></select><br>"
+                "<b>vs other</b> "
+                "<select class='pref' data-m='%d'>"
+                "<option value=''>-</option><option value='win'>A better</option>"
+                "<option value='tie'>tie</option>"
+                "<option value='lose'>B better</option></select></td>"
+                % (esc(method_display[m]), esc(profile_ids.get(m, "")),
+                   nn_html, i, i))
+        cards.append(
+            "<div class='seed' data-seed='%d'>"
+            "<h2>Seed %d: %s</h2>"
+            "<div class='scorebox'><table><tr>%s</tr></table>"
+            "<button class='save'>Save ratings</button>"
+            "%s</div></div>"
+            % (seed["index"], seed["index"] + 1, esc(seed["label"]),
+               "".join(method_cols),
+               ("<button class='reveal'>Reveal methods</button>" if blind else "")))
+
+    page = _HUMAN_TEMPLATE % {
+        "title": "MusicPack Sonic — human evaluation",
+        "cards": "\n".join(cards),
+        "methods": esc("|".join(methods)),
+        "method_names": esc("|".join(method_display[m] for m in methods)),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page)
+    return path
+
+
+_HUMAN_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>%(title)s</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 64em;
+         margin: 2em auto; padding: 0 1em; color: #222; }}
+  .seed {{ border: 1px solid #ddd; border-radius: 8px; padding: 1em 1.5em;
+          margin: 1.5em 0; }}
+  .seed h2 {{ margin-top: 0.3em; }}
+  ol li {{ margin: 0.25em 0; }}
+  .sim {{ color: #888; font-variant-numeric: tabular-nums; margin-right: .6em; }}
+  .profile {{ font-size: 0.7em; color: #999; font-weight: normal; }}
+  .scorebox {{ margin-top: 1em; background: #f7f7f7; border-radius: 6px;
+              padding: 0.8em; }}
+  table {{ border-collapse: collapse; }}
+  td {{ padding: 0.4em 1em 0.4em 0; vertical-align: top; }}
+  .saved {{ color: #0a7; margin-left: .8em; font-size: .85em; }}
+  button {{ margin-right: .6em; }}
+</style>
+</head>
+<body>
+<h1>%(title)s</h1>
+<p>Score each method 0–3 for how well its top-10 matches the seed.
+<strong>0</strong>=unrelated, <strong>1</strong>=weak relationship,
+<strong>2</strong>=plausible, <strong>3</strong>=strongly similar.
+Optionally pick a preference for each seed. Ratings are stored in your
+browser (localStorage) and can be downloaded as JSON — they are never stored
+with the embeddings.</p>
+%(cards)s
+<hr>
+<button id="dl">Download ratings JSON</button>
+<script>
+const METHODS = '%(methods)s'.split('|');
+const KEYS = 'musicpack-sonic-ratings';
+function load() {{ try {{ return JSON.parse(localStorage.getItem(KEYS)) || {{}}; }}
+                   catch (e) {{ return {{}}; }} }}
+function persist(r) {{ localStorage.setItem(KEYS, JSON.stringify(r)); }}
+function collect() {{
+  const r = load();
+  document.querySelectorAll('.seed').forEach((card) => {{
+    const s = +card.dataset.seed;
+    if (!r[s]) r[s] = {{ score: {{}}, pref: {{}} }};
+    card.querySelectorAll('.score').forEach((el) => {{
+      if (el.value !== '') r[s].score[el.dataset.m] = +el.value;
+    }});
+    card.querySelectorAll('.pref').forEach((el) => {{
+      if (el.value !== '') r[s].pref[el.dataset.m] = el.value;
+    }});
+  }});
+  return r;
+}}
+document.querySelectorAll('.save').forEach((b) => b.addEventListener('click', () => {{
+  persist(collect());
+  const ok = document.createElement('span'); ok.className='saved'; ok.textContent='saved';
+  b.parentNode.appendChild(ok);
+  setTimeout(() => ok.remove(), 1500);
+}}));
+document.getElementById('dl').addEventListener('click', () => {{
+  const data = collect(); persist(data);
+  const blob = new Blob([JSON.stringify(data, null, 1)], {{type: 'application/json'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ratings.json';
+  a.click();
+}});
+document.querySelectorAll('.reveal').forEach((b) => b.addEventListener('click', () => {{
+  b.disabled = true; b.textContent = '%(method_names)s';
+}}));
+</script>
+</body>
+</html>
+"""
+
+
 def write_efficiency_report(report_root: Path, per_track: List[Dict],
                             environment: dict) -> Path:
     out = Path(report_root) / "efficiency.md"
