@@ -17,7 +17,8 @@ The benchmark compares candidate representations (OpenL3 vs the
 Discogs-EffNet Essentia models) and experiments with pooling, hop size,
 silence handling, album weighting, storage encoding and cross-codec
 stability. The evidence is written up under `reports/` and feeds the draft
-specification in `specs/musicpack-sonic-v1.md`.
+specification in `specs/musicpack-sonic-v1.md`
+(**DRAFT — RESEARCH PHASE — NOT YET NORMATIVE**).
 
 ## Rules of this workspace
 
