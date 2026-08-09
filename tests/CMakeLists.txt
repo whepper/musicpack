@@ -126,6 +126,14 @@ if(UNIX)
                      $<TARGET_FILE:musicpack_cmd>
                      $<TARGET_FILE:mpc_mpack_tests>)
 
+    # MusicPack Author backend: the CLI draft commands (inspect /
+    # validate-draft / build-draft / identify-draft) that power the desktop
+    # GUI, end to end against the reference tag fixtures.
+    add_test(NAME author_backend
+             COMMAND ${CMAKE_COMMAND} -E env
+                     ${CMAKE_CURRENT_SOURCE_DIR}/run_author.sh
+                     $<TARGET_FILE:musicpack_cmd>)
+
     # .mpack fuzz-lite: truncated/flipped manifests and path injection.
     add_test(NAME mpack_fuzz
              COMMAND ${CMAKE_COMMAND} -E env

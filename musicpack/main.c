@@ -43,6 +43,10 @@
 #include <musicpack/musicpack.h>
 #include <musepack/musepack.h>
 
+#include <cJSON.h>
+
+#include "draft.h"
+
 #ifdef _WIN32
 # include <direct.h>
 # define mkdir_p_one(p) _mkdir(p)
@@ -430,21 +434,80 @@ verify_report(void *ctx, const char *message, int is_error)
     printf("%s%s\n", is_error ? "error: " : "warning: ", message);
 }
 
+typedef struct report_bag {
+    char **errors;
+    size_t errors_count, errors_cap;
+    char **warnings;
+    size_t warnings_count, warnings_cap;
+} report_bag;
+
+static void
+collect_report(void *ctx, const char *message, int is_error)
+{
+    report_bag *b = (report_bag *) ctx;
+    char ***arr = is_error ? &b->errors : &b->warnings;
+    size_t *n = is_error ? &b->errors_count : &b->warnings_count;
+    size_t *cap = is_error ? &b->errors_cap : &b->warnings_cap;
+    char **na;
+    if (*n >= *cap) {
+        size_t nc = *cap == 0 ? 8 : *cap * 2;
+        na = (char **) realloc(*arr, nc * sizeof **arr);
+        if (na == 0)
+            return;
+        *arr = na;
+        *cap = nc;
+    }
+    (*arr)[*n] = strdup(message);
+    if ((*arr)[*n] != 0)
+        (*n)++;
+}
+
+static void
+report_bag_free(report_bag *b)
+{
+    size_t i;
+    for (i = 0; i < b->errors_count; i++)
+        free(b->errors[i]);
+    for (i = 0; i < b->warnings_count; i++)
+        free(b->warnings[i]);
+    free(b->errors);
+    free(b->warnings);
+}
+
+/* defined later (authoring-draft section) */
+static void json_error_out(const char *code, const char *msg);
+static void add_string_array(cJSON *root, const char *key, char *const *items, size_t n);
+
 static int
-cmd_verify(const char *dir, int quiet)
+cmd_verify(const char *dir, int quiet, int json)
 {
     musicpack_package *pkg;
     musicpack_report rep = { 0, 0 };
     musicpack_status s;
+    report_bag bag;
 
+    memset(&bag, 0, sizeof bag);
     pkg = musicpack_package_open_dir(dir, 0);
     if (pkg == 0) {
-        fprintf(stderr, "cannot open package '%s'\n", dir);
+        if (json)
+            json_error_out("not_found", "cannot open package");
+        else
+            fprintf(stderr, "cannot open package '%s'\n", dir);
         return 1;
     }
-    s = musicpack_package_verify(pkg, &rep, quiet ? 0 : verify_report, 0);
-    if (!quiet)
+    s = musicpack_package_verify(pkg, &rep, json ? collect_report : verify_report,
+                                 json ? (void *) &bag : 0);
+    if (json) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", s == MUSICPACK_OK ? 1 : 0);
+        add_string_array(root, "errors", bag.errors, bag.errors_count);
+        add_string_array(root, "warnings", bag.warnings, bag.warnings_count);
+        draft_print(root);
+        cJSON_Delete(root);
+    } else if (!quiet) {
         printf("verify: %zu error(s), %zu warning(s)\n", rep.errors, rep.warnings);
+    }
+    report_bag_free(&bag);
     musicpack_package_close(pkg);
     return s == MUSICPACK_OK ? 0 : 1;
 }
@@ -1293,6 +1356,278 @@ manifest_add_artwork(musicpack_manifest *m, const char *role,
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* audio stream probe (authoring draft display data)                   */
+/* ------------------------------------------------------------------ */
+
+static void
+probe_stream(const char *path, mpc_stream_info *out)
+{
+    const char *dot = strrchr(path, '.');
+    memset(out, 0, sizeof *out);
+
+    if (dot != 0 && strcmp(dot, ".mpc") == 0) {
+        mpc_reader reader;
+        musepack_decoder *dec;
+        musepack_stream_info si;
+        if (mpc_reader_init_stdio(&reader, path) == MPC_STATUS_OK) {
+            dec = musepack_decoder_open(&reader, 0);
+            if (dec != 0) {
+                memset(&si, 0, sizeof si);
+                si.size = sizeof si;
+                if (musepack_decoder_get_stream_info(dec, &si) == 0) {
+                    snprintf(out->codec, sizeof out->codec, "musepack-sv%u",
+                             (unsigned) si.stream_version);
+                    out->stream_version = (int) si.stream_version;
+                    out->sample_rate = (long) si.sample_rate;
+                    out->channels = (long) si.channels;
+                    if (si.sample_rate > 0)
+                        out->duration = (double) si.length_samples /
+                                        (double) si.sample_rate;
+                }
+                musepack_decoder_close(dec);
+            }
+            mpc_reader_exit_stdio(&reader);
+        }
+        if (out->codec[0] == '\0')
+            snprintf(out->codec, sizeof out->codec, "musepack");
+    } else if (dot != 0 && strcmp(dot, ".flac") == 0) {
+        /* minimal STREAMINFO parse (first metadata block, 34 bytes) */
+        unsigned char h[42];
+        FILE *f = fopen(path, "rb");
+        if (f != 0) {
+            size_t got = fread(h, 1, sizeof h, f);
+            fclose(f);
+            if (got >= 42 && memcmp(h, "fLaC", 4) == 0 && (h[4] & 0x7f) == 0) {
+                long rate = ((long) h[10] << 12) | ((long) h[11] << 4) | (h[12] >> 4);
+                long ch = ((h[12] & 0x0e) >> 1) + 1;
+                uint64_t samples = ((uint64_t) (h[13] & 0x0f) << 32) |
+                                   ((uint64_t) h[14] << 24) |
+                                   ((uint64_t) h[15] << 16) |
+                                   ((uint64_t) h[16] << 8) | h[17];
+                snprintf(out->codec, sizeof out->codec, "flac");
+                if (rate > 0) {
+                    out->sample_rate = rate;
+                    out->channels = ch;
+                    out->duration = (double) samples / (double) rate;
+                }
+            }
+        }
+        if (out->codec[0] == '\0')
+            snprintf(out->codec, sizeof out->codec, "flac");
+    } else {
+        snprintf(out->codec, sizeof out->codec, "%s", codec_for_path(path));
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* shared album-directory scan (import + inspect)                      */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    import_track *tracks;
+    size_t track_count;
+    char *artwork_src;   /* relative path under the source root, or NULL */
+    char *booklet_src;
+    char **lyrics_srcs;
+    size_t lyrics_count;
+    char **extras_srcs;
+    size_t extras_count;
+} scan_result;
+
+static void
+scan_result_clear(scan_result *s)
+{
+    size_t i;
+    for (i = 0; i < s->track_count; i++) {
+        musicpack_tag_set_free(&s->tracks[i].tags);
+        musicpack_pictures_free(&s->tracks[i].pics);
+        free(s->tracks[i].lyric_path);
+        free(s->tracks[i].lyric_sha);
+        free(s->tracks[i].src_rel);
+        free(s->tracks[i].title);
+        free(s->tracks[i].ext);
+    }
+    free(s->tracks);
+    free(s->artwork_src);
+    free(s->booklet_src);
+    for (i = 0; i < s->lyrics_count; i++)
+        free(s->lyrics_srcs[i]);
+    free(s->lyrics_srcs);
+    for (i = 0; i < s->extras_count; i++)
+        free(s->extras_srcs[i]);
+    free(s->extras_srcs);
+    memset(s, 0, sizeof *s);
+}
+
+/* Walks, classifies, sorts and (where numbers are missing) numbers the
+   audio files under `src`. Shared by `import` (which additionally renumbers
+   duplicates) and `inspect` (which preserves tag-derived duplicate track
+   numbers so the GUI can surface them). Returns 0 when no audio was found. */
+static int
+scan_source_dir(const char *src, scan_result *out)
+{
+    char **files = 0;
+    size_t file_count = 0, file_cap = 0;
+    size_t i;
+    char srcpath[MUSICPACK_PATH_MAX + 2];
+
+    memset(out, 0, sizeof *out);
+    walk_dir(src, "", &files, &file_count, &file_cap);
+
+    for (i = 0; i < file_count; i++) {
+        const char *rel = files[i];
+        const char *first, *rest, *dot;
+        int disc = 1;
+        int from_dir = 0;
+
+        split_segments(rel, &first, &rest);
+        if (rest != 0) {
+            disc = disc_from_dirname(first);
+            if (disc == 0)
+                continue; /* ignore files under non-disc subdirectories */
+            from_dir = 1;
+            rel = rest;
+        }
+        if (strcmp(rel, "cover.jpg") == 0 || strcmp(rel, "cover.png") == 0 ||
+            strcmp(rel, "front.jpg") == 0 || strcmp(rel, "front.png") == 0 ||
+            strcmp(rel, "folder.jpg") == 0) {
+            free(out->artwork_src);
+            out->artwork_src = strdup(files[i]);
+            continue;
+        }
+        if (strcmp(rel, "booklet.pdf") == 0) {
+            free(out->booklet_src);
+            out->booklet_src = strdup(files[i]);
+            continue;
+        }
+        dot = strrchr(rel, '.');
+        if (dot != 0 && strcmp(dot, ".lrc") == 0) {
+            out->lyrics_srcs = (char **) realloc(
+                out->lyrics_srcs, (out->lyrics_count + 1) * sizeof *out->lyrics_srcs);
+            if (out->lyrics_srcs == 0) {
+                free(files);
+                return 0;
+            }
+            out->lyrics_srcs[out->lyrics_count++] = strdup(files[i]);
+            continue;
+        }
+        if (dot != 0 && (strcmp(dot, ".txt") == 0 || strcmp(dot, ".md") == 0)) {
+            out->extras_srcs = (char **) realloc(
+                out->extras_srcs, (out->extras_count + 1) * sizeof *out->extras_srcs);
+            if (out->extras_srcs == 0) {
+                free(files);
+                return 0;
+            }
+            out->extras_srcs[out->extras_count++] = strdup(files[i]);
+            continue;
+        }
+        if (is_audio_ext(rel)) {
+            import_track *it;
+            out->tracks = (import_track *) realloc(
+                out->tracks, (out->track_count + 1) * sizeof *out->tracks);
+            if (out->tracks == 0) {
+                free(files);
+                return 0;
+            }
+            it = &out->tracks[out->track_count++];
+            memset(it, 0, sizeof *it);
+            it->src_rel = strdup(files[i]);
+            it->disc = disc;
+            {
+                const char *base = rest != 0 ? rest : first;
+                int n = 0, digits = 0;
+                while (base[n] >= '0' && base[n] <= '9') {
+                    n++;
+                    digits++;
+                }
+                it->number = digits > 0 ? atoi(base) : 0;
+                {
+                    const char *t = base;
+                    size_t stem_len;
+                    char *stem;
+                    if (digits > 0) {
+                        t = base + n;
+                        while (*t == ' ' || *t == '-' || *t == '.')
+                            t++;
+                    }
+                    dot = strrchr(t, '.');
+                    stem_len = dot != 0 ? (size_t) (dot - t) : strlen(t);
+                    stem = (char *) malloc(stem_len + 1);
+                    if (stem == 0) {
+                        free(files);
+                        return 0;
+                    }
+                    memcpy(stem, t, stem_len);
+                    stem[stem_len] = '\0';
+                    it->title = stem;
+                }
+                {
+                    const char *dot2 = strrchr(base, '.');
+                    it->ext = strdup(dot2 != 0 ? dot2 : "");
+                }
+            }
+            snprintf(srcpath, sizeof srcpath, "%s/%s", src, files[i]);
+            read_track_tags(it, srcpath);
+            if (it->has_tags) {
+                const musicpack_tag *tv;
+                int num;
+                if (tag_int_field(&it->tags, "TRACKNUMBER", "Track", &num))
+                    it->number = num;
+                tv = musicpack_tag_set_get(&it->tags, "TITLE");
+                if (tv != 0 && !tv->is_binary && tv->value != 0 && *tv->value != '\0') {
+                    free(it->title);
+                    it->title = strdup(tv->value);
+                }
+                if (!from_dir && tag_int_field(&it->tags, "DISCNUMBER", "Disc", &num))
+                    it->disc = num;
+            }
+        }
+    }
+    free(files);
+
+    if (out->track_count == 0)
+        return 0;
+
+    qsort(out->tracks, out->track_count, sizeof *out->tracks, cmp_import_tracks);
+    {
+        size_t i2 = 0;
+        while (i2 < out->track_count) {
+            int disc = out->tracks[i2].disc;
+            size_t j = i2;
+            int all_have = 1;
+            while (j < out->track_count && out->tracks[j].disc == disc) {
+                if (out->tracks[j].number <= 0)
+                    all_have = 0;
+                j++;
+            }
+            if (!all_have) {
+                int seq = 1;
+                size_t k;
+                for (k = i2; k < j; k++)
+                    out->tracks[k].number = seq++;
+            }
+            i2 = j;
+        }
+    }
+    if (out->track_count > 1 && out->tracks[0].has_tags) {
+        const musicpack_tag *a0 = musicpack_tag_set_get(&out->tracks[0].tags, "ALBUM");
+        if (a0 != 0 && !a0->is_binary) {
+            for (i = 1; i < out->track_count; i++) {
+                const musicpack_tag *ai;
+                if (!out->tracks[i].has_tags)
+                    continue;
+                ai = musicpack_tag_set_get(&out->tracks[i].tags, "ALBUM");
+                if (ai != 0 && !ai->is_binary && strcmp(a0->value, ai->value) != 0)
+                    fprintf(stderr,
+                            "warning: conflicting album names ('%s' vs '%s')\n",
+                            a0->value, ai->value);
+            }
+        }
+    }
+    return 1;
+}
+
 static int
 cmd_import(int argc, char **argv)
 {
@@ -1304,15 +1639,7 @@ cmd_import(int argc, char **argv)
     size_t artist_count = 0;
     int no_loudness = 0;
     int c;
-    char **files = 0;
-    size_t file_count = 0, file_cap = 0;
-    import_track *tracks = 0;
-    size_t track_count = 0, track_cap = 0;
-    char *artwork_src = 0, *booklet_src = 0;
-    char **lyrics_srcs = 0;
-    size_t lyrics_count = 0, lyrics_cap = 0;
-    char **extras_srcs = 0;
-    size_t extras_count = 0, extras_cap = 0;
+    scan_result scan;
     musicpack_manifest m;
     musicpack_meter *album_meter = 0;
     char audio_dir[MUSICPACK_PATH_MAX + 2];
@@ -1347,181 +1674,36 @@ cmd_import(int argc, char **argv)
         return 2;
     }
 
-    walk_dir(src, "", &files, &file_count, &file_cap);
-    track_cap = 64;
-    tracks = (import_track *) calloc(track_cap, sizeof *tracks);
-
-    /* classify files */
-    for (i = 0; i < file_count; i++) {
-        const char *rel = files[i];
-        const char *first, *rest, *dot;
-        int disc = 1;
-        int from_dir = 0;
-
-        split_segments(rel, &first, &rest);
-        if (rest != 0) {
-            disc = disc_from_dirname(first);
-            if (disc == 0)
-                continue; /* ignore files under non-disc subdirectories */
-            from_dir = 1;
-            rel = rest;
-        }
-        if (strcmp(rel, "cover.jpg") == 0 || strcmp(rel, "cover.png") == 0 ||
-            strcmp(rel, "front.jpg") == 0 || strcmp(rel, "front.png") == 0 ||
-            strcmp(rel, "folder.jpg") == 0) {
-            free(artwork_src);
-            artwork_src = strdup(files[i]);
-            continue;
-        }
-        if (strcmp(rel, "booklet.pdf") == 0) {
-            free(booklet_src);
-            booklet_src = strdup(files[i]);
-            continue;
-        }
-        dot = strrchr(rel, '.');
-        if (dot != 0 && strcmp(dot, ".lrc") == 0) {
-            if (lyrics_count >= lyrics_cap) {
-                lyrics_cap = lyrics_cap == 0 ? 8 : lyrics_cap * 2;
-                lyrics_srcs = (char **) realloc(lyrics_srcs, lyrics_cap * sizeof *lyrics_srcs);
-            }
-            lyrics_srcs[lyrics_count++] = strdup(files[i]);
-            continue;
-        }
-        if (dot != 0 && (strcmp(dot, ".txt") == 0 || strcmp(dot, ".md") == 0)) {
-            if (extras_count >= extras_cap) {
-                extras_cap = extras_cap == 0 ? 8 : extras_cap * 2;
-                extras_srcs = (char **) realloc(extras_srcs, extras_cap * sizeof *extras_srcs);
-            }
-            extras_srcs[extras_count++] = strdup(files[i]);
-            continue;
-        }
-        if (is_audio_ext(rel)) {
-            if (track_count >= track_cap) {
-                track_cap *= 2;
-                tracks = (import_track *) realloc(tracks, track_cap * sizeof *tracks);
-            }
-            tracks[track_count].src_rel = strdup(files[i]);
-            tracks[track_count].disc = disc;
-            /* leading digits = track number */
-            {
-                const char *base = rest != 0 ? rest : first;
-                int n = 0, digits = 0;
-                while (base[n] >= '0' && base[n] <= '9') {
-                    n++;
-                    digits++;
-                }
-                tracks[track_count].number = digits > 0 ? atoi(base) : 0;
-                /* title: strip "NN - " or "NN. " prefix and extension */
-                {
-                    const char *t = base;
-                    size_t stem_len;
-                    char *stem;
-                    if (digits > 0) {
-                        t = base + n;
-                        while (*t == ' ' || *t == '-' || *t == '.')
-                            t++;
-                    }
-                    dot = strrchr(t, '.');
-                    stem_len = dot != 0 ? (size_t) (dot - t) : strlen(t);
-                    stem = (char *) malloc(stem_len + 1);
-                    memcpy(stem, t, stem_len);
-                    stem[stem_len] = '\0';
-                    tracks[track_count].title = stem;
-                }
-                {
-                    const char *dot2 = strrchr(base, '.');
-                    if (dot2 != 0)
-                        tracks[track_count].ext = strdup(dot2);
-                    else
-                        tracks[track_count].ext = strdup("");
-                }
-            }
-            /* embedded metadata takes precedence over filename heuristics */
-            snprintf(srcpath, sizeof srcpath, "%s/%s", src, files[i]);
-            read_track_tags(&tracks[track_count], srcpath);
-            if (tracks[track_count].has_tags) {
-                import_track *it = &tracks[track_count];
-                const musicpack_tag *tv;
-                int num;
-                if (tag_int_field(&it->tags, "TRACKNUMBER", "Track", &num))
-                    it->number = num;
-                tv = musicpack_tag_set_get(&it->tags, "TITLE");
-                if (tv != 0 && !tv->is_binary && tv->value != 0 && *tv->value != '\0') {
-                    free(it->title);
-                    it->title = strdup(tv->value);
-                }
-                if (!from_dir &&
-                    tag_int_field(&it->tags, "DISCNUMBER", "Disc", &num))
-                    it->disc = num;
-            }
-            track_count++;
-        }
-    }
-    free(files);
-
-    if (track_count == 0) {
+    if (!scan_source_dir(src, &scan)) {
         fprintf(stderr, "no audio files found under '%s'\n", src);
         return 1;
     }
 
-    /* sort by (disc, explicit number if present, filename). Renumber a disc
-       contiguously only when it has tracks without explicit numbers; explicit
-       numbers from tags are authoritative and preserved. */
-    qsort(tracks, track_count, sizeof *tracks, cmp_import_tracks);
-    i = 0;
-    while (i < track_count) {
-        int disc = tracks[i].disc;
-        size_t j = i;
-        int all_have = 1;
-        while (j < track_count && tracks[j].disc == disc) {
-            if (tracks[j].number <= 0)
-                all_have = 0;
-            j++;
-        }
-        if (!all_have) {
-            int seq = 1;
-            size_t k;
-            for (k = i; k < j; k++)
-                tracks[k].number = seq++;
-        }
-        i = j;
-    }
-
-    /* consistency: duplicate (disc, track) falls back to renumbering; album
-       title conflicts are reported as warnings */
-    i = 0;
-    while (i < track_count) {
-        int disc = tracks[i].disc;
-        size_t j = i, k, l;
-        int dup = 0;
-        while (j < track_count && tracks[j].disc == disc)
-            j++;
-        for (k = i; k < j; k++)
-            for (l = k + 1; l < j; l++)
-                if (tracks[k].number > 0 && tracks[k].number == tracks[l].number)
-                    dup = 1;
-        if (dup) {
-            int seq = 1;
-            fprintf(stderr, "warning: duplicate track numbers on disc %d; renumbering\n",
-                    disc);
-            for (k = i; k < j; k++)
-                tracks[k].number = seq++;
-        }
-        i = j;
-    }
-    if (track_count > 1 && tracks[0].has_tags) {
-        const musicpack_tag *a0 = musicpack_tag_set_get(&tracks[0].tags, "ALBUM");
-        if (a0 != 0 && !a0->is_binary) {
-            for (i = 1; i < track_count; i++) {
-                const musicpack_tag *ai;
-                if (!tracks[i].has_tags)
-                    continue;
-                ai = musicpack_tag_set_get(&tracks[i].tags, "ALBUM");
-                if (ai != 0 && !ai->is_binary && strcmp(a0->value, ai->value) != 0)
-                    fprintf(stderr,
-                            "warning: conflicting album names ('%s' vs '%s')\n",
-                            a0->value, ai->value);
+    /* consistency: duplicate (disc, track) falls back to renumbering. This is
+       an import convenience; `inspect` preserves tag-derived duplicate track
+       numbers so the GUI can surface them as validation errors instead. */
+    {
+        size_t i2 = 0;
+        while (i2 < scan.track_count) {
+            int disc = scan.tracks[i2].disc;
+            size_t j = i2, k, l;
+            int dup = 0;
+            while (j < scan.track_count && scan.tracks[j].disc == disc)
+                j++;
+            for (k = i2; k < j; k++)
+                for (l = k + 1; l < j; l++)
+                    if (scan.tracks[k].number > 0 &&
+                        scan.tracks[k].number == scan.tracks[l].number)
+                        dup = 1;
+            if (dup) {
+                int seq = 1;
+                fprintf(stderr,
+                        "warning: duplicate track numbers on disc %d; renumbering\n",
+                        disc);
+                for (k = i2; k < j; k++)
+                    scan.tracks[k].number = seq++;
             }
+            i2 = j;
         }
     }
 
@@ -1548,8 +1730,8 @@ cmd_import(int argc, char **argv)
     if (country != 0) { m.release.present = 1; m.release.country = strdup(country); }
     if (notes != 0) { m.release.present = 1; m.release.notes = strdup(notes); }
 
-    if (track_count > 0 && tracks[0].has_tags) {
-        musicpack_status st = musicpack_tag_map_album(&tracks[0].tags, &m);
+    if (scan.track_count > 0 && scan.tracks[0].has_tags) {
+        musicpack_status st = musicpack_tag_map_album(&scan.tracks[0].tags, &m);
         if (st != MUSICPACK_OK) {
             fprintf(stderr, "cannot read album metadata\n");
             bad = 1;
@@ -1572,15 +1754,15 @@ cmd_import(int argc, char **argv)
     {
         size_t d;
         int ndiscs = 0;
-        for (d = 0; d < track_count; d++)
-            if (tracks[d].disc > ndiscs)
-                ndiscs = tracks[d].disc;
+        for (d = 0; d < scan.track_count; d++)
+            if (scan.tracks[d].disc > ndiscs)
+                ndiscs = scan.tracks[d].disc;
         m.discs = (musicpack_disc *) calloc((size_t) ndiscs, sizeof *m.discs);
         m.disc_count = (size_t) ndiscs;
     }
 
-    for (i = 0; i < track_count; i++) {
-        import_track *it = &tracks[i];
+    for (i = 0; i < scan.track_count; i++) {
+        import_track *it = &scan.tracks[i];
         musicpack_disc *disc;
         musicpack_track *t;
         char target[MUSICPACK_PATH_MAX + 2];
@@ -1673,8 +1855,8 @@ cmd_import(int argc, char **argv)
     if (!bad) {
         size_t t_i;
         char target[MUSICPACK_PATH_MAX + 2];
-        for (t_i = 0; t_i < track_count; t_i++) {
-            import_track *it = &tracks[t_i];
+        for (t_i = 0; t_i < scan.track_count; t_i++) {
+            import_track *it = &scan.tracks[t_i];
             size_t k;
             for (k = 0; k < it->pics.count; k++) {
                 const musicpack_picture *pic = &it->pics.items[k];
@@ -1730,11 +1912,11 @@ cmd_import(int argc, char **argv)
         }
     }
 
-    if (!bad && artwork_src != 0) {
+    if (!bad && scan.artwork_src != 0) {
         char target[MUSICPACK_PATH_MAX + 2];
-        const char *ext = strrchr(artwork_src, '.');
+        const char *ext = strrchr(scan.artwork_src, '.');
         snprintf(target, sizeof target, "%s/front%s", art_dir, ext != 0 ? ext : ".jpg");
-        if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, artwork_src) >= (int) sizeof srcpath) bad = 1;
+        if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.artwork_src) >= (int) sizeof srcpath) bad = 1;
         if (!bad && copy_file(srcpath, target) != 0) {
             fprintf(stderr, "cannot copy artwork\n");
             bad = 1;
@@ -1747,14 +1929,14 @@ cmd_import(int argc, char **argv)
                 m.artwork[0].asset.sha256 = strdup(hex);
         }
     }
-    if (!bad && booklet_src != 0) {
+    if (!bad && scan.booklet_src != 0) {
         char target[MUSICPACK_PATH_MAX + 2];
         snprintf(target, sizeof target, "%s/booklet", out_dir);
         if (mkdir_p(target) != 0)
             bad = 1;
         else {
             snprintf(target, sizeof target, "%s/booklet/booklet.pdf", out_dir);
-            if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, booklet_src) >= (int) sizeof srcpath) bad = 1;
+            if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.booklet_src) >= (int) sizeof srcpath) bad = 1;
             if (!bad && copy_file(srcpath, target) != 0) {
                 fprintf(stderr, "cannot copy booklet\n");
                 bad = 1;
@@ -1767,16 +1949,16 @@ cmd_import(int argc, char **argv)
             }
         }
     }
-    if (!bad && lyrics_count > 0) {
+    if (!bad && scan.lyrics_count > 0) {
         size_t k;
-        m.lyrics = (musicpack_asset *) calloc(lyrics_count, sizeof *m.lyrics);
-        m.lyrics_count = lyrics_count;
-        for (k = 0; k < lyrics_count && !bad; k++) {
+        m.lyrics = (musicpack_asset *) calloc(scan.lyrics_count, sizeof *m.lyrics);
+        m.lyrics_count = scan.lyrics_count;
+        for (k = 0; k < scan.lyrics_count && !bad; k++) {
             char target[MUSICPACK_PATH_MAX + 2];
-            const char *base = strrchr(lyrics_srcs[k], '/');
-            const char *name = base != 0 ? base + 1 : lyrics_srcs[k];
+            const char *base = strrchr(scan.lyrics_srcs[k], '/');
+            const char *name = base != 0 ? base + 1 : scan.lyrics_srcs[k];
             snprintf(target, sizeof target, "%s/%s", lyr_dir, name);
-            if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, lyrics_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
+            if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.lyrics_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
             if (copy_file(srcpath, target) != 0) {
                 fprintf(stderr, "cannot copy lyrics '%s'\n", name);
                 bad = 1;
@@ -1791,9 +1973,9 @@ cmd_import(int argc, char **argv)
        lyrics_count keeps counting only the source .lrc files so cleanup stays
        correct */
     if (!bad) {
-        size_t tag_count = 0, src_n = lyrics_count, mcount;
-        for (i = 0; i < track_count; i++)
-            if (tracks[i].lyric_path != 0)
+        size_t tag_count = 0, src_n = scan.lyrics_count, mcount;
+        for (i = 0; i < scan.track_count; i++)
+            if (scan.tracks[i].lyric_path != 0)
                 tag_count++;
         if (tag_count > 0) {
             musicpack_asset *na = (musicpack_asset *) realloc(
@@ -1803,34 +1985,34 @@ cmd_import(int argc, char **argv)
             else {
                 m.lyrics = na;
                 mcount = src_n;
-                for (i = 0; i < track_count; i++) {
-                    if (tracks[i].lyric_path != 0) {
+                for (i = 0; i < scan.track_count; i++) {
+                    if (scan.tracks[i].lyric_path != 0) {
                         musicpack_asset *a = &m.lyrics[mcount++];
-                        a->path = tracks[i].lyric_path;
-                        a->sha256 = tracks[i].lyric_sha;
-                        tracks[i].lyric_path = 0;
-                        tracks[i].lyric_sha = 0;
+                        a->path = scan.tracks[i].lyric_path;
+                        a->sha256 = scan.tracks[i].lyric_sha;
+                        scan.tracks[i].lyric_path = 0;
+                        scan.tracks[i].lyric_sha = 0;
                     }
                 }
                 m.lyrics_count = mcount;
             }
         }
     }
-    if (!bad && extras_count > 0) {
+    if (!bad && scan.extras_count > 0) {
         size_t k;
         char ex_dir[MUSICPACK_PATH_MAX + 2];
         snprintf(ex_dir, sizeof ex_dir, "%s/extras", out_dir);
         if (mkdir_p(ex_dir) != 0)
             bad = 1;
         else {
-            m.extras = (musicpack_asset *) calloc(extras_count, sizeof *m.extras);
-            m.extras_count = extras_count;
-            for (k = 0; k < extras_count && !bad; k++) {
+            m.extras = (musicpack_asset *) calloc(scan.extras_count, sizeof *m.extras);
+            m.extras_count = scan.extras_count;
+            for (k = 0; k < scan.extras_count && !bad; k++) {
                 char target[MUSICPACK_PATH_MAX + 2];
-                const char *base = strrchr(extras_srcs[k], '/');
-                const char *name = base != 0 ? base + 1 : extras_srcs[k];
+                const char *base = strrchr(scan.extras_srcs[k], '/');
+                const char *name = base != 0 ? base + 1 : scan.extras_srcs[k];
                 snprintf(target, sizeof target, "%s/%s", ex_dir, name);
-                if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, extras_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
+                if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.extras_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
                 if (copy_file(srcpath, target) != 0) {
                     fprintf(stderr, "cannot copy extra '%s'\n", name);
                     bad = 1;
@@ -1870,34 +2052,1241 @@ cleanup:
     /* free model */
     musicpack_manifest_clear(&m);
     musicpack_meter_free(album_meter);
-    for (i = 0; i < track_count; i++) {
-        musicpack_tag_set_free(&tracks[i].tags);
-        musicpack_pictures_free(&tracks[i].pics);
-        free(tracks[i].lyric_path);
-        free(tracks[i].lyric_sha);
-        free(tracks[i].src_rel);
-        free(tracks[i].title);
-        free(tracks[i].ext);
-    }
-    free(tracks);
-    free(artwork_src);
-    free(booklet_src);
-    for (i = 0; i < lyrics_count; i++)
-        free(lyrics_srcs[i]);
-    free(lyrics_srcs);
-    for (i = 0; i < extras_count; i++)
-        free(extras_srcs[i]);
-    free(extras_srcs);
+    scan_result_clear(&scan);
 
     if (bad) {
         fprintf(stderr, "import failed\n");
         return 1;
     }
-    printf("imported %zu track(s) into '%s'\n", track_count, out_dir);
+    printf("imported %zu track(s) into '%s'\n", scan.track_count, out_dir);
     return 0;
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* authoring draft: inspect / validate-draft / build-draft /           */
+/* identify-draft. These power the MusicPack Author GUI; they speak     */
+/* JSON to stdout and keep every .mpack semantic inside libmusicpack.   */
+/* ------------------------------------------------------------------ */
+
+static const char *
+djstr(cJSON *o, const char *key)
+{
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
+    return (v != 0 && cJSON_IsString(v)) ? v->valuestring : 0;
+}
+
+static int
+djnum(cJSON *o, const char *key, int *out)
+{
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
+    if (v == 0 || !cJSON_IsNumber(v))
+        return 0;
+    *out = (int) v->valuedouble;
+    return 1;
+}
+
+static void
+json_error_out(const char *code, const char *msg)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *e = cJSON_AddObjectToObject(root, "error");
+    cJSON_AddStringToObject(e, "code", code);
+    cJSON_AddStringToObject(e, "message", msg);
+    draft_print(root);
+    cJSON_Delete(root);
+}
+
+static void
+add_string_array(cJSON *root, const char *key, char *const *items, size_t n)
+{
+    cJSON *arr = cJSON_AddArrayToObject(root, key);
+    size_t i;
+    for (i = 0; i < n; i++)
+        cJSON_AddItemToArray(arr, cJSON_CreateString(items[i]));
+}
+
+/* ---- draft validation --------------------------------------------- */
+
+/* Targeted checks below produce readable authoring messages. They are NOT
+   the authority: the synthesized-manifest parse through
+   musicpack_manifest_parse() remains the authoritative gate, so these lists
+   only mirror the v1 closed enums for message quality. */
+static const char *const DRAFT_RELEASE_TYPES[] = {
+    "album", "ep", "single", "maxi-single", "compilation", "soundtrack",
+    "live-album", "remix-album", "box-set", "other"
+};
+static const char *const DRAFT_MEDIUM_FORMATS[] = {
+    "CD", "SACD", "Vinyl", "Cassette", "Digital", "Blu-ray Audio",
+    "DVD-Audio", "Other"
+};
+
+static int
+str_in_list(const char *const *list, size_t n, const char *v)
+{
+    size_t i;
+    if (v == 0)
+        return 0;
+    for (i = 0; i < n; i++)
+        if (strcmp(list[i], v) == 0)
+            return 1;
+    return 0;
+}
+
+static int
+path_is_valid(const char *p)
+{
+    return musicpack_path_validate(p) == MUSICPACK_OK;
+}
+
+static int
+file_is_regular_under(const char *root, const char *rel)
+{
+    char p[MUSICPACK_PATH_MAX + 2];
+    struct stat st;
+    if (snprintf(p, sizeof p, "%s/%s", root, rel) >= (int) sizeof p)
+        return 0;
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static void
+vec_push(char ***arr, size_t *n, const char *msg)
+{
+    char **na = (char **) realloc(*arr, (*n + 1) * sizeof **arr);
+    if (na == 0)
+        return;
+    *arr = na;
+    (*arr)[*n] = strdup(msg);
+    if ((*arr)[*n] != 0)
+        (*n)++;
+}
+
+/* Validates a parsed draft. Fills \p errors/\p warnings (heap arrays; the
+   caller frees with free_vec). Returns 1 when there are no errors. */
+static int
+draft_validate(cJSON *draft, char ***errors, size_t *ecount,
+               char ***warnings, size_t *wcount)
+{
+    cJSON *album, *media, *artwork;
+    const char *sr, *title, *rt;
+    int i, ndiscs = 0;
+    int seen_disc[64];
+    int ok = 1;
+
+    *errors = 0;
+    *warnings = 0;
+    *ecount = 0;
+    *wcount = 0;
+    memset(seen_disc, 0, sizeof seen_disc);
+
+    sr = djstr(draft, "sourceRoot");
+    if (sr == 0 || *sr == '\0') {
+        vec_push(errors, ecount, "missing source root");
+        ok = 0;
+    }
+
+    album = cJSON_GetObjectItemCaseSensitive(draft, "album");
+    title = djstr(album, "title");
+    if (title == 0 || *title == '\0') {
+        vec_push(errors, ecount, "missing required album title");
+        ok = 0;
+    }
+    {
+        cJSON *artists = cJSON_GetObjectItemCaseSensitive(album, "artists");
+        if (!cJSON_IsArray(artists) || cJSON_GetArraySize(artists) == 0) {
+            vec_push(errors, ecount, "no artist");
+            ok = 0;
+        }
+    }
+    rt = djstr(album, "releaseType");
+    if (rt != 0 && *rt != '\0' &&
+        !str_in_list(DRAFT_RELEASE_TYPES,
+                     sizeof DRAFT_RELEASE_TYPES / sizeof *DRAFT_RELEASE_TYPES, rt)) {
+        char msg[256];
+        snprintf(msg, sizeof msg, "unsupported release type '%s'", rt);
+        vec_push(errors, ecount, msg);
+        ok = 0;
+    }
+
+    media = cJSON_GetObjectItemCaseSensitive(draft, "media");
+    if (!cJSON_IsArray(media) || cJSON_GetArraySize(media) == 0) {
+        vec_push(errors, ecount, "no media");
+        ok = 0;
+    } else {
+        {
+            cJSON *mi;
+            cJSON_ArrayForEach(mi, media) {
+            int disc = 0;
+            const char *fmt;
+            cJSON *tracks;
+            int seen_track[1024];
+
+            memset(seen_track, 0, sizeof seen_track);
+            if (!cJSON_IsObject(mi))
+                continue;
+            djnum(mi, "disc", &disc);
+            if (disc < 1) {
+                vec_push(errors, ecount, "invalid disc number");
+                ok = 0;
+            } else if (disc <= 63) {
+                if (seen_disc[disc]) {
+                    char msg[128];
+                    snprintf(msg, sizeof msg, "duplicate disc number %d", disc);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                }
+                seen_disc[disc] = 1;
+            }
+            if (disc > ndiscs)
+                ndiscs = disc;
+            fmt = djstr(mi, "format");
+            if (fmt != 0 && *fmt != '\0' &&
+                !str_in_list(DRAFT_MEDIUM_FORMATS,
+                             sizeof DRAFT_MEDIUM_FORMATS / sizeof *DRAFT_MEDIUM_FORMATS,
+                             fmt)) {
+                char msg[256];
+                snprintf(msg, sizeof msg, "invalid medium format '%s'", fmt);
+                vec_push(errors, ecount, msg);
+                ok = 0;
+            }
+            tracks = cJSON_GetObjectItemCaseSensitive(mi, "tracks");
+            if (!cJSON_IsArray(tracks) || cJSON_GetArraySize(tracks) == 0) {
+                char msg[128];
+                snprintf(msg, sizeof msg, "disc %d has no tracks", disc);
+                vec_push(errors, ecount, msg);
+                ok = 0;
+                continue;
+            }
+            {
+                cJSON *tr;
+                cJSON_ArrayForEach(tr, tracks) {
+                int num = 0;
+                const char *ttl, *ap;
+                if (!cJSON_IsObject(tr))
+                    continue;
+                djnum(tr, "track", &num);
+                if (num < 1) {
+                    char msg[128];
+                    snprintf(msg, sizeof msg, "invalid track number on disc %d", disc);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                } else if (num < 1024) {
+                    if (seen_track[num]) {
+                        char msg[160];
+                        snprintf(msg, sizeof msg,
+                                 "duplicate track number %d on disc %d", num, disc);
+                        vec_push(errors, ecount, msg);
+                        ok = 0;
+                    }
+                    seen_track[num] = 1;
+                }
+                ttl = djstr(tr, "title");
+                if (ttl == 0 || *ttl == '\0') {
+                    char msg[160];
+                    snprintf(msg, sizeof msg, "track %d on disc %d has no title",
+                             num, disc);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                }
+                ap = djstr(tr, "audioPath");
+                if (ap == 0 || *ap == '\0') {
+                    char msg[160];
+                    snprintf(msg, sizeof msg, "track %d on disc %d has no audio file",
+                             num, disc);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                } else {
+                    if (!path_is_valid(ap)) {
+                        char msg[320];
+                        snprintf(msg, sizeof msg, "invalid path '%s'", ap);
+                        vec_push(errors, ecount, msg);
+                        ok = 0;
+                    } else if (sr != 0 && *sr != '\0' &&
+                               !file_is_regular_under(sr, ap)) {
+                        char msg[320];
+                        snprintf(msg, sizeof msg, "audio file not found: %s", ap);
+                        vec_push(errors, ecount, msg);
+                        ok = 0;
+                    }
+                }
+            }
+            }
+        }
+    }
+    }
+
+    /* artwork + other asset paths */
+    artwork = cJSON_GetObjectItemCaseSensitive(draft, "artwork");
+    if (cJSON_IsArray(artwork)) {
+        size_t k = 0;
+        cJSON *a;
+        cJSON_ArrayForEach(a, artwork) {
+            const char *p = djstr(a, "path");
+            const char *sa = djstr(a, "sourceAudio");
+            if (p != 0 && *p != '\0') {
+                k++;
+                if (!path_is_valid(p)) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "invalid artwork path '%s'", p);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                } else if (sr != 0 && *sr != '\0' && !file_is_regular_under(sr, p)) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "artwork file not found: %s", p);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                }
+            } else if (sa != 0 && *sa != '\0') {
+                k++;
+                if (!path_is_valid(sa)) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "invalid artwork source '%s'", sa);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                } else if (sr != 0 && *sr != '\0' && !file_is_regular_under(sr, sa)) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "embedded artwork source not found: %s", sa);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                }
+            }
+        }
+        if (k == 0)
+            vec_push(warnings, wcount, "no artwork");
+    }
+    {
+        const char *cat = 0;
+        cJSON *rel = cJSON_GetObjectItemCaseSensitive(draft, "release");
+        if (cJSON_IsObject(rel))
+            cat = djstr(rel, "catalogueNumber");
+        if (cat == 0 || *cat == '\0')
+            vec_push(warnings, wcount, "missing catalogue number");
+    }
+    {
+        const char *mbid = 0, *conf = 0;
+        cJSON *ids = cJSON_GetObjectItemCaseSensitive(draft, "identifiers");
+        cJSON *idn = cJSON_GetObjectItemCaseSensitive(draft, "identity");
+        if (cJSON_IsObject(ids))
+            mbid = djstr(ids, "musicbrainzReleaseId");
+        if (cJSON_IsObject(idn))
+            conf = djstr(idn, "confidence");
+        if ((mbid == 0 || *mbid == '\0') &&
+            (conf == 0 || strcmp(conf, "exact") != 0))
+            vec_push(warnings, wcount, "missing release identity");
+    }
+
+    /* unreferenced audio files under the source root */
+    if (sr != 0 && *sr != '\0') {
+        char **files = 0;
+        size_t file_count = 0, file_cap = 0;
+        struct stat st;
+        size_t f;
+        if (stat(sr, &st) == 0 && S_ISDIR(st.st_mode)) {
+            walk_dir(sr, "", &files, &file_count, &file_cap);
+            for (f = 0; f < file_count; f++) {
+                const char *dot = strrchr(files[f], '.');
+                int referenced = 0;
+                if (dot == 0 || !is_audio_ext(files[f]))
+                    continue;
+                if (cJSON_IsArray(media)) {
+                    cJSON *mi;
+                    cJSON_ArrayForEach(mi, media) {
+                        cJSON *tracks = cJSON_GetObjectItemCaseSensitive(mi, "tracks");
+                        cJSON *tr;
+                        if (!cJSON_IsArray(tracks))
+                            continue;
+                        cJSON_ArrayForEach(tr, tracks) {
+                            const char *ap = djstr(tr, "audioPath");
+                            if (ap != 0 && strcmp(ap, files[f]) == 0)
+                                referenced = 1;
+                        }
+                    }
+                }
+                if (!referenced) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "audio file not included: %s", files[f]);
+                    vec_push(warnings, wcount, msg);
+                }
+            }
+            for (f = 0; f < file_count; f++)
+                free(files[f]);
+            free(files);
+        }
+    }
+
+    /* authoritative gate: synthesize a parseable manifest and run the real
+       .mpack validation */
+    {
+        musicpack_manifest m;
+        char *json = 0;
+        size_t si;
+        if (!draft_to_manifest(draft, &m)) {
+            vec_push(errors, ecount, "cannot interpret draft");
+            ok = 0;
+        } else {
+            const char *zero =
+                "0000000000000000000000000000000000000000000000000000000000000000";
+            for (si = 0; si < m.disc_count; si++)
+                for (i = 0; i < (int) m.discs[si].track_count; i++)
+                    if (m.discs[si].tracks[i].audio.sha256 == 0)
+                        m.discs[si].tracks[i].audio.sha256 = strdup(zero);
+            for (si = 0; si < m.artwork_count; si++)
+                if (m.artwork[si].asset.sha256 == 0)
+                    m.artwork[si].asset.sha256 = strdup(zero);
+            for (si = 0; si < m.booklet_count; si++)
+                if (m.booklet[si].sha256 == 0)
+                    m.booklet[si].sha256 = strdup(zero);
+            for (si = 0; si < m.lyrics_count; si++)
+                if (m.lyrics[si].sha256 == 0)
+                    m.lyrics[si].sha256 = strdup(zero);
+            for (si = 0; si < m.extras_count; si++)
+                if (m.extras[si].sha256 == 0)
+                    m.extras[si].sha256 = strdup(zero);
+            if (musicpack_manifest_write(&m, &json) == MUSICPACK_OK) {
+                musicpack_status st = MUSICPACK_OK;
+                musicpack_manifest *pm = musicpack_manifest_parse(json, &st);
+                if (pm == 0) {
+                    char msg[256];
+                    snprintf(msg, sizeof msg,
+                             "draft does not satisfy .mpack v1 rules (%d)", (int) st);
+                    vec_push(errors, ecount, msg);
+                    ok = 0;
+                } else {
+                    musicpack_manifest_free(pm);
+                }
+                free(json);
+            } else {
+                vec_push(errors, ecount, "cannot serialize draft");
+                ok = 0;
+            }
+            musicpack_manifest_clear(&m);
+        }
+    }
+
+    return ok;
+}
+
+static void
+free_vec(char **items, size_t n)
+{
+    size_t i;
+    for (i = 0; i < n; i++)
+        free(items[i]);
+    free(items);
+}
+
+/* ---- command: inspect --------------------------------------------- */
+
+static void
+usage_inspect(void)
+{
+    fprintf(stderr, "usage: musicpack inspect <dir> [--json]\n");
+}
+
+static void
+inspect_fill_assets(cJSON *draft, const scan_result *scan)
+{
+    char used[16][32];
+    size_t used_count = 0;
+    cJSON *artwork = cJSON_GetObjectItemCaseSensitive(draft, "artwork");
+    cJSON *booklet = cJSON_GetObjectItemCaseSensitive(draft, "booklet");
+    cJSON *lyrics = cJSON_GetObjectItemCaseSensitive(draft, "lyrics");
+    cJSON *extras = cJSON_GetObjectItemCaseSensitive(draft, "extras");
+    size_t i, k;
+    int have_front = 0;
+
+    if (!cJSON_IsArray(artwork))
+        return;
+    if (scan->artwork_src != 0) {
+        cJSON *a = cJSON_CreateObject();
+        cJSON_AddStringToObject(a, "role", "front");
+        cJSON_AddStringToObject(a, "path", scan->artwork_src);
+        cJSON_AddItemToArray(artwork, a);
+        snprintf(used[used_count++], sizeof used[0], "front");
+        have_front = 1;
+    }
+    for (i = 0; i < scan->track_count; i++) {
+        const import_track *it = &scan->tracks[i];
+        for (k = 0; k < it->pics.count; k++) {
+            const char *role = musicpack_meta_picture_role(it->pics.items[k].type);
+            size_t u;
+            int taken = 0;
+            for (u = 0; u < used_count; u++)
+                if (strcmp(used[u], role) == 0)
+                    taken = 1;
+            if (taken)
+                continue;
+            {
+                cJSON *a = cJSON_CreateObject();
+                cJSON_AddStringToObject(a, "role", role);
+                cJSON_AddStringToObject(a, "embedded", "true");
+                cJSON_AddStringToObject(a, "sourceAudio", it->src_rel);
+                if (it->pics.items[k].mime != 0)
+                    cJSON_AddStringToObject(a, "mime", it->pics.items[k].mime);
+                cJSON_AddItemToArray(artwork, a);
+                if (used_count < sizeof used / sizeof used[0])
+                    snprintf(used[used_count++], sizeof used[0], "%s", role);
+            }
+        }
+        if (it->has_tags && !have_front) {
+            const musicpack_tag *cov =
+                musicpack_tag_set_get(&it->tags, "Cover Art (Front)");
+            if (cov != 0 && cov->is_binary && cov->binary_len > 0) {
+                cJSON *a = cJSON_CreateObject();
+                cJSON_AddStringToObject(a, "role", "front");
+                cJSON_AddStringToObject(a, "embedded", "true");
+                cJSON_AddStringToObject(a, "sourceAudio", it->src_rel);
+                cJSON_AddItemToArray(artwork, a);
+                have_front = 1;
+            }
+        }
+    }
+    if (scan->booklet_src != 0 && cJSON_IsArray(booklet)) {
+        cJSON *a = cJSON_CreateObject();
+        cJSON_AddStringToObject(a, "path", scan->booklet_src);
+        cJSON_AddItemToArray(booklet, a);
+    }
+    if (cJSON_IsArray(lyrics)) {
+        for (i = 0; i < scan->lyrics_count; i++) {
+            cJSON *a = cJSON_CreateObject();
+            cJSON_AddStringToObject(a, "path", scan->lyrics_srcs[i]);
+            cJSON_AddItemToArray(lyrics, a);
+        }
+    }
+    if (cJSON_IsArray(extras)) {
+        for (i = 0; i < scan->extras_count; i++) {
+            cJSON *a = cJSON_CreateObject();
+            cJSON_AddStringToObject(a, "path", scan->extras_srcs[i]);
+            cJSON_AddItemToArray(extras, a);
+        }
+    }
+}
+
+static int
+cmd_inspect(const char *dir, int json)
+{
+    scan_result scan;
+    musicpack_manifest m;
+    mpc_stream_info *streams = 0;
+    cJSON *draft = 0;
+    char srcpath[MUSICPACK_PATH_MAX + 2];
+    size_t i, total = 0;
+    int ndiscs = 0, bad = 0;
+
+    memset(&scan, 0, sizeof scan);
+    if (!scan_source_dir(dir, &scan)) {
+        fprintf(stderr, "inspect: no audio files found under '%s'\n", dir);
+        return 1;
+    }
+
+    memset(&m, 0, sizeof m);
+    /* union album metadata across every tagged track (first-wins per field,
+       which musicpack_tag_map_album already guarantees): a minimal tag on the
+       first file must not shadow a rich tag on a later file */
+    for (i = 0; i < scan.track_count; i++) {
+        if (scan.tracks[i].has_tags &&
+            musicpack_tag_map_album(&scan.tracks[i].tags, &m) != MUSICPACK_OK)
+            bad = 1;
+        if (bad)
+            break;
+    }
+    if (!bad && m.album_title == 0) {
+        const char *base = strrchr(dir, '/');
+        m.album_title = strdup(base != 0 && base[1] != '\0' ? base + 1 : dir);
+    }
+
+    if (!bad) {
+        size_t d;
+        for (d = 0; d < scan.track_count; d++)
+            if (scan.tracks[d].disc > ndiscs)
+                ndiscs = scan.tracks[d].disc;
+        m.discs = (musicpack_disc *) calloc((size_t) ndiscs, sizeof *m.discs);
+        if (m.discs == 0)
+            bad = 1;
+        m.disc_count = (size_t) ndiscs;
+    }
+
+    streams = (mpc_stream_info *) calloc(scan.track_count, sizeof *streams);
+    if (streams == 0)
+        bad = 1;
+    for (i = 0; i < scan.track_count && !bad; i++) {
+        import_track *it = &scan.tracks[i];
+        musicpack_disc *disc;
+        musicpack_track *t;
+        if ((size_t) it->disc - 1 >= m.disc_count) {
+            bad = 1;
+            break;
+        }
+        disc = &m.discs[it->disc - 1];
+        disc->disc = it->disc;
+        disc->tracks = (musicpack_track *) realloc(
+            disc->tracks, (disc->track_count + 1) * sizeof *disc->tracks);
+        if (disc->tracks == 0) {
+            bad = 1;
+            break;
+        }
+        t = &disc->tracks[disc->track_count];
+        memset(t, 0, sizeof *t);
+        if (it->has_tags && musicpack_tag_map_track(&it->tags, t) != MUSICPACK_OK) {
+            bad = 1;
+            break;
+        }
+        if (t->number == 0)
+            t->number = it->number;
+        if (t->title == 0)
+            t->title = strdup(it->title);
+        t->audio.path = strdup(it->src_rel);
+        snprintf(srcpath, sizeof srcpath, "%s/%s", dir, it->src_rel);
+        probe_stream(srcpath, &streams[i]);
+        disc->track_count++;
+    }
+
+    if (!bad)
+        draft = draft_from_manifest(&m, dir, streams);
+    if (draft != 0)
+        inspect_fill_assets(draft, &scan);
+
+    if (json) {
+        if (draft != 0)
+            draft_print(draft);
+        else
+            json_error_out("inspect_failed", "cannot build authoring draft");
+    } else {
+        size_t d, t;
+        if (draft == 0) {
+            fprintf(stderr, "inspect: cannot build authoring draft\n");
+            bad = 1;
+        } else {
+            printf("Album: %s\n", m.album_title != 0 ? m.album_title : "");
+            for (i = 0; i < m.album_artist_count; i++)
+                printf("Artist: %s%s%s\n", m.album_artists[i].name,
+                       m.album_artists[i].role != 0 ? " (" : "",
+                       m.album_artists[i].role != 0 ? m.album_artists[i].role : "");
+            printf("Discs: %zu\n", m.disc_count);
+            for (d = 0; d < m.disc_count; d++) {
+                printf("Disc %d: %zu tracks\n", m.discs[d].disc,
+                       m.discs[d].track_count);
+                for (t = 0; t < m.discs[d].track_count; t++) {
+                    const musicpack_track *tr = &m.discs[d].tracks[t];
+                    printf("  Track %d: %s (%s", tr->number,
+                           tr->title != 0 ? tr->title : "",
+                           streams != 0 ? streams[total].codec : "?");
+                    if (streams != 0 && streams[total].duration > 0)
+                        printf(", %.1fs", streams[total].duration);
+                    printf(")\n");
+                    total++;
+                }
+            }
+            printf("Total tracks: %zu\n", scan.track_count);
+        }
+    }
+
+    cJSON_Delete(draft);
+    free(streams);
+    musicpack_manifest_clear(&m);
+    scan_result_clear(&scan);
+    return bad ? 1 : 0;
+}
+
+/* ---- command: validate-draft -------------------------------------- */
+
+static void
+usage_validate_draft(void)
+{
+    fprintf(stderr, "usage: musicpack validate-draft --draft FILE [--json]\n");
+}
+
+static int
+cmd_validate_draft(const char *draft_path, int json)
+{
+    cJSON *draft;
+    char **errors = 0;
+    char **warnings = 0;
+    size_t ecount = 0, wcount = 0;
+    int ok;
+    char err[512];
+
+    draft = draft_read_json(draft_path, err, sizeof err);
+    if (draft == 0) {
+        if (json)
+            json_error_out("invalid_draft", err);
+        else
+            fprintf(stderr, "validate-draft: %s\n", err);
+        return 1;
+    }
+    ok = draft_validate(draft, &errors, &ecount, &warnings, &wcount);
+
+    if (json) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", ok ? 1 : 0);
+        add_string_array(root, "errors", errors, ecount);
+        add_string_array(root, "warnings", warnings, wcount);
+        draft_print(root);
+        cJSON_Delete(root);
+    } else {
+        size_t i;
+        for (i = 0; i < ecount; i++)
+            printf("error: %s\n", errors[i]);
+        for (i = 0; i < wcount; i++)
+            printf("warning: %s\n", warnings[i]);
+        printf("validate-draft: %zu error(s), %zu warning(s)\n", ecount, wcount);
+    }
+
+    free_vec(errors, ecount);
+    free_vec(warnings, wcount);
+    cJSON_Delete(draft);
+    return ok ? 0 : 1;
+}
+
+/* ---- command: build-draft ----------------------------------------- */
+
+static void
+usage_build_draft(void)
+{
+    fprintf(stderr,
+        "usage: musicpack build-draft --draft FILE -o DIR [--no-loudness] [--json]\n");
+}
+
+/* Extracts the first embedded picture matching `role` from a source audio
+   file (FLAC PICTURE blocks, or the APEv2 front cover) into `artdir` and
+   adds it to the manifest. Returns 1 on success. */
+static int
+extract_embedded_artwork(const char *srcpath, const char *role, const char *artdir,
+                         musicpack_manifest *m, char *err, size_t err_cap)
+{
+    const char *dot = strrchr(srcpath, '.');
+    const unsigned char *img = 0;
+    size_t img_len = 0;
+    char extbuf[8];
+    const char *ext = extbuf;
+    char target[MUSICPACK_PATH_MAX + 2];
+
+    snprintf(extbuf, sizeof extbuf, ".jpg");
+    if (dot != 0 && strcmp(dot, ".flac") == 0) {
+        musicpack_pictures pics;
+        size_t k;
+        memset(&pics, 0, sizeof pics);
+        if (musicpack_flac_read_metadata(srcpath, 0, &pics) == MUSICPACK_OK) {
+            for (k = 0; k < pics.count; k++) {
+                if (strcmp(musicpack_meta_picture_role(pics.items[k].type), role) == 0) {
+                    img = pics.items[k].data;
+                    img_len = pics.items[k].data_len;
+                    snprintf(extbuf, sizeof extbuf, "%s",
+                             ext_for_mime(pics.items[k].mime));
+                    break;
+                }
+            }
+            musicpack_pictures_free(&pics);
+        }
+    } else if (dot != 0 && strcmp(dot, ".mpc") == 0 && strcmp(role, "front") == 0) {
+        musicpack_tag_set tags;
+        const musicpack_tag *cov;
+        memset(&tags, 0, sizeof tags);
+        if (musicpack_ape_read(srcpath, &tags) == MUSICPACK_OK) {
+            cov = musicpack_tag_set_get(&tags, "Cover Art (Front)");
+            if (cov != 0 && cov->is_binary && cov->binary_len > 0) {
+                const unsigned char *nul =
+                    (const unsigned char *) memchr(cov->binary, '\0', cov->binary_len);
+                const unsigned char *body = nul != 0 ? nul + 1 : cov->binary;
+                size_t body_len = nul != 0
+                    ? cov->binary_len - (size_t) (nul - cov->binary) - 1
+                    : cov->binary_len;
+                const char *fname = (const char *) cov->binary;
+                const char *fe = strrchr(fname, '.');
+                if (body_len > 0) {
+                    img = body;
+                    img_len = body_len;
+                    /* the extension lives inside the APE tag buffer, which is
+                       freed below; copy it into a local buffer */
+                    if (fe != 0 && *fe != '\0')
+                        snprintf(extbuf, sizeof extbuf, "%s", fe);
+                }
+            }
+        }
+        musicpack_tag_set_free(&tags);
+    }
+    if (img == 0) {
+        snprintf(err, err_cap, "no embedded '%s' artwork in '%s'", role, srcpath);
+        return 0;
+    }
+    snprintf(target, sizeof target, "%s/%s%s", artdir, role, ext);
+    if (write_bytes(target, img, img_len) != 0) {
+        snprintf(err, err_cap, "cannot write artwork");
+        return 0;
+    }
+    {
+        char hex[MUSICPACK_SHA256_HEX_SIZE];
+        char rel[MUSICPACK_PATH_MAX + 2];
+        snprintf(rel, sizeof rel, "artwork/%s%s", role, ext);
+        if (manifest_add_artwork(m, role, rel,
+                                 musicpack_sha256_file(target, hex, sizeof hex) ==
+                                         MUSICPACK_OK
+                                     ? hex
+                                     : 0) != 0) {
+            snprintf(err, err_cap, "out of memory");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, int json)
+{
+    cJSON *draft;
+    char err[512];
+    char **errors = 0, **warnings = 0;
+    size_t ecount = 0, wcount = 0;
+    musicpack_manifest m;
+    musicpack_meter *album_meter = 0;
+    const char *source_root;
+    char audio_dir[MUSICPACK_PATH_MAX + 2];
+    char art_dir[MUSICPACK_PATH_MAX + 2];
+    char lyr_dir[MUSICPACK_PATH_MAX + 2];
+    char bok_dir[MUSICPACK_PATH_MAX + 2];
+    char ex_dir[MUSICPACK_PATH_MAX + 2];
+    char hex[MUSICPACK_SHA256_HEX_SIZE];
+    char srcpath[MUSICPACK_PATH_MAX + 2];
+    size_t d, t, i;
+    int bad = 0, verified = 0;
+    size_t verr = 0, vwarn = 0;
+
+    draft = draft_read_json(draft_path, err, sizeof err);
+    if (draft == 0) {
+        if (json)
+            json_error_out("invalid_draft", err);
+        else
+            fprintf(stderr, "build-draft: %s\n", err);
+        return 1;
+    }
+
+    /* never assemble a package that fails its own validation */
+    if (!draft_validate(draft, &errors, &ecount, &warnings, &wcount)) {
+        if (json) {
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddBoolToObject(root, "ok", 0);
+            add_string_array(root, "errors", errors, ecount);
+            add_string_array(root, "warnings", warnings, wcount);
+            draft_print(root);
+            cJSON_Delete(root);
+        } else {
+            for (i = 0; i < ecount; i++)
+                fprintf(stderr, "error: %s\n", errors[i]);
+        }
+        free_vec(errors, ecount);
+        free_vec(warnings, wcount);
+        cJSON_Delete(draft);
+        return 1;
+    }
+    free_vec(errors, ecount);
+    free_vec(warnings, wcount);
+
+    source_root = djstr(draft, "sourceRoot");
+    if (source_root == 0 || *source_root == '\0') {
+        if (json)
+            json_error_out("invalid_draft", "draft has no sourceRoot");
+        else
+            fprintf(stderr, "build-draft: draft has no sourceRoot\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    memset(&m, 0, sizeof m);
+    if (!draft_to_manifest(draft, &m)) {
+        if (json)
+            json_error_out("invalid_draft", "cannot interpret draft");
+        else
+            fprintf(stderr, "build-draft: cannot interpret draft\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    snprintf(audio_dir, sizeof audio_dir, "%s/audio", out_dir);
+    snprintf(art_dir, sizeof art_dir, "%s/artwork", out_dir);
+    snprintf(lyr_dir, sizeof lyr_dir, "%s/lyrics", out_dir);
+    snprintf(bok_dir, sizeof bok_dir, "%s/booklet", out_dir);
+    snprintf(ex_dir, sizeof ex_dir, "%s/extras", out_dir);
+    if (mkdir_p(out_dir) != 0 || mkdir_p(audio_dir) != 0 ||
+        mkdir_p(art_dir) != 0 || mkdir_p(lyr_dir) != 0 ||
+        mkdir_p(bok_dir) != 0 || mkdir_p(ex_dir) != 0) {
+        snprintf(err, sizeof err, "cannot create package directory '%s'", out_dir);
+        bad = 1;
+        goto done;
+    }
+
+    for (d = 0; d < m.disc_count && !bad; d++) {
+        for (t = 0; t < m.discs[d].track_count && !bad; t++) {
+            musicpack_track *tr = &m.discs[d].tracks[t];
+            const char *rel = tr->audio.path != 0 ? tr->audio.path : "";
+            const char *base, *dot;
+            char fname[MUSICPACK_PATH_MAX + 2];
+            char target[MUSICPACK_PATH_MAX + 2];
+            if (*rel == '\0') {
+                snprintf(err, sizeof err, "track %d on disc %d has no audio file",
+                         tr->number, m.discs[d].disc);
+                bad = 1;
+                break;
+            }
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, rel);
+            base = strrchr(rel, '/');
+            base = base != 0 ? base + 1 : rel;
+            dot = strrchr(base, '.');
+            snprintf(fname, sizeof fname, "%s", tr->title != 0 ? tr->title : "");
+            sanitize_component(fname);
+            snprintf(target, sizeof target, "%s/%02d - %s%s", audio_dir, tr->number,
+                     fname, dot != 0 ? dot : "");
+            if (copy_file(srcpath, target) != 0) {
+                snprintf(err, sizeof err, "cannot copy '%s'", srcpath);
+                bad = 1;
+                break;
+            }
+            free(tr->audio.path);
+            tr->audio.path = strdup(target + strlen(out_dir) + 1);
+            if (musicpack_sha256_file(target, hex, sizeof hex) != MUSICPACK_OK) {
+                snprintf(err, sizeof err, "cannot hash '%s'", target);
+                bad = 1;
+                break;
+            }
+            free(tr->audio.sha256);
+            tr->audio.sha256 = strdup(hex);
+            if (!no_loudness) {
+                int has_l;
+                double lufs, peak, dur = 0;
+                if (measure_loudness(target, &has_l, &lufs, &peak, &dur,
+                                     &album_meter) == 0 && has_l) {
+                    tr->loudness.present = 1;
+                    tr->loudness.lufs = lufs;
+                    tr->loudness.true_peak_db = peak;
+                    if (dur > 0) {
+                        tr->has_duration = 1;
+                        tr->duration = dur;
+                    }
+                }
+            }
+        }
+    }
+
+    /* artwork: copy file-based entries, extract embedded ones */
+    for (i = 0; i < m.artwork_count && !bad; i++) {
+        musicpack_artwork *a = &m.artwork[i];
+        const char *ext = strrchr(a->asset.path, '.');
+        char target[MUSICPACK_PATH_MAX + 2];
+        snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, a->asset.path);
+        snprintf(target, sizeof target, "%s/%s%s", art_dir, a->role,
+                 ext != 0 ? ext : ".jpg");
+        if (copy_file(srcpath, target) != 0) {
+            snprintf(err, sizeof err, "cannot copy artwork '%s'", a->asset.path);
+            bad = 1;
+            break;
+        }
+        free(a->asset.path);
+        a->asset.path = strdup(target + strlen(out_dir) + 1);
+        free(a->asset.sha256);
+        if (musicpack_sha256_file(target, hex, sizeof hex) == MUSICPACK_OK)
+            a->asset.sha256 = strdup(hex);
+    }
+    if (!bad) {
+        cJSON *artarr = cJSON_GetObjectItemCaseSensitive(draft, "artwork");
+        if (cJSON_IsArray(artarr)) {
+            cJSON *a;
+            cJSON_ArrayForEach(a, artarr) {
+                const char *rel = djstr(a, "path");
+                const char *sa = djstr(a, "sourceAudio");
+                const char *role = djstr(a, "role");
+                if (rel != 0 && *rel != '\0')
+                    continue; /* file-based entries handled above */
+                if (sa == 0 || *sa == '\0' || role == 0 || *role == '\0')
+                    continue;
+                snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, sa);
+                if (!extract_embedded_artwork(srcpath, role, art_dir, &m,
+                                              err, sizeof err)) {
+                    bad = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!bad) {
+        for (i = 0; i < m.booklet_count; i++) {
+            char target[MUSICPACK_PATH_MAX + 2];
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, m.booklet[i].path);
+            snprintf(target, sizeof target, "%s/%s", bok_dir,
+                     strrchr(m.booklet[i].path, '/') != 0
+                         ? strrchr(m.booklet[i].path, '/') + 1
+                         : m.booklet[i].path);
+            if (copy_file(srcpath, target) != 0) {
+                snprintf(err, sizeof err, "cannot copy booklet '%s'", m.booklet[i].path);
+                bad = 1;
+                break;
+            }
+            free(m.booklet[i].path);
+            m.booklet[i].path = strdup(target + strlen(out_dir) + 1);
+            free(m.booklet[i].sha256);
+            if (musicpack_sha256_file(target, hex, sizeof hex) == MUSICPACK_OK)
+                m.booklet[i].sha256 = strdup(hex);
+        }
+    }
+    if (!bad) {
+        for (i = 0; i < m.lyrics_count; i++) {
+            char target[MUSICPACK_PATH_MAX + 2];
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, m.lyrics[i].path);
+            snprintf(target, sizeof target, "%s/%s", lyr_dir,
+                     strrchr(m.lyrics[i].path, '/') != 0
+                         ? strrchr(m.lyrics[i].path, '/') + 1
+                         : m.lyrics[i].path);
+            if (copy_file(srcpath, target) != 0) {
+                snprintf(err, sizeof err, "cannot copy lyrics '%s'", m.lyrics[i].path);
+                bad = 1;
+                break;
+            }
+            free(m.lyrics[i].path);
+            m.lyrics[i].path = strdup(target + strlen(out_dir) + 1);
+            free(m.lyrics[i].sha256);
+            if (musicpack_sha256_file(target, hex, sizeof hex) == MUSICPACK_OK)
+                m.lyrics[i].sha256 = strdup(hex);
+        }
+    }
+    if (!bad) {
+        for (i = 0; i < m.extras_count; i++) {
+            char target[MUSICPACK_PATH_MAX + 2];
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, m.extras[i].path);
+            snprintf(target, sizeof target, "%s/%s", ex_dir,
+                     strrchr(m.extras[i].path, '/') != 0
+                         ? strrchr(m.extras[i].path, '/') + 1
+                         : m.extras[i].path);
+            if (copy_file(srcpath, target) != 0) {
+                snprintf(err, sizeof err, "cannot copy extra '%s'", m.extras[i].path);
+                bad = 1;
+                break;
+            }
+            free(m.extras[i].path);
+            m.extras[i].path = strdup(target + strlen(out_dir) + 1);
+            free(m.extras[i].sha256);
+            if (musicpack_sha256_file(target, hex, sizeof hex) == MUSICPACK_OK)
+                m.extras[i].sha256 = strdup(hex);
+        }
+    }
+
+    if (!bad && album_meter != 0) {
+        double alufs, apeak;
+        if (musicpack_meter_result(album_meter, &alufs, &apeak) == MUSICPACK_OK) {
+            m.has_album_loudness = 1;
+            m.album_loudness.lufs = alufs;
+            m.album_loudness.true_peak_db = apeak;
+            m.loudness_algorithm = strdup(MUSICPACK_LOUDNESS_STANDARD);
+        }
+    }
+
+    if (!bad) {
+        char *manifest_json = 0;
+        char mpath[MUSICPACK_PATH_MAX + 2];
+        if (musicpack_manifest_write(&m, &manifest_json) == MUSICPACK_OK) {
+            snprintf(mpath, sizeof mpath, "%s/manifest.json", out_dir);
+            if (write_all(mpath, manifest_json) != 0) {
+                snprintf(err, sizeof err, "cannot write manifest.json");
+                bad = 1;
+            }
+            free(manifest_json);
+        } else {
+            snprintf(err, sizeof err, "cannot serialize manifest");
+            bad = 1;
+        }
+    }
+
+    if (!bad) {
+        musicpack_package *pkg = musicpack_package_open_dir(out_dir, 0);
+        if (pkg == 0) {
+            snprintf(err, sizeof err, "created package cannot be opened");
+            bad = 1;
+        } else {
+            musicpack_report rep = { 0, 0 };
+            musicpack_status s = musicpack_package_verify(pkg, &rep, 0, 0);
+            verified = s == MUSICPACK_OK;
+            verr = rep.errors;
+            vwarn = rep.warnings;
+            musicpack_package_close(pkg);
+            if (!verified) {
+                snprintf(err, sizeof err,
+                         "created package failed verification (%zu error(s), %zu warning(s))",
+                         verr, vwarn);
+                bad = 1;
+            }
+        }
+    }
+
+done:
+    musicpack_manifest_clear(&m);
+    musicpack_meter_free(album_meter);
+    cJSON_Delete(draft);
+
+    if (json) {
+        cJSON *root = cJSON_CreateObject();
+        if (bad) {
+            cJSON *e = cJSON_AddObjectToObject(root, "error");
+            cJSON_AddStringToObject(e, "code", "build_failed");
+            cJSON_AddStringToObject(e, "message", err[0] != '\0' ? err : "build failed");
+        } else {
+            cJSON *v = cJSON_AddObjectToObject(root, "verify");
+            cJSON_AddBoolToObject(root, "ok", 1);
+            cJSON_AddStringToObject(root, "outputPath", out_dir);
+            cJSON_AddNumberToObject(v, "errors", (double) verr);
+            cJSON_AddNumberToObject(v, "warnings", (double) vwarn);
+        }
+        draft_print(root);
+        cJSON_Delete(root);
+    } else {
+        if (bad)
+            fprintf(stderr, "build-draft: %s\n", err[0] != '\0' ? err : "build failed");
+        else
+            printf("created package '%s' (%zu error(s), %zu warning(s))\n",
+                   out_dir, verr, vwarn);
+    }
+    return bad ? 1 : 0;
+}
+
+/* ---- command: identify-draft -------------------------------------- */
+
+static void
+usage_identify_draft(void)
+{
+    fprintf(stderr,
+        "usage: musicpack identify-draft --draft FILE\n"
+        "       (--mbid UUID | --barcode BC | --mb-json FILE) [--json]\n");
+}
+
+static int
+cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode,
+                   const char *mb_json_path, int json)
+{
+    cJSON *draft, *out = 0;
+    char err[512];
+    musicpack_manifest m;
+    const char *conf = "none";
+    int applied = 0;
+    int rc = 0;
+
+    draft = draft_read_json(draft_path, err, sizeof err);
+    if (draft == 0) {
+        if (json)
+            json_error_out("invalid_draft", err);
+        else
+            fprintf(stderr, "identify-draft: %s\n", err);
+        return 1;
+    }
+    memset(&m, 0, sizeof m);
+    if (!draft_to_manifest(draft, &m)) {
+        cJSON_Delete(draft);
+        if (json)
+            json_error_out("invalid_draft", "cannot interpret draft");
+        else
+            fprintf(stderr, "identify-draft: cannot interpret draft\n");
+        return 1;
+    }
+
+    if (mb_json_path != 0) {
+        musicpack_status st = MUSICPACK_OK;
+        char *mbjson = read_file_bounded(mb_json_path, 8u * 1024u * 1024u, &st);
+        if (mbjson == 0) {
+            snprintf(err, sizeof err, "cannot read '%s'", mb_json_path);
+            rc = 1;
+            goto done;
+        }
+        conf = musicpack_mb_match_confidence(mbjson, &m);
+        if (strcmp(conf, "none") != 0) {
+            musicpack_mb_apply_release(mbjson, &m);
+            applied = 1;
+        }
+        free(mbjson);
+    } else if (mbid != 0) {
+        char url[512];
+        char *mbjson;
+        snprintf(url, sizeof url,
+                 "https://musicbrainz.org/ws/2/release/%s?inc=artist-credits+labels+recordings+media&fmt=json",
+                 mbid);
+        mbjson = curl_fetch(url, 1u * 1024u * 1024u);
+        if (mbjson == 0) {
+            snprintf(err, sizeof err, "network lookup failed; identity unchanged");
+            rc = 1;
+            goto done;
+        }
+        /* the user asserted this release id: record it so the match is exact */
+        free(m.musicbrainz_release_id);
+        m.musicbrainz_release_id = strdup(mbid);
+        conf = musicpack_mb_match_confidence(mbjson, &m);
+        if (strcmp(conf, "none") != 0) {
+            musicpack_mb_apply_release(mbjson, &m);
+            applied = 1;
+        }
+        free(mbjson);
+    } else if (barcode != 0) {
+        char url[512];
+        char *mbjson;
+        cJSON *candidates;
+        snprintf(url, sizeof url,
+                 "https://musicbrainz.org/ws/2/release/?query=barcode:%s&fmt=json&limit=5",
+                 barcode);
+        mbjson = curl_fetch(url, 1u * 1024u * 1024u);
+        if (mbjson == 0) {
+            snprintf(err, sizeof err, "network lookup failed");
+            rc = 1;
+            goto done;
+        }
+        candidates = mb_candidates(mbjson, &m);
+        free(mbjson);
+        if (candidates == 0) {
+            snprintf(err, sizeof err, "cannot parse MusicBrainz response");
+            rc = 1;
+            goto done;
+        }
+        out = cJSON_CreateObject();
+        cJSON_AddItemToObject(out, "candidates", candidates);
+        draft_print(out);
+        cJSON_Delete(out);
+        cJSON_Delete(draft);
+        musicpack_manifest_clear(&m);
+        return 0;
+    } else {
+        usage_identify_draft();
+        rc = 2;
+        goto done;
+    }
+
+    if (applied) {
+        /* a MusicBrainz match supersedes the draft's initial local/none
+           identity: record source and the evidence-based confidence */
+        free(m.identity_source);
+        m.identity_source = strdup("musicbrainz");
+        free(m.identity_confidence);
+        m.identity_confidence = strdup(conf);
+        draft_apply_manifest(draft, &m);
+    }
+
+    if (json) {
+        out = cJSON_CreateObject();
+        cJSON_AddItemToObject(out, "draft", draft);
+        draft = 0; /* ownership moved into out */
+        cJSON_AddStringToObject(out, "confidence", conf);
+        cJSON_AddBoolToObject(out, "applied", applied ? 1 : 0);
+        draft_print(out);
+        cJSON_Delete(out);
+        out = 0;
+    } else {
+        printf("identify-draft: %s\n", applied ? conf : "no match applied");
+    }
+
+done:
+    if (json && out == 0 && rc != 0) {
+        json_error_out("identify_failed", err);
+    } else if (!json && rc != 0) {
+        fprintf(stderr, "identify-draft: %s\n", err[0] != '\0' ? err : "failed");
+    }
+    cJSON_Delete(draft);
+    cJSON_Delete(out);
+    musicpack_manifest_clear(&m);
+    return rc;
+}
+
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1915,11 +3304,15 @@ main(int argc, char **argv)
     if (strcmp(cmd, "info") == 0)
         return argc >= 3 ? cmd_info(argv[2]) : usage_error("info requires a package");
     if (strcmp(cmd, "verify") == 0) {
-        int quiet = 0, i;
-        for (i = 2; i < argc; i++)
+        int quiet = 0, json = 0, i;
+        for (i = 2; i < argc; i++) {
             if (strcmp(argv[i], "-q") == 0)
                 quiet = 1;
-        return argc >= 3 ? cmd_verify(argv[2], quiet) : usage_error("verify requires a package");
+            else if (strcmp(argv[i], "--json") == 0)
+                json = 1;
+        }
+        return argc >= 3 ? cmd_verify(argv[2], quiet, json)
+                         : usage_error("verify requires a package");
     }
     if (strcmp(cmd, "identify") == 0) {
         const char *dir = 0, *mbjson = 0;
@@ -1960,6 +3353,87 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_update_metadata(dir, sync);
+    }
+    if (strcmp(cmd, "inspect") == 0) {
+        const char *dir = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--json") == 0)
+                json = 1;
+            else if (dir == 0)
+                dir = argv[i];
+            else
+                return usage_error("too many arguments");
+        }
+        if (dir == 0) {
+            usage_inspect();
+            return 2;
+        }
+        return cmd_inspect(dir, json);
+    }
+    if (strcmp(cmd, "validate-draft") == 0) {
+        const char *draft_path = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
+                draft_path = argv[++i];
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else {
+                return usage_error("too many arguments");
+            }
+        }
+        if (draft_path == 0) {
+            usage_validate_draft();
+            return 2;
+        }
+        return cmd_validate_draft(draft_path, json);
+    }
+    if (strcmp(cmd, "build-draft") == 0) {
+        const char *draft_path = 0, *out_dir = 0;
+        int no_loudness = 0, json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
+                draft_path = argv[++i];
+            } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+                out_dir = argv[++i];
+            } else if (strcmp(argv[i], "--no-loudness") == 0) {
+                no_loudness = 1;
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else {
+                return usage_error("too many arguments");
+            }
+        }
+        if (draft_path == 0 || out_dir == 0) {
+            usage_build_draft();
+            return 2;
+        }
+        return cmd_build_draft(draft_path, out_dir, no_loudness, json);
+    }
+    if (strcmp(cmd, "identify-draft") == 0) {
+        const char *draft_path = 0, *mbid = 0, *barcode = 0, *mbjson = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
+                draft_path = argv[++i];
+            } else if (strcmp(argv[i], "--mbid") == 0 && i + 1 < argc) {
+                mbid = argv[++i];
+            } else if (strcmp(argv[i], "--barcode") == 0 && i + 1 < argc) {
+                barcode = argv[++i];
+            } else if (strcmp(argv[i], "--mb-json") == 0 && i + 1 < argc) {
+                mbjson = argv[++i];
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else {
+                return usage_error("too many arguments");
+            }
+        }
+        if (draft_path == 0 || (mbid == 0 && barcode == 0 && mbjson == 0)) {
+            usage_identify_draft();
+            return 2;
+        }
+        return cmd_identify_draft(draft_path, mbid, barcode, mbjson, json);
     }
     return usage_error("unknown command");
 }
