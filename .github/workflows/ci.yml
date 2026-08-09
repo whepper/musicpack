@@ -120,6 +120,28 @@ jobs:
           source /opt/emsdk/emsdk_env.sh
           ctest --test-dir build-wasm -R "^wasm_smoke$" --output-on-failure
 
+  research:
+    name: research (model-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Deterministic, model-free research tests only: pooling, L2/cosine,
+      # cache identity, silence, album aggregation, storage encodings,
+      # profile compatibility, metrics, cross-codec report pipeline.
+      # OpenL3 / Essentia / Discogs-EffNet tests are skipped here (they need
+      # TensorFlow or the AGPL/CC-NC-SA comparator stack and run locally).
+      - name: Install test deps
+        run: python -m pip install --upgrade pip pytest numpy soundfile
+
+      - name: Run research tests (model-free)
+        working-directory: research/sonic
+        run: python -m pytest tests -q
+
   web-client:
     name: web-client
     runs-on: ubuntu-latest
