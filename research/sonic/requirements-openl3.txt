@@ -1,0 +1,27 @@
+# OpenL3 research environment for the MusicPack Sonic benchmark.
+#
+# Pinned for reproducibility on macOS arm64 / Linux x86_64, CPython 3.11.
+# (CPython 3.11 is required: openl3 0.4.0 is unmaintained and the Keras-2
+# stack it needs (tensorflow 2.15 + kapre) has no macOS-arm64 wheels for
+# 3.12/3.14.) The resolved environment is recorded (pip freeze) in
+# research/sonic/reports/environment.md. See research/sonic/README.md for
+# why these pins exist.
+#
+# This is a RESEARCH-ONLY dependency set. TensorFlow is NOT a MusicPack
+# runtime dependency; it exists only to evaluate candidate embeddings.
+#
+# NOTE: openl3 itself is NOT installed from PyPI here. openl3 0.4.0 is
+# sdist-only and its setup.py breaks on Python 3.12+ (removed ``imp`` module)
+# and downloads all model weights during build. Install the patched tree
+# instead (see bootstrap_env.sh / patch_openl3.py):
+#     python3 patch_openl3.py wheels
+#     uv pip install --python .venv/bin/python wheels/openl3-0.4.0
+
+tensorflow==2.15.1
+kapre==0.3.6
+numpy==1.26.4
+scipy<1.13
+librosa>=0.10.0,<0.11
+soundfile>=0.12
+h5py>=3.10
+psutil>=5.9

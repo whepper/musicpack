@@ -1,0 +1,19 @@
+# OPTIONAL, EVALUATION-ONLY environment for the Discogs-EffNet comparator.
+#
+# NOT installed by default and NEVER a MusicPack dependency:
+#   * Essentia is AGPL-3.0 (commercial licensing separate).
+#   * The MTG pretrained Discogs-EffNet models are CC BY-NC-SA 4.0
+#     (non-commercial, share-alike) unless separately licensed.
+#
+# The Discogs-EffNet adapter only answers "does a music-similarity-trained
+# representation beat OpenL3 at collection-local recommendations?". The
+# benchmark harness must run without this file being installed.
+#
+# Install only when benchmarking the comparator:
+#   uv pip install -r research/sonic/requirements-essentia.txt
+#
+# Models (.pb) are downloaded at runtime into research/sonic/models/
+# (gitignored); their URLs and SHA-256 are recorded in the adapter.
+
+# essentia-tensorflow (the tensorflow-enabled build)
+essentia-tensorflow>=2.1b6

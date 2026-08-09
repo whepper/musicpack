@@ -53,3 +53,13 @@ tests/fixtures/_src.wav
 # Generated WASM demo artifacts (see demo/build.sh)
 demo/musepack.js
 demo/musepack.wasm
+
+# Research workspace (MusicPack Sonic; see research/sonic/README.md)
+research/sonic/.venv/
+research/sonic/wheels/
+research/sonic/cache/
+research/sonic/models/
+research/sonic/ratings/
+research/sonic/fixtures/*.flac
+research/sonic/reports/raw/
+research/sonic/reports/human/
