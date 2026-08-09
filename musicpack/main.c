@@ -49,6 +49,7 @@
 
 #ifdef _WIN32
 # include <direct.h>
+# include <sys/stat.h>
 # define mkdir_p_one(p) _mkdir(p)
 # define POPEN _popen
 # define POPEN_MODE "rb" /* binary mode matters on Windows */
@@ -2146,13 +2147,36 @@ path_is_valid(const char *p)
 }
 
 static int
+is_dir_path(const char *p)
+{
+#ifdef _WIN32
+    struct _stat st;
+    return _stat(p, &st) == 0 && (st.st_mode & _S_IFDIR) != 0;
+#else
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+static int
+is_regular_path(const char *p)
+{
+#ifdef _WIN32
+    struct _stat st;
+    return _stat(p, &st) == 0 && (st.st_mode & _S_IFREG) != 0;
+#else
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+static int
 file_is_regular_under(const char *root, const char *rel)
 {
     char p[MUSICPACK_PATH_MAX + 2];
-    struct stat st;
     if (snprintf(p, sizeof p, "%s/%s", root, rel) >= (int) sizeof p)
         return 0;
-    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+    return is_regular_path(p);
 }
 
 static void
@@ -2385,9 +2409,8 @@ draft_validate(cJSON *draft, char ***errors, size_t *ecount,
     if (sr != 0 && *sr != '\0') {
         char **files = 0;
         size_t file_count = 0, file_cap = 0;
-        struct stat st;
         size_t f;
-        if (stat(sr, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (is_dir_path(sr)) {
             walk_dir(sr, "", &files, &file_count, &file_cap);
             for (f = 0; f < file_count; f++) {
                 const char *dot = strrchr(files[f], '.');
