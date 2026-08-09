@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import type {
+  BackendInfo,
   CreateResult,
   Draft,
   IdentifyOptions,
@@ -61,6 +62,10 @@ export class AuthorApi {
       revealInFinder: defaultRevealInFinder,
     },
   ) {}
+
+  async backendInfo(): Promise<BackendInfo> {
+    return (await this.invokeFn('backend_info', {})) as BackendInfo;
+  }
 
   async inspectAlbum(path: string): Promise<Draft> {
     return (await this.invokeFn('inspect_album', { path })) as Draft;

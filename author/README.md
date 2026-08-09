@@ -30,10 +30,16 @@ Svelte 5 app (app/)                     ← in-memory AuthoringDraft, record-she
 Tauri commands (src-tauri/src/lib.rs)   ← thin JSON surface
    │  AuthorService (src-tauri/src/author_service.rs)
    ▼
-musicpack CLI (JSON modes)              ← inspect / validate-draft / build-draft /
+musicpack backend                       ← inspect / validate-draft / build-draft /
    ▼                                        identify-draft / verify --json
 libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770
 ```
+
+The `musicpack` backend runs either as the **bundled sidecar** inside the
+standalone `.app` (`BackendLocation::Bundled`) or, in development, from the
+CMake build tree / `MUSICPACK_CLI` / `PATH` (`BackendLocation::Development`).
+Packaged apps never consult PATH: see [Backend resolution](#backend-resolution)
+below.
 
 **`libmusicpack` stays authoritative.** The GUI never reimplements the
 `.mpack` format: package semantics, validation, checksums, metadata
@@ -58,6 +64,8 @@ The CLI gained new draft commands for this purpose (see
 `musicpack/main.c`): `inspect`, `validate-draft`, `build-draft`,
 `identify-draft`, and a `--json` mode on `verify`. `import`/`create`/`info`
 behaviour is unchanged (the scan logic was extracted into a shared helper).
+`author-api-version` is the machine-readable capability handshake the GUI
+uses to verify backend compatibility (see [Backend compatibility](#backend-compatibility)).
 
 ## The authoring draft
 
@@ -91,9 +99,11 @@ npm run tauri dev
 ```
 
 `npm run tauri dev` starts Vite on `http://localhost:5174` and opens the
-native window. The Rust service locates the `musicpack` binary at
-`../build/musicpack/musicpack` (dev default) or on `PATH`; override with the
-`MUSICPACK_CLI` environment variable.
+native window. In development the Rust service resolves the `musicpack`
+binary as `MUSICPACK_CLI` → `../build/musicpack/musicpack` →
+`../build-static/musicpack/musicpack` → `PATH`; override with the
+`MUSICPACK_CLI` environment variable. See
+[Backend resolution](#backend-resolution) for the full policy.
 
 Quality commands:
 
@@ -104,7 +114,116 @@ npm run build:web      # plain web build of the frontend
 ```
 
 Backend tests: the `author_backend` CTest suite
-(`tests/run_author.sh`, UNIX) drives the CLI draft commands end to end.
+(`tests/run_author.sh`, UNIX) drives the CLI draft commands end to end,
+including the `author-api-version` handshake.
+
+## Standalone macOS build
+
+Build a self-contained, copy-anywhere `MusicPack Author.app` with one command
+from the repository root:
+
+```sh
+./scripts/build-author-macos.sh
+```
+
+The resulting application bundle is:
+
+```text
+author/src-tauri/target/release/bundle/macos/MusicPack Author.app
+```
+
+The standalone application bundles its MusicPack authoring backend and does
+not require a separate `musicpack` installation. It also does not require
+Homebrew, CMake, Node.js, Rust, the source repository, or `MUSICPACK_CLI`;
+copy the `.app` to another compatible Mac and launch it.
+
+The script (1) builds a **fully static** `musicpack` backend in
+`build-author/`, (2) verifies with `otool -L` that it references only macOS
+system libraries, (3) stages it as the Tauri sidecar, (4) runs the Svelte
+frontend build and `npm run tauri build`, and (5) runs
+`scripts/smoke-author-macos.sh` against the finished `.app`.
+
+### Supported macOS architectures
+
+Phase 1.1 builds for the **development machine's architecture** — arm64
+(`aarch64-apple-darwin`) or x86_64 (`x86_64-apple-darwin`) — which is the
+`host` reported by `rustc -vV`.
+
+A universal binary is achievable later: build the C backend with
+`-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` (CMake emits a universal Mach-O for
+the sidecar), build the Rust side per-target
+(`cargo build --target aarch64-apple-darwin --target x86_64-apple-darwin`),
+and pass `--target universal-apple-darwin` to `tauri build` (which lipos the
+app, or lipo the sidecars manually). CI would use `macos-latest` (arm64) plus
+`macos-13` (x86_64) runners. This is documented as future work, not built in
+this phase.
+
+### Dynamic-library strategy
+
+The backend is built with `-DMPC_BUILD_SHARED=OFF`, so `musicpack` links
+`libmusicpack` and `libmusepack` **statically**. The resulting Mach-O
+references only `/usr/lib/libSystem.B.dylib` — there are no third-party
+dylibs to bundle, no install-name rewriting, and no Homebrew paths. The build
+hard-fails if the backend ever references anything outside
+`/usr/lib`/`/System/Library` (`scripts/verify-backend-dylibs.sh`).
+
+The only external tool the backend shells out to is `/usr/bin/curl` (system,
+for MusicBrainz lookups); it is part of macOS.
+
+## Backend resolution
+
+Resolution is decided once at startup and split into two explicit regimes so
+a packaged app can never silently run an unrelated `musicpack`:
+
+| Context                        | Order                                             |
+|--------------------------------|---------------------------------------------------|
+| Packaged app (release build)   | **bundled sidecar only** (`Contents/MacOS/musicpack`) |
+| Development (`tauri dev`)      | `MUSICPACK_CLI` → `build/musicpack/musicpack` → `build-static/musicpack/musicpack` → `PATH` |
+
+- The packaged sidecar is located through Tauri's runtime path API
+  (`BaseDirectory::Executable`), not guessed filesystem paths.
+- If the bundled backend is missing, the app starts but every backend
+  operation (and the startup banner) reports an actionable
+  *"reinstall MusicPack Author"* error. It never falls back to PATH.
+- The pure resolution logic lives in `AuthorService::resolve_bundled` /
+  `resolve_development` and is covered by unit tests
+  (`cargo test` in `author/src-tauri`), including the rule that production
+  never consults environment, build tree, or PATH.
+
+## Backend compatibility
+
+The GUI and the bundled backend evolve together, so `musicpack` reports a
+machine-readable capability handshake:
+
+```sh
+musicpack author-api-version --json
+# {"musicpackVersion":"0.1.0","authorApi":1}
+```
+
+On the first backend operation the `AuthorService` runs this and rejects a
+mismatched `authorApi` with a clear error
+(`IncompatibleBackend`). Compatibility is coupled to the explicit authoring
+API version, not to patch versions — this also protects development mode if
+`MUSICPACK_CLI` points at an older executable. The frontend surfaces the
+handshake result at startup via the `backend_info` command
+(`BackendBanner`).
+
+## Security
+
+- **Content Security Policy.** `tauri.conf.json` sets a strict CSP:
+  `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'
+  data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5174
+  http://localhost:5174`. No `unsafe-eval`; no `unsafe-inline`. `data:` covers
+  artwork previews; `ws/http://localhost:5174` is the Vite dev-server/HMR
+  origin and is inert in the packaged app. MusicBrainz lookups happen in the
+  native backend (via `curl`), so the webview is never granted internet
+  access.
+- **Capabilities (least privilege).** `capabilities/default.json` grants only
+  `core:default` (drag/drop + IPC), `dialog:allow-open` (directory/image
+  pickers), and `opener:allow-reveal-item-in-dir` ("Reveal in Finder"). No
+  shell, filesystem, HTTP, or arbitrary command-execution permissions exist;
+  all backend interaction flows through the typed Tauri commands and
+  `AuthorService`.
 
 ## Current workflow
 
@@ -156,20 +275,35 @@ package build time (the authoring view shows “Loudness · at build”).
   valid MPC album, import canonical metadata, preserve release vs source vs
   identity semantics, validation error propagation, successful package
   creation, post-build verification, failed verification surfaced as
-  failure, traversal rejection, and MB identity application.
-- **Frontend** — vitest `tests/unit` (draft store, API command surface,
-  formatting) and jsdom component tests `tests/component` (track list
-  rendering, release form editing, validation rendering, create-button state
-  following validation).
+  failure, traversal rejection, MB identity application, and the
+  `author-api-version` handshake.
+- **Rust** (`cargo test` in `author/src-tauri`): backend resolution
+  (MUSICPACK_CLI override, build-tree fallback, PATH fallback, bundled
+  sidecar, actionable missing-backend errors, and the rule that packaged
+  resolution never consults environment/tree/PATH) plus the author-API
+  handshake parser and gate.
+- **Frontend** — vitest `tests/unit` (draft store, API command surface
+  incl. `backend_info`, formatting) and jsdom component tests
+  `tests/component` (track list rendering, release form editing, validation
+  rendering, create-button state following validation).
+- **Packaging** — `scripts/smoke-author-macos.sh` (run by
+  `scripts/build-author-macos.sh`): `.app` exists, bundled backend present
+  and executable, backend runs from its bundled location and reports
+  `authorApi: 1`, only system dylibs referenced, and a harmless structured
+  backend operation succeeds.
 
-## Limitations (Phase 1)
+## Limitations (Phase 1.1)
 
 - Loudness is measured at build time, not shown live per track.
 - Barcode candidate selection exists; artist/title MusicBrainz search does not.
 - New artwork/assets must be inside the album directory (no external file
   copying yet).
-- No signing/notarization/distribution; macOS development runs only. No CI
-  job for the author app yet.
+- The standalone `.app` is built for the host architecture only (arm64 or
+  x86_64, not yet universal).
+- No signing/notarization/distribution: the bundle is ad-hoc signed by
+  Tauri for local runs; notarized, signed releases and a GitHub Actions
+  packaging job are future work (the build/smoke scripts are structured so a
+  CI job is a thin wrapper).
 
 ## Future: sonic analysis hook
 

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Smoke test for the standalone MusicPack Author application bundle.
+#
+# Verifies:
+#   - the .app bundle exists,
+#   - the bundled backend exists and is executable,
+#   - the backend runs from its bundled location and reports the expected
+#     author API version,
+#   - the backend references only macOS system libraries (no Homebrew/local),
+#   - a harmless structured backend operation succeeds using the bundled CLI.
+#
+# Usage: scripts/smoke-author-macos.sh <MusicPack Author.app> <repo-root>
+
+set -euo pipefail
+
+APP="${1:?path to MusicPack Author.app}"
+ROOT="${2:?repository root}"
+
+[ -d "$APP" ] || { echo "fail: $APP does not exist" >&2; exit 1; }
+echo "ok: .app exists at $APP"
+
+MACOS="$APP/Contents/MacOS"
+BACKEND="$MACOS/musicpack"
+[ -f "$BACKEND" ] || { echo "fail: bundled backend missing at $BACKEND" >&2; exit 1; }
+[ -x "$BACKEND" ] || { echo "fail: bundled backend not executable" >&2; exit 1; }
+echo "ok: bundled backend present and executable"
+
+echo "== backend capability handshake =="
+API="$("$BACKEND" author-api-version --json 2>/dev/null)"
+echo "$API"
+echo "$API" | grep -q '"authorApi":[[:space:]]*1' \
+  || { echo "fail: backend does not report author API 1" >&2; exit 1; }
+echo "$API" | grep -q '"musicpackVersion"' \
+  || { echo "fail: backend does not report a musicpack version" >&2; exit 1; }
+echo "ok: author-API handshake matches"
+
+echo "== runtime dependency check =="
+"$ROOT/scripts/verify-backend-dylibs.sh" "$BACKEND"
+
+echo "== harmless structured operation (verify a reference package) =="
+PKG="$ROOT/tests/reference/test-musicpack-album.mpack"
+[ -d "$PKG" ] || PKG="$(find "$ROOT/tests/reference" -maxdepth 1 -name '*.mpack' -type d | head -1)"
+if [ -z "$PKG" ] || [ ! -d "$PKG" ]; then
+  echo "skip: no reference package to verify"
+else
+  "$BACKEND" verify "$PKG" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true' \
+    || { echo "fail: bundled backend could not verify the reference package" >&2; exit 1; }
+  echo "ok: bundled backend verified the reference package"
+fi
+
+echo
+echo "MusicPack Author.app smoke test passed"

@@ -189,6 +189,12 @@ export interface ReadImageResult {
   dataBase64: string;
 }
 
+export interface BackendInfo {
+  musicpackVersion: string;
+  authorApi: number;
+  location: 'bundled' | 'development';
+}
+
 export interface IdentifyOptions {
   mbid?: string;
   barcode?: string;

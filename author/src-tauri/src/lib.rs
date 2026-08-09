@@ -3,14 +3,20 @@
 // The frontend talks to these commands; each one delegates to the
 // `musicpack` CLI in JSON mode through the AuthorService. No .mpack logic
 // lives here.
+//
+// Backend resolution is decided once at startup: a packaged release build
+// uses the sidecar bundled next to the app executable, a development build
+// uses MUSICPACK_CLI / the CMake build tree / PATH.
 
 mod author_service;
 
 use author_service::AuthorService;
 use base64::Engine as _;
 use serde::Serialize;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 struct AppState {
     service: Mutex<AuthorService>,
@@ -42,6 +48,53 @@ fn mime_for_path(path: &str) -> &'static str {
 
 fn cli_err(e: author_service::AuthorError) -> String {
     e.to_string()
+}
+
+/// Repository root for development build-tree probing: `src-tauri -> author -> root`.
+fn dev_repo_base() -> PathBuf {
+    let mut base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    base.pop(); // src-tauri -> author
+    base.pop(); // author -> repo root
+    base
+}
+
+/// Development-only PATH probe: is an installed `musicpack` available?
+fn musicpack_on_path() -> bool {
+    match Command::new("musicpack")
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            let _ = child.wait();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Packaged sidecar path. Tauri's external binaries land next to the app
+/// executable (`Contents/MacOS/`), which is exactly how tauri-plugin-shell
+/// resolves sidecars (`current_exe().parent()`). Using the same runtime
+/// resolution keeps us canonical without granting the webview a shell plugin.
+fn bundled_sidecar() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    match exe.parent() {
+        Some(dir) => dir.join("musicpack"),
+        None => PathBuf::from("musicpack"),
+    }
+}
+
+#[tauri::command]
+fn backend_info(state: State<AppState>) -> Result<author_service::BackendInfo, String> {
+    state
+        .service
+        .lock()
+        .unwrap()
+        .backend_info()
+        .map_err(cli_err)
 }
 
 #[tauri::command]
@@ -128,10 +181,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            service: Mutex::new(AuthorService::new()),
+        .setup(|app| {
+            // Packaged release builds use only the bundled sidecar; nothing
+            // is ever picked from PATH. Development uses the dev chain.
+            let location = if !cfg!(debug_assertions) {
+                AuthorService::resolve_bundled(&bundled_sidecar())
+            } else {
+                let env_cli = std::env::var("MUSICPACK_CLI").ok();
+                AuthorService::resolve_development(
+                    env_cli.as_deref(),
+                    &dev_repo_base(),
+                    musicpack_on_path,
+                )
+            };
+            app.manage(AppState {
+                service: Mutex::new(AuthorService::new(location)),
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            backend_info,
             inspect_album,
             validate_draft,
             identify_draft,

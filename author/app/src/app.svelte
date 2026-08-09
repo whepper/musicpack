@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, draft, busy, draftStore, error } from './lib/bootstrap';
+  import BackendBanner from './lib/ui/BackendBanner.svelte';
   import Welcome from './lib/ui/Welcome.svelte';
   import AlbumAuthoring from './lib/ui/AlbumAuthoring.svelte';
   import StatusBar from './lib/ui/StatusBar.svelte';
@@ -30,6 +31,8 @@
   <span class="brand">MusicPack <em>Author</em></span>
   <span class="smallcaps">an album being authored</span>
 </div>
+
+<BackendBanner />
 
 <main class="main">
   {#if $busy && !$draft}

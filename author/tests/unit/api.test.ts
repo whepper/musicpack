@@ -85,6 +85,13 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'read_image', args: { path: '/art.png' } });
   });
 
+  it('fetches the backend capability handshake', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    await api.backendInfo();
+    expect(calls[0]).toEqual({ cmd: 'backend_info', args: {} });
+  });
+
   it('delegates dialogs and reveal to the plugin facade', async () => {
     const calls: unknown[] = [];
     const { api, plugins } = makeApi(calls);
