@@ -65,6 +65,7 @@ class Profile:
     """
 
     model: str = "openl3"
+    model_variant: str = ""  # e.g. "multi" / "release" for discogs-effnet
     model_content: str = "music"
     model_input_repr: str = "mel256"
     model_embedding_size: int = 512
@@ -86,6 +87,7 @@ class Profile:
         silence = pooling.get("silence") or {}
         return cls(
             model=d.get("model", "openl3"),
+            model_variant=d.get("model_variant", ""),
             model_content=d.get("model_content", "music"),
             model_input_repr=d.get("model_input_repr", "mel256"),
             model_embedding_size=d.get("model_embedding_size", 512),

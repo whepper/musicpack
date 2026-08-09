@@ -29,6 +29,7 @@ def test_any_model_param_changes_fingerprint():
     p = base_profile()
     for attr, value in [
         ("model", "discogs-effnet"),
+        ("model_variant", "multi"),
         ("model_content", "env"),
         ("model_input_repr", "mel128"),
         ("model_embedding_size", 6144),

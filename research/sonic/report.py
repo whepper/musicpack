@@ -183,8 +183,11 @@ def write_human_html(path: Path, seed_entries, methods: Sequence[str],
                 "<li><span class='sim'>%.3f</span> %s</li>"
                 % (nn["similarity"], esc(nn["label"]))
                 for nn in seed["nearest"][m])
+            profile_span = (
+                "" if blind
+                else "<span class='profile'>(%s)</span>" % esc(profile_ids.get(m, "")))
             method_cols.append(
-                "<td><h3>%s <span class='profile'>(%s)</span></h3>"
+                "<td><h3>%s %s</h3>"
                 "<ol>%s</ol>"
                 "<b>score 0–3</b> "
                 "<select class='score' data-m='%d'>"
@@ -196,8 +199,7 @@ def write_human_html(path: Path, seed_entries, methods: Sequence[str],
                 "<option value=''>-</option><option value='win'>A better</option>"
                 "<option value='tie'>tie</option>"
                 "<option value='lose'>B better</option></select></td>"
-                % (esc(method_display[m]), esc(profile_ids.get(m, "")),
-                   nn_html, i, i))
+                % (esc(method_display[m]), profile_span, nn_html, i, i))
         cards.append(
             "<div class='seed' data-seed='%d'>"
             "<h2>Seed %d: %s</h2>"

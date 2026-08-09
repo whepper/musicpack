@@ -66,6 +66,20 @@ openl3 = pytest.mark.skipif(
     reason="openl3/TensorFlow not installed (run bootstrap_env.sh)",
 )
 
+
+def _essentia_importable() -> bool:
+    try:
+        import essentia  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+discogs = pytest.mark.skipif(
+    not _essentia_importable(),
+    reason="essentia-tensorflow not installed (eval-only; run bootstrap of .venv-essentia)",
+)
+
 require_ffmpeg = pytest.mark.skipif(
     not any(
         os.access(c, os.X_OK)

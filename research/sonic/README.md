@@ -48,9 +48,37 @@ research/sonic/bootstrap_env.sh          # venv + pinned deps + patched openl3
 research/sonic/.venv/bin/python research/sonic/benchmark.py --help
 ```
 
+The optional Discogs-EffNet comparator needs a **separate** venv
+(`essentia-tensorflow` pulls numpy 2.x, which conflicts with openl3's
+numpy<2):
+
+```sh
+research/sonic/bootstrap_essentia.sh     # optional, evaluation-only
+```
+
 Pinned requirements: `research/sonic/requirements-openl3.txt` and, for the
 optional comparator, `research/sonic/requirements-essentia.txt`. The exact
 installed environment is frozen in `reports/environment.lock.txt`.
+
+### Candidate models and what is pinned
+
+**OpenL3** (primary): `music` / `mel256` / `emb512`. Window 1 s, target
+48 kHz (resampled with resampy `kaiser_best`), mel256 kapre frontend
+(n_fft 2048, hop 242, decibel, pad_end), `center=True`. Verified against
+openl3 0.4.0: window embeddings are **not** L2-normalized (norms ~50); the
+librosa frontend is incompatible with librosa>=0.10 (kapre is the pinned
+choice); there is no `audio_crop` option in 0.4.0. Weights: CC BY 4.0,
+SHA-256 `624ee7b1...` recorded in the profile.
+
+**Discogs-EffNet** (comparator, evaluation-only): `multi` and `release`
+variants. 16 kHz mono, internal 96-band log-mel (frame 512, hop 256,
+slaneyMel), patches of 131 mel frames (2.096 s) striding 61 (0.976 s),
+output 1280-dim (`PartitionedCall:1`). The frame count for n16 samples is
+deterministic: `nFrames = 1+ceil((n16-256)/256)`, `nPatches =
+max(0, 1+floor((nFrames-131)/61))`. Weights: CC BY-NC-SA 4.0, SHA-256
+`2c964064...` (multi) / `bd044fe5...` (release). The `pooling.hop_seconds`
+is ignored for this model (its patch hop is fixed); pooling strategies and
+the silence gate still apply to its windows.
 
 ## Layout
 

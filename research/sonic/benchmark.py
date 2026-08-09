@@ -82,14 +82,16 @@ def canonical_profile(prof: Profile, models_dir: Path) -> Profile:
     """Profile with model-specific facts filled in (weight identity), so the
     fingerprint used for cache keys and comparison includes them."""
     from analyzers.openl3 import WEIGHTS_SHA256 as OL3_WEIGHTS
+    from analyzers.essentia_discogs import DiscogsAnalyzer
 
     if prof.model == "openl3":
         d = dict(prof.canonical())
         d["model_weights_sha256"] = OL3_WEIGHTS
         return Profile.from_dict(d)
     if prof.model == "discogs-effnet":
+        from analyzers.essentia_discogs import model_sha256
         d = dict(prof.canonical())
-        d["model_weights_sha256"] = d["model_weights_sha256"] or "runtime"
+        d["model_weights_sha256"] = model_sha256(prof.model_variant)
         return Profile.from_dict(d)
     return prof
 
@@ -99,18 +101,24 @@ def build_analyzer(profile: Profile, models_dir: Path, batch_size: int = 32):
 
     if profile.model == "openl3":
         return OpenL3Analyzer(profile, models_dir, batch_size=batch_size)
+    if profile.model == "discogs-effnet":
+        from analyzers.essentia_discogs import DiscogsAnalyzer
+        return DiscogsAnalyzer(profile, models_dir)
     raise ValueError("unknown analyzer model: %s" % profile.model)
 
 
-def profile_grid(analyzer: str, hops, poolings, silences) -> list:
+def profile_grid(analyzer: str, hops, poolings, silences, variants=None) -> list:
     if analyzer == "openl3":
-        base = dict(model="openl3", model_content="music",
+        base = dict(model="openl3", model_variant="", model_content="music",
                     model_input_repr="mel256", model_embedding_size=512,
                     model_sample_rate=48000, frontend="kapre", center=True)
     elif analyzer == "discogs":
+        from analyzers.essentia_discogs import PATCH_WINDOW_SECONDS
         base = dict(model="discogs-effnet", model_content="discogs",
-                    model_input_repr="waveform", model_embedding_size=2048,
-                    model_sample_rate=16000, frontend="", center=True)
+                    model_input_repr="mel96", model_embedding_size=1280,
+                    model_sample_rate=16000, frontend="essentia", center=False)
+        variants = variants or ["multi", "release"]
+        window = PATCH_WINDOW_SECONDS  # model-fixed patch window (~2.096 s)
     else:
         raise argparse.ArgumentTypeError("unknown analyzer: %s" % analyzer)
 
@@ -119,20 +127,31 @@ def profile_grid(analyzer: str, hops, poolings, silences) -> list:
         for strat in poolings:
             for sil_spec in silences:
                 sil = _silence_param(sil_spec)
-                p = Profile(
-                    **base,
-                    pooling=PoolingParams(
-                        strategy=strat, hop_seconds=hop, window_seconds=1.0,
-                        robust_trim=ROBUST_TRIM if strat == POOL_ROBUST_MEAN else 0.0,
-                        silence=sil),
-                )
-                out.append(p)
+                if analyzer == "discogs":
+                    for variant in variants:
+                        p = Profile(
+                            **{**base, "model_variant": variant},
+                            pooling=PoolingParams(
+                                strategy=strat, hop_seconds=hop,
+                                window_seconds=window,
+                                robust_trim=ROBUST_TRIM if strat == POOL_ROBUST_MEAN else 0.0,
+                                silence=sil))
+                        out.append(p)
+                else:
+                    p = Profile(
+                        **base,
+                        pooling=PoolingParams(
+                            strategy=strat, hop_seconds=hop, window_seconds=1.0,
+                            robust_trim=ROBUST_TRIM if strat == POOL_ROBUST_MEAN else 0.0,
+                            silence=sil))
+                    out.append(p)
     return out
 
 
 def combo_label(p: Profile) -> str:
-    return "%s hop%g %s %s" % (
-        p.model, p.pooling.hop_seconds, p.pooling.strategy,
+    variant = ("-" + p.model_variant) if p.model_variant else ""
+    return "%s%s hop%g %s %s" % (
+        p.model, variant, p.pooling.hop_seconds, p.pooling.strategy,
         _silence_label(p.pooling.silence))
 
 
@@ -158,8 +177,16 @@ def _profile_index(args) -> list:
 
 
 def _save_profile_index(args, profiles):
-    data = [p.canonical() for p in profiles]
-    (rep.raw_dir(args.report) / "profiles.json").write_text(json.dumps(data, indent=1))
+    """Merge the just-computed profiles into profiles.json (by fingerprint),
+    so multi-analyzer runs accumulate (openl3 + discogs) instead of
+    overwriting each other."""
+    path = rep.raw_dir(args.report) / "profiles.json"
+    existing = []
+    if path.is_file():
+        existing = [Profile.from_dict(p) for p in json.loads(path.read_text())]
+    merged = {p.fingerprint(): p for p in existing + list(profiles)}
+    data = [p.canonical() for p in merged.values()]
+    path.write_text(json.dumps(data, indent=1))
 
 
 # --------------------------------------------------------------------------
