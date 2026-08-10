@@ -94,11 +94,15 @@ yields a different id and thus incompatible vectors. The analysis document
 carries the full parameters for auditing and reproducibility, not just the
 id.
 
-> **Pending evidence:** the concrete values below reflect what the research
-> phase currently favours; the benchmark report decides the final profile.
-> These numbers are illustrative, not yet normative.
+> **Pending evidence:** the concrete values below reflect the benchmark
+> recommendation (`research/sonic/reports/results.md`): OpenL3 pooling,
+> hop and silence choices were equivalent within measurement noise, so the
+> cheapest variant (hop 1.0 s, mean-norm, silence off) is the working v1
+> baseline. The profile is **not frozen** (human evaluation pending; the
+> only similarity-trained model tested is non-commercial and quantitatively
+> stronger). These numbers are the working baseline, not yet normative.
 
-### Illustrative candidate profile
+### Working baseline profile
 
 ```json
 {
@@ -118,7 +122,7 @@ id.
   "window": { "seconds": 1.0, "center": true },
   "hop": { "seconds": 1.0 },
   "silence": {
-    "enabled": true,
+    "enabled": false,
     "rule": "relative-to-median-rms-db",
     "thresholdDb": -20.0,
     "windowSeconds": 1.0
@@ -222,8 +226,11 @@ hidden tracks and noise still produce **deterministic** behaviour: if no
 window survives (or the model yields no window), the track is stored as
 `"embedding": null` — never a fabricated vector.
 
-> **Pending evidence:** the exact threshold choice is benchmarked
-> (`research/sonic/`); the winning rule becomes normative.
+> **Benchmark evidence:** on a 200-track real library, silence off vs the
+> relative −20 dB gate changed openl3 metrics by ≤0.001. The working v1
+> baseline therefore disables the gate (simpler, identical results); the
+> gate remains defined for content where it matters (long intros/outros)
+> and stays a profile parameter so it can be re-enabled per collection.
 
 ## 7. What is intentionally not stored
 
