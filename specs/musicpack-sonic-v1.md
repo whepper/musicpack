@@ -98,9 +98,12 @@ id.
 > recommendation (`research/sonic/reports/results.md`): OpenL3 pooling,
 > hop and silence choices were equivalent within measurement noise, so the
 > cheapest variant (hop 1.0 s, mean-norm, silence off) is the working v1
-> baseline. The profile is **not frozen** (human evaluation pending; the
-> only similarity-trained model tested is non-commercial and quantitatively
-> stronger). These numbers are the working baseline, not yet normative.
+> baseline. The profile is **not frozen**: the only similarity-trained
+> model tested (Discogs-EffNet, CC BY-NC-SA — non-commercial) is
+> quantitatively stronger **and was judged better by a blind human review**,
+> so a permissively licensed similarity-trained model must be evaluated
+> before the spec goes normative. These numbers are the working baseline,
+> not yet normative.
 
 ### Working baseline profile
 

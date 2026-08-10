@@ -62,11 +62,14 @@ Electronic, …). No audio, tags or filenames are committed.
 
 ### Human evaluation
 
-Blind-mode HTML generated (`reports/human/human-eval-musicpac.html`,
-**27 seeds × 3 methods**, profile ids hidden, 0–3 scoring + A/B/tie,
-ratings downloadable). **Pending a human reviewer** — this is the decisive
-test of whether OpenL3's recommendations are musically convincing despite
-the quantitative gap.
+Blind pairwise review (`reports/human/human-pairwise-openl3-vs-discogs-effnet.html`,
+12 seeds × 2 methods, A = openl3, B = discogs-multi, profile ids hidden):
+the reviewer found **B consistently better than A across the seeds**.
+Qualitative verdict (informal, not a scored ratings.json), but directionally
+unambiguous and fully aligned with the quantitative diagnostics: the
+similarity-trained representation (Discogs-EffNet) produces more convincing
+recommendations than OpenL3. This is the decisive evidence the benchmark was
+designed to produce.
 
 ### Cross-codec stability (20 real tracks)
 
@@ -105,19 +108,23 @@ Even *double-encoded* MPC (already-lossy source re-encoded at Q6) keeps a
 > permissive profile, with no measurable quality loss vs the expensive
 > variants.
 
-**However**, the evidence does **not** support freezing yet:
+**But the evidence does not support freezing yet, and the human review
+now confirms why:**
 
 - The only model explicitly trained for music similarity
   (Discogs-EffNet, CC BY-NC-SA — non-commercial) **outperforms OpenL3 on
-  every quantitative diagnostic**. OpenL3 remains the only permissive
-  candidate tested.
-- Human evaluation (pending) is the decisive test and has not been done.
-- Therefore: **"insufficient evidence for a final freeze"** — adopt the
-  OpenL3 profile above as the working v1 baseline (permissive, cheap,
-  cross-codec-stable), record the Discogs-EffNet gap as a known weakness,
-  and **re-evaluate a permissively licensed music-similarity-trained model**
-  (e.g. a future CLAP/MERT-class model with an OSI/CC-BY license) before
-  the spec becomes normative.
+  every quantitative diagnostic** (same-album@10 0.183 vs 0.128, genre
+  purity 0.52 vs 0.39) **and was judged better by a blind human review**
+  (B consistently better than A).
+- OpenL3 is therefore the *permissive fallback*, not the evidence-based
+  winner. Adopting it as the normative profile would freeze in measurably
+  weaker recommendations.
+- **Verdict: "insufficient evidence for a final freeze."** Keep OpenL3
+  (hop 1.0 / mean-norm / no silence) as the working v1 baseline so the
+  pipeline and format can be validated end-to-end, record the gap as a
+  known weakness, and **make evaluating a permissively licensed,
+  similarity-trained model (CLAP/MERT-class with OSI/CC-BY weights) a
+  decision gate before the spec goes normative.**
 
 The draft `specs/musicpack-sonic-v1.md` reflects this: DRAFT — RESEARCH
 PHASE — NOT YET NORMATIVE.
