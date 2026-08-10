@@ -321,8 +321,9 @@ def cmd_evaluate(args) -> int:
     _save_profile_index(args, profiles)
 
     per_profile = {}
-    dataset = {"tracks": len(tracks), "albums": len(library),
-               "artists": len({a.artist for a in library})}
+    dataset = {"tracks": len(tracks),
+               "albums": len({(t.artist, t.album) for t in tracks}),
+               "artists": len({t.artist for t in tracks})}
     for prof in profiles:
         emb = []
         avail = []
@@ -374,8 +375,9 @@ def cmd_cross_codec(args) -> int:
 
     library = scan(args.library)
     tracks = _prepare(args, library)
-    profiles = [canonical_profile(p, args.models) for p in _profile_index(args)][:1]
-    prof = profiles[0]
+    prof = canonical_profile(
+        profile_grid(args.analyzer, args.hop, args.pooling, args.silence)[0],
+        args.models)
     analyzer = build_analyzer(prof, args.models, batch_size=args.batch_size)
     cache = Cache(args.cache)
 
