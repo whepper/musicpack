@@ -593,6 +593,8 @@ def gzip_bytes(raw: bytes) -> bytes:
 def cmd_human(args) -> int:
     if args.aggregate:
         return _aggregate_ratings(args)
+    if args.pairwise:
+        return _cmd_human_pairwise(args)
 
     import numpy as np
 
@@ -669,30 +671,170 @@ def _seed_indexes(tracks, seeds):
     return sorted(set(found))
 
 
-def _aggregate_ratings(args) -> int:
-    """Aggregate a downloaded ratings JSON into the committed report."""
+def _pick_methods(all_profiles, method_names):
+    """Select primary (mean-norm/hop1/nosil) profiles by name/prefix."""
+    primaries = [p for p in all_profiles
+                 if (p.pooling.strategy == POOL_MEAN_NORM
+                     and p.pooling.hop_seconds == 1.0
+                     and not p.pooling.silence.enabled)]
+    picked = []
+    for name in method_names:
+        if name == "openl3":
+            cands = [p for p in primaries if p.model == "openl3"]
+        elif name in ("discogs", "discogs-effnet", "discogs-multi",
+                      "discogs-release", "discogs-effnet-multi",
+                      "discogs-effnet-release"):
+            cands = [p for p in primaries if p.model == "discogs-effnet"
+                     and (name == "discogs" or name == "discogs-effnet"
+                          or name.endswith(p.model_variant))]
+        else:
+            cands = [p for p in primaries if combo_label(p).startswith(name)]
+        if not cands:
+            print("no primary profile matches method %r" % name)
+            continue
+        # prefer multi over release when both match
+        cands.sort(key=lambda p: (p.model_variant != "multi",))
+        picked.append(cands[0])
+    if len(picked) != 2:
+        print("pairwise comparison needs exactly 2 methods, got %d"
+              % len(picked))
+        return None
+    return picked
+
+
+def _cmd_human_pairwise(args) -> int:
     import numpy as np
+
+    from metrics import _cosine_matrix, _neighbors
+
+    library = scan(args.library)
+    tracks = _prepare(args, library)
+    cache = Cache(args.cache)
+
+    all_profiles = [canonical_profile(p, args.models) for p in _profile_index(args)]
+    methods = _pick_methods(all_profiles, args.method or ["openl3", "discogs"])
+    if methods is None:
+        return 2
+
+    emb_by = {}
+    for prof in methods:
+        vecs = []
+        for tr in tracks:
+            v = cache.load_track(audio_sha256(tr.path), prof)
+            if v is not MISSING and v is not None:
+                vecs.append((tr, v))
+        if len(vecs) < 2:
+            print("too few embeddings for %s" % combo_label(prof))
+            return 2
+        emb_by[prof.fingerprint()] = vecs
+
+    seed_tracks = []
+    if args.seeds:
+        for s in args.seeds:
+            for tr in tracks:
+                if s.lower() in tr.label.lower():
+                    seed_tracks.append(tr)
+                    break
+    else:
+        # one representative track per artist, spread across the subset
+        seen = set()
+        for tr in tracks:
+            if len(seed_tracks) >= args.num_seeds:
+                break
+            if tr.artist not in seen:
+                seen.add(tr.artist)
+                seed_tracks.append(tr)
+    if not seed_tracks:
+        print("no seed tracks matched")
+        return 2
+
+    seed_entries = []
+    for idx, tr in enumerate(seed_tracks):
+        entry = {"index": idx, "label": tr.label, "artist": tr.artist,
+                 "album": tr.album, "genres": tr.genres, "nearest": {}}
+        for prof in methods:
+            vecs = emb_by[prof.fingerprint()]
+            query_pos = next((i for i, (t, _) in enumerate(vecs)
+                              if t.id == tr.id), None)
+            if query_pos is None:
+                continue
+            matrix = np.stack([v for _, v in vecs])
+            sim = _cosine_matrix(matrix)
+            res = []
+            for j in _neighbors(sim, args.k)[query_pos]:
+                nt = vecs[int(j)][0]
+                res.append({
+                    "rank": len(res) + 1,
+                    "label": nt.label,
+                    "similarity": float(sim[query_pos, int(j)]),
+                    "same_album": nt.album == tr.album,
+                    "same_artist": nt.artist == tr.artist,
+                })
+            entry["nearest"][prof.fingerprint()] = res
+        if len(entry["nearest"]) == 2:
+            seed_entries.append(entry)
+
+    profile_ids = {p.fingerprint(): p.id for p in methods}
+    out_dir = Path(args.report) / "human"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / ("human-pairwise-%s.html"
+                     % "%s-vs-%s" % tuple(p.model for p in methods))
+    rep.write_human_pairwise_html(out, seed_entries, [p.fingerprint() for p in methods],
+                                  args.blind, profile_ids, k=args.k)
+    print("pairwise evaluation page written to %s (%d seeds x 2 methods)"
+          % (out, len(seed_entries)))
+    return 0
+
+
+def _aggregate_ratings(args) -> int:
+    """Aggregate a downloaded ratings JSON into the committed report.
+    Handles both the 3-method format (per-method score + A/B/tie pref) and
+    the pairwise format (single pick + per-method scores)."""
     from pathlib import Path as _P
 
     ratings = json.loads(_P(args.aggregate).read_text())
+    entries = [d for d in ratings.values() if isinstance(d, dict)]
+
+    pairwise = any("pick" in d for d in entries)
     scores = {}
-    wins = {}
-    for seed, data in ratings.items():
-        for m, s in (data.get("score") or {}).items():
-            scores.setdefault(int(m), []).append(s)
-        pref = data.get("pref") or {}
-        for m, p in pref.items():
-            wins.setdefault(int(m), []).append(p)
-    lines = ["# Human evaluation results", "", "Ratings source: %s" % args.aggregate, ""]
-    lines.append("| method | mean score (0-3) | n | wins | ties | losses |")
-    lines.append("|---|---|---|---|---|---|")
-    for m in sorted(scores):
-        s = rep.stats(scores[m])
-        w = wins.get(m, [])
-        lines.append("| Method %s | %.3f | %d | %d | %d | %d |"
-                     % ("ABC"[m], s["mean"], s["n"],
-                        w.count("win"), w.count("tie"), w.count("lose")))
-    lines.append("")
+    if pairwise:
+        picks = {"A": 0, "B": 0, "tie": 0, "neither": 0}
+        for d in entries:
+            p = d.get("pick")
+            if p in picks:
+                picks[p] += 1
+            for m, s in (d.get("score") or {}).items():
+                scores.setdefault(int(m), []).append(s)
+        lines = ["# Human evaluation results (pairwise)", "",
+                 "Ratings source: %s" % args.aggregate, ""]
+        lines.append("| pick | count |")
+        lines.append("|---|---|")
+        for k in ("A", "B", "tie", "neither"):
+            lines.append("| %s better | %d |" % (k, picks[k]))
+        lines.append("")
+        lines.append("| method | mean score (0-3) | n |")
+        lines.append("|---|---|---|")
+        for m in sorted(scores):
+            s = rep.stats(scores[m])
+            lines.append("| Method %s | %.3f | %d |" % ("AB"[m], s["mean"], s["n"]))
+        lines.append("")
+    else:
+        wins = {}
+        for d in entries:
+            for m, s in (d.get("score") or {}).items():
+                scores.setdefault(int(m), []).append(s)
+            for m, p in (d.get("pref") or {}).items():
+                wins.setdefault(int(m), []).append(p)
+        lines = ["# Human evaluation results", "", "Ratings source: %s" % args.aggregate, ""]
+        lines.append("| method | mean score (0-3) | n | wins | ties | losses |")
+        lines.append("|---|---|---|---|---|---|")
+        for m in sorted(scores):
+            s = rep.stats(scores[m])
+            w = wins.get(m, [])
+            lines.append("| Method %s | %.3f | %d | %d | %d | %d |"
+                         % ("ABC"[m], s["mean"], s["n"],
+                            w.count("win"), w.count("tie"), w.count("lose")))
+        lines.append("")
     out = Path(args.report) / "human-results.md"
     out.write_text("\n".join(lines))
     print("aggregate written to %s" % out)
@@ -777,6 +919,13 @@ def main(argv=None) -> int:
     ph.add_argument("--limit", type=int, default=None)
     ph.add_argument("--aggregate", default=None,
                     help="path to a downloaded ratings JSON to aggregate")
+    ph.add_argument("--pairwise", action="store_true",
+                    help="pairwise A/B comparison page (much easier to review)")
+    ph.add_argument("--method", action="append", default=[],
+                    help="method name/prefix for the comparison (repeatable; "
+                         "default openl3 vs discogs)")
+    ph.add_argument("--num-seeds", type=int, default=8,
+                    help="number of representative seeds when --seeds is empty")
     ph.set_defaults(func=cmd_human)
 
     args = ap.parse_args(argv)

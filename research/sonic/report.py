@@ -297,6 +297,157 @@ document.querySelectorAll('.reveal').forEach((b) => b.addEventListener('click', 
 """
 
 
+def write_human_pairwise_html(path: Path, seed_entries, methods,
+                              blind: bool, profile_ids: Dict[str, str],
+                              k: int = 8) -> Path:
+    """Much-easier-to-review human evaluation page: pairwise A/B.
+
+    Each seed shows two ranked lists (one per method) with same-album /
+    same-artist badges relative to the seed, and asks a single question —
+    "which list is a better match?" (A better / tie / B better / neither),
+    plus an optional 0-3 score per method. Ratings persist to localStorage
+    and download as JSON, separate from embeddings. In blind mode the
+    methods are Method A/B (profile ids hidden).
+    """
+    import html as htmlmod
+
+    def esc(s):
+        return htmlmod.escape(str(s))
+
+    method_display = {}
+    for i, m in enumerate(methods):
+        method_display[m] = ("Method %s" % "AB"[i]) if blind else profile_ids.get(m, m)
+
+    cards = []
+    for seed in seed_entries:
+        cols = []
+        for i, m in enumerate(methods):
+            lis = []
+            for nn in seed["nearest"][m]:
+                badges = []
+                if nn.get("same_album"):
+                    badges.append("<span class='badge album'>same album</span>")
+                elif nn.get("same_artist"):
+                    badges.append("<span class='badge artist'>same artist</span>")
+                lis.append(
+                    "<li><span class='sim'>%.3f</span> %s %s</li>"
+                    % (nn["similarity"], esc(nn["label"]), "".join(badges)))
+            cols.append(
+                "<td><h3>%s</h3><ol>%s</ol></td>"
+                % (esc(method_display[m]), "".join(lis)))
+        cards.append(
+            "<div class='seed' data-seed='%d'>"
+            "<h2>Seed %d: %s</h2>"
+            "<p class='ctx'>album: %s · genres: %s</p>"
+            "<table><tr>%s</tr></table>"
+            "<div class='pick'>"
+            "<b>Which list is a better match?</b><br>"
+            "<label><input type='radio' name='pick%d' value='A'> A better</label> "
+            "<label><input type='radio' name='pick%d' value='tie'> tie</label> "
+            "<label><input type='radio' name='pick%d' value='B'> B better</label> "
+            "<label><input type='radio' name='pick%d' value='neither'> neither</label> "
+            "<br>Score A 0-3: <select class='score' data-m='0'><option value=''>-</option>"
+            "<option value='0'>0</option><option value='1'>1</option>"
+            "<option value='2'>2</option><option value='3'>3</option></select> "
+            "Score B 0-3: <select class='score' data-m='1'><option value=''>-</option>"
+            "<option value='0'>0</option><option value='1'>1</option>"
+            "<option value='2'>2</option><option value='3'>3</option></select> "
+            "<button class='save'>Save</button>"
+            "%s</div>"
+            "</div>"
+            % (seed["index"], seed["index"] + 1, esc(seed["label"]),
+               esc(seed.get("album", "")), esc(", ".join(seed.get("genres", []))),
+               "".join(cols),
+               seed["index"], seed["index"], seed["index"], seed["index"],
+               ("<button class='reveal'>Reveal methods</button>" if blind else "")))
+
+    page = _PAIRWISE_TEMPLATE % {
+        "title": "MusicPack Sonic — human evaluation (pairwise)",
+        "cards": "\n".join(cards),
+        "method_names": esc("|".join(profile_ids.get(m, m) for m in methods)),
+        "k": k,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page)
+    return path
+
+
+_PAIRWISE_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>%(title)s</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 72em;
+         margin: 2em auto; padding: 0 1em; color: #222; }}
+  .seed {{ border: 1px solid #ddd; border-radius: 10px; padding: 1em 1.5em;
+          margin: 1.5em 0; background: #fff; }}
+  .seed h2 {{ margin-top: .2em; }}
+  .ctx {{ color: #777; font-size: .9em; margin: .2em 0 .8em; }}
+  table {{ width: 100%%; border-collapse: collapse; }}
+  td {{ width: 50%%; vertical-align: top; padding-right: 1em; }}
+  ol li {{ margin: .35em 0; }}
+  .sim {{ color: #999; font-variant-numeric: tabular-nums; margin-right: .5em; }}
+  .badge {{ font-size: .72em; border-radius: 4px; padding: 1px 5px;
+           margin-left: .4em; vertical-align: 1px; }}
+  .badge.album {{ background: #e3f2fd; color: #1565c0; }}
+  .badge.artist {{ background: #f3e5f5; color: #6a1b9a; }}
+  .pick {{ margin-top: .8em; background: #f7f7f7; border-radius: 8px;
+          padding: .7em 1em; }}
+  .pick b {{ margin-right: .6em; }}
+  button {{ margin-left: .6em; }}
+  .saved {{ color: #0a7; margin-left: .6em; font-size: .85em; }}
+</style>
+</head>
+<body>
+<h1>%(title)s</h1>
+<p>For each seed, compare the two lists of top-%(k)d neighbours. Badges mark
+neighbours from the seed's own album/artist (context, not necessarily good).
+Pick which list is the better musical match; optionally score each 0-3
+(<strong>0</strong> unrelated, <strong>1</strong> weak, <strong>2</strong>
+plausible, <strong>3</strong> strongly similar). Ratings are stored in your
+browser and downloadable as JSON.</p>
+%(cards)s
+<hr>
+<button id="dl">Download ratings JSON</button>
+<script>
+const KEYS = 'musicpack-sonic-ratings-pairwise';
+function load() {{ try {{ return JSON.parse(localStorage.getItem(KEYS)) || {{}}; }}
+                   catch (e) {{ return {{}}; }} }}
+function collect() {{
+  const r = load();
+  document.querySelectorAll('.seed').forEach((card) => {{
+    const s = +card.dataset.seed;
+    if (!r[s]) r[s] = {{ pick: '', score: {{}}, }} ;
+    const sel = card.querySelector('input[name="pick' + s + '"]:checked');
+    if (sel) r[s].pick = sel.value;
+    card.querySelectorAll('.score').forEach((el) => {{
+      if (el.value !== '') r[s].score[el.dataset.m] = +el.value;
+    }});
+  }});
+  return r;
+}}
+document.querySelectorAll('.save').forEach((b) => b.addEventListener('click', () => {{
+  localStorage.setItem(KEYS, JSON.stringify(collect()));
+  const ok = document.createElement('span'); ok.className='saved'; ok.textContent='saved';
+  b.parentNode.appendChild(ok);
+  setTimeout(() => ok.remove(), 1200);
+}}));
+document.getElementById('dl').addEventListener('click', () => {{
+  const data = collect(); localStorage.setItem(KEYS, JSON.stringify(data));
+  const blob = new Blob([JSON.stringify(data, null, 1)], {{type: 'application/json'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'ratings-pairwise.json'; a.click();
+}});
+document.querySelectorAll('.reveal').forEach((b) => b.addEventListener('click', () => {{
+  b.disabled = true; b.textContent = '%(method_names)s';
+}}));
+</script>
+</body>
+</html>
+"""
+
+
 def write_efficiency_report(report_root: Path, per_track: List[Dict],
                             environment: dict) -> Path:
     out = Path(report_root) / "efficiency.md"
