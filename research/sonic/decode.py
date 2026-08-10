@@ -46,10 +46,11 @@ def audio_sha256(path: Path) -> str:
 def find_mpcdec(hint: Optional[Path]) -> str:
     if hint is not None:
         return str(hint)
+    root = Path(__file__).resolve().parents[2]  # repo root
     for candidate in (
-        Path("build") / "mpcdec" / "mpcdec",
-        Path("build") / "mpcdec" / "Release" / "mpcdec.exe",
-        Path("build") / "mpcdec" / "mpcdec.exe",
+        root / "build" / "mpcdec" / "mpcdec",
+        root / "build" / "mpcdec" / "Release" / "mpcdec.exe",
+        root / "build" / "mpcdec" / "mpcdec.exe",
     ):
         if candidate.is_file():
             return str(candidate)

@@ -159,12 +159,48 @@ def _tracks(library: list) -> list:
     return [t for a in library for t in a.tracks]
 
 
+def _subset(tracks: list, per_album=None, albums_per_artist=None) -> list:
+    """Deterministic stratified subset: cap tracks per album and albums per
+    artist, preserving scan order (artist/album/track sorted). Used to make a
+    100-1000 track representative benchmark of a larger library."""
+    if per_album is None and albums_per_artist is None:
+        return tracks
+    albums = []
+    for tr in tracks:
+        key = (tr.artist, tr.album)
+        if not albums or albums[-1][0] != key:
+            albums.append([key, []])
+        albums[-1][1].append(tr)
+    if albums_per_artist is not None:
+        seen = {}
+        picked = []
+        for key, trs in albums:
+            if seen.get(key[0], 0) >= albums_per_artist:
+                continue
+            seen[key[0]] = seen.get(key[0], 0) + 1
+            picked.append((key, trs))
+    else:
+        picked = albums
+    out = []
+    for _key, trs in picked:
+        out.extend(trs[:per_album] if per_album else trs)
+    return out
+
+
 def _groups(library: list):
     tracks = _tracks(library)
     album_ids = [t.id for t in tracks]
     artists = [t.artist for t in tracks]
     genre_sets = [frozenset(t.genres) for t in tracks]
     return album_ids, artists, genre_sets
+
+
+def _prepare(args, library) -> list:
+    tracks = _subset(_tracks(library), args.max_tracks_per_album,
+                     args.max_albums_per_artist)
+    if getattr(args, "limit", None):
+        tracks = tracks[:args.limit]
+    return tracks
 
 
 def _profile_index(args) -> list:
@@ -194,9 +230,7 @@ def _save_profile_index(args, profiles):
 # --------------------------------------------------------------------------
 def cmd_analyze(args) -> int:
     library = scan(args.library)
-    tracks = _tracks(library)
-    if args.limit:
-        tracks = tracks[:args.limit]
+    tracks = _prepare(args, library)
     profiles = [canonical_profile(p, args.models)
                 for p in profile_grid(args.analyzer, args.hop, args.pooling, args.silence)]
     _save_profile_index(args, profiles)
@@ -211,7 +245,7 @@ def cmd_analyze(args) -> int:
              "embeddings": 0, "analyzed_profiles": len(profiles),
              "wall_s": 0.0}
     t0 = time.time()
-    for tr in tracks:
+    for n, tr in enumerate(tracks, 1):
         try:
             sha = audio_sha256(tr.path)
         except OSError as e:
@@ -242,6 +276,10 @@ def cmd_analyze(args) -> int:
                 stats["no_embedding"] += 1
             else:
                 stats["embeddings"] += 1
+        if n % 10 == 0 or n == len(tracks):
+            print("[analyze] %d/%d tracks in %.0fs (emb=%d, noemb=%d, fail=%d)"
+                  % (n, len(tracks), time.time() - t0, stats["embeddings"],
+                     stats["no_embedding"], stats["decode_fail"]), flush=True)
     stats["wall_s"] = time.time() - t0
 
     # album embeddings (equal + duration) per profile
@@ -276,7 +314,7 @@ def cmd_analyze(args) -> int:
 # --------------------------------------------------------------------------
 def cmd_evaluate(args) -> int:
     library = scan(args.library)
-    tracks = _tracks(library)
+    tracks = _prepare(args, library)
     album_ids, artists, genre_sets = _groups(library)
     profiles = _profile_index(args)
     cache = Cache(args.cache)
@@ -335,9 +373,7 @@ def cmd_cross_codec(args) -> int:
     from decode import decode
 
     library = scan(args.library)
-    tracks = _tracks(library)
-    if args.limit:
-        tracks = tracks[:args.limit]
+    tracks = _prepare(args, library)
     profiles = [canonical_profile(p, args.models) for p in _profile_index(args)][:1]
     prof = profiles[0]
     analyzer = build_analyzer(prof, args.models, batch_size=args.batch_size)
@@ -423,9 +459,7 @@ def cmd_efficiency(args) -> int:
     import psutil
 
     library = scan(args.library)
-    tracks = _tracks(library)
-    if args.limit:
-        tracks = tracks[:args.limit]
+    tracks = _prepare(args, library)
     prof = canonical_profile(
         profile_grid(args.analyzer, args.hop, args.pooling, args.silence)[0],
         args.models)
@@ -563,9 +597,7 @@ def cmd_human(args) -> int:
     from metrics import nearest
 
     library = scan(args.library)
-    tracks = _tracks(library)
-    if args.limit:
-        tracks = tracks[:args.limit]
+    tracks = _prepare(args, library)
     cache = Cache(args.cache)
 
     all_profiles = [canonical_profile(p, args.models) for p in _profile_index(args)]
@@ -681,6 +713,10 @@ def main(argv=None) -> int:
     common.add_argument("--report", default=str(DEFAULT_REPORT))
     common.add_argument("--mpcdec", default=None)
     common.add_argument("--batch-size", type=int, default=32)
+    common.add_argument("--max-tracks-per-album", type=int, default=None,
+                        help="deterministic stratified subset: cap tracks per album")
+    common.add_argument("--max-albums-per-artist", type=int, default=None,
+                        help="deterministic stratified subset: cap albums per artist")
 
     pa = sub.add_parser("analyze", parents=[common])
     pa.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs"])
