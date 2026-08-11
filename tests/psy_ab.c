@@ -87,10 +87,14 @@ main ( void )
         x[i] = Main.L[i];
 
     // ---- kernel level ----------------------------------------------------
+    fprintf (stderr, "[psy_ab] stage: PowSpec256\n");
     mpc_psy_set_impl (MPC_PSY_SCALAR);
     check_kernel ("PowSpec256",   x, PowSpec256,  PowSpec256,  F_a, F_b, 128);
+    fprintf (stderr, "[psy_ab] stage: PowSpec1024\n");
     check_kernel ("PowSpec1024",  x, PowSpec1024, PowSpec1024, F_a, F_b, 512);
+    fprintf (stderr, "[psy_ab] stage: PowSpec2048\n");
     check_kernel ("PowSpec2048",  x, PowSpec2048, PowSpec2048, F_a, F_b, 1024);
+    fprintf (stderr, "[psy_ab] stage: PolarSpec1024\n");
     // PolarSpec1024 (3-arg): compare erg and phs separately.
     mpc_psy_set_impl (MPC_PSY_SCALAR); PolarSpec1024 (x, F_a, ph_a);
     mpc_psy_set_impl (MPC_PSY_SIMD);   PolarSpec1024 (x, F_b, ph_b);
@@ -99,6 +103,7 @@ main ( void )
     for ( i = 0; i < 512; i++ )
         if ( ph_a[i] != ph_b[i] ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
 
+    fprintf (stderr, "[psy_ab] stage: batches\n");
     // ---- batch level (lane-parallel FFT) ---------------------------------
     {
         static float w4a[4][128], w4b[4][128];
@@ -135,6 +140,7 @@ main ( void )
     }
     printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
+    fprintf (stderr, "[psy_ab] stage: model\n");
     // ---- model level (evolving state) ------------------------------------
     memset ( &m, 0, sizeof m );
     SetQualityParams (&m, 6.0f);        // q6 profile
