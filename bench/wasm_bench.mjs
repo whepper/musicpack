@@ -11,6 +11,7 @@
  */
 
 import { createRequire } from "module";
+import path from "path";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs");
@@ -27,8 +28,8 @@ if (!moduleJs || !inputMpc) {
   process.exit(2);
 }
 
-const bytes = fs.readFileSync(inputMpc);
-const module_ = require(moduleJs);
+const bytes = fs.readFileSync(path.resolve(inputMpc));
+const module_ = require(path.resolve(moduleJs));
 
 async function main() {
   const M = await module_();
