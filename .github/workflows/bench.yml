@@ -1,0 +1,110 @@
+name: benchmark
+
+# Repeatable decoder benchmarks for the SIMD milestone. Runs on x86-64
+# (ubuntu-latest) natively and for the three WebAssembly configurations
+# (scalar, auto-vectorized, explicit SIMD). ARM64 numbers are produced on
+# Apple Silicon via bench/run_bench.sh (see bench/README.md).
+#
+# Results are uploaded as a workflow artifact (bench/results/*.tsv).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'libmpcdec/**'
+      - 'bench/**'
+      - 'wasm/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  native-x64:
+    name: native (x86-64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure (Release, SIMD)
+        run: >
+          cmake -S . -B build
+          -DMPC_BUILD_TESTS=ON
+          -DMPC_BUILD_MPCGAIN=OFF
+          -DMPC_BUILD_MPCCHAP=OFF
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j --target mpc_bench mpcenc
+
+      - name: Generate corpus
+        run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
+
+      - name: Run benchmark (scalar + simd)
+        run: |
+          MPC_BENCH="$(pwd)/build/bench/decode_bench" bench/run_bench.sh /tmp/mpc-bench --iterations 5
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-native-x64
+          path: bench/results/
+
+  wasm:
+    name: wasm (scalar / auto-vec / SIMD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+          /opt/emsdk/emsdk install latest
+          /opt/emsdk/emsdk activate latest
+
+      - name: Build scalar wasm
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-wasm-scalar -DCMAKE_BUILD_TYPE=Release \
+            -DMPC_WASM_SIMD=OFF -DMPC_ENABLE_SIMD=OFF
+          cmake --build build-wasm-scalar -j --target musepack_wasm
+
+      - name: Build auto-vectorized wasm (-msimd128, scalar C)
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-wasm-autovec -DCMAKE_BUILD_TYPE=Release \
+            -DMPC_WASM_SIMD=ON -DMPC_ENABLE_SIMD=OFF
+          cmake --build build-wasm-autovec -j --target musepack_wasm
+
+      - name: Build explicit-SIMD wasm
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-wasm-simd -DCMAKE_BUILD_TYPE=Release \
+            -DMPC_WASM_SIMD=ON -DMPC_ENABLE_SIMD=ON
+          cmake --build build-wasm-simd -j --target musepack_wasm
+
+      - name: Generate corpus
+        run: |
+          cmake -S . -B build-native -DMPC_BUILD_TESTS=OFF -DMPC_BUILD_MPCGAIN=OFF \
+            -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-native -j --target mpcenc
+          bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build-native/mpcenc/mpcenc"
+
+      - name: Run wasm benchmarks
+        run: |
+          FILES="/tmp/mpc-bench/corpus/uncorrelated_noise-q7.mpc /tmp/mpc-bench/corpus/stereo_sine-q5.mpc /tmp/mpc-bench/corpus/silence-q5.mpc /tmp/mpc-bench/corpus/clipping_edge-q7.mpc tests/fixtures/sine44-q5-48s.mpc"
+          mkdir -p bench/results
+          for CFG in scalar autovec simd; do
+            echo "# === wasm $CFG ==="
+            for F in $FILES; do
+              node bench/wasm_bench.mjs "build-wasm-$CFG/wasm/musepack.js" "$F"
+            done
+          done | tee bench/results/wasm.tsv
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-wasm
+          path: bench/results/

@@ -89,7 +89,24 @@ static mpc_inline mpc_status mpc_check_key(char * key)
 /// helper functions used by multiple files
 mpc_uint32_t mpc_random_int(mpc_decoder *d); // in synth_filter.c
 void mpc_decoder_init_quant(mpc_decoder *d, double scale_factor);
+
+// Synthesis filter entry points. mpc_decoder_synthese_filter_float is the
+// per-frame dispatcher (mpc_decoder.c); the *_scalar/*_simd implementations
+// are the actual kernels (synth_filter.c / synth_filter_simd.c).
 void mpc_decoder_synthese_filter_float(mpc_decoder *d, MPC_SAMPLE_FORMAT* OutData, mpc_int_t channels);
+void mpc_synthese_filter_float_scalar(mpc_decoder *d, MPC_SAMPLE_FORMAT* OutData, mpc_int_t channels);
+#ifdef MPC_ENABLE_SIMD_KERNEL
+void mpc_synthese_filter_float_simd(mpc_decoder *d, MPC_SAMPLE_FORMAT* OutData, mpc_int_t channels);
+#endif
+
+// Synthesis implementation selection (white-box; used by the bench and the
+// scalar-vs-SIMD differential test).
+enum {
+    MPC_SYNTH_AUTO   = 0, ///< best available (default)
+    MPC_SYNTH_SCALAR = 1, ///< force the scalar reference path
+    MPC_SYNTH_SIMD   = 2, ///< force the SIMD path (no-op if not compiled in)
+};
+void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
 
 #define MPC_IS_FAILURE(X) ((int)(X) < (int)MPC_STATUS_OK)
 #define MPC_AUTO_FAIL(X) { mpc_status s = (X); if (MPC_IS_FAILURE(s)) return s; }

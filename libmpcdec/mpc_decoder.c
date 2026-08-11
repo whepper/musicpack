@@ -91,12 +91,46 @@ void mpc_decoder_reset_scf(mpc_decoder * d, int value)
 
 void mpc_decoder_setup(mpc_decoder *d)
 {
+	int m, k;
+
 	memset(d, 0, sizeof *d);
 
 	d->__r1 = 1;
 	d->__r2 = 1;
 
+	// Transposed coefficient table for the SIMD matrixing kernel. A plain
+	// float copy (no arithmetic), so values are bit-identical to Di_opt.
+	for (m = 0; m < 16; m++)
+		for (k = 0; k < 32; k++)
+			d->DiT[m][k] = Di_opt[k][m];
+
+	d->synth = mpc_synthese_filter_float_scalar;
+#ifdef MPC_ENABLE_SIMD_KERNEL
+	mpc_decoder_set_synth_impl(d, MPC_SYNTH_AUTO);
+#endif
+
 	mpc_decoder_init_quant(d, 1.0f);
+}
+
+void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl)
+{
+	switch (impl) {
+	case MPC_SYNTH_SCALAR:
+		d->synth = mpc_synthese_filter_float_scalar;
+		break;
+#ifdef MPC_ENABLE_SIMD_KERNEL
+	case MPC_SYNTH_SIMD:
+		d->synth = mpc_synthese_filter_float_simd;
+		break;
+#endif
+	default: /* MPC_SYNTH_AUTO: best available */
+#ifdef MPC_ENABLE_SIMD_KERNEL
+		d->synth = mpc_synthese_filter_float_simd;
+#else
+		d->synth = mpc_synthese_filter_float_scalar;
+#endif
+		break;
+	}
 }
 
 void mpc_decoder_set_streaminfo(mpc_decoder *d, mpc_streaminfo *si)

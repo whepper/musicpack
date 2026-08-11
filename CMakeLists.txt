@@ -14,6 +14,17 @@ option(MPC_BUILD_SHARED "Build libmpcdec as a shared library" ON)
 option(MPC_BUILD_TESTS   "Build and run the fixture regression tests" OFF)
 option(MPC_BUILD_MPCGAIN "Build mpcgain (requires libreplaygain)" ON)
 option(MPC_BUILD_MPCCHAP "Build mpcchap (requires libcuefile)" ON)
+# SIMD decoder kernels (128-bit): ARM64 NEON, x86-64 SSE2, WebAssembly
+# SIMD128. Both native targets use baseline ISAs only (no -march bumps), so
+# this defaults ON wherever a kernel exists. The scalar implementation
+# always remains available as the reference/fallback path.
+option(MPC_ENABLE_SIMD "Enable SIMD synthesis filter kernels" ON)
+# WebAssembly SIMD128 codegen (-msimd128) for the whole wasm decoder.
+# Independent of MPC_ENABLE_SIMD so the scalar-wasm, auto-vectorized-wasm
+# and explicit-SIMD-wasm configurations can be compared directly.
+set(MPC_WASM_SIMD ON CACHE BOOL "Emit WebAssembly SIMD128 (-msimd128) for the wasm decoder")
+# Opt-in native tuning for local builds only; never enabled in releases.
+option(MPC_ENABLE_NATIVE_TUNING "Tune native builds for the build host (-march=native, opt-in)" OFF)
 
 # Testing is enabled up front so subdirectories (e.g. sonic/, tests/) can
 # register CTest cases when MPC_BUILD_TESTS is on.
@@ -43,6 +54,11 @@ set(CMAKE_C_EXTENSIONS ON)
 
 if(NOT MSVC)
   add_compile_options(-Wall -Wextra)
+endif()
+
+# Opt-in local build tuning only; never part of a release (see README).
+if(MPC_ENABLE_NATIVE_TUNING AND NOT MSVC AND NOT EMSCRIPTEN)
+  add_compile_options(-march=native)
 endif()
 
 # 64-bit file offsets for POSIX builds (needed by common/fileio.h). Must be
@@ -78,6 +94,7 @@ add_subdirectory(musicpack)
 add_subdirectory(sonic)
 add_subdirectory(server)
 add_subdirectory(mpcdec)
+add_subdirectory(bench)
 add_subdirectory(mpcenc)
 add_subdirectory(mpc2sv8)
 add_subdirectory(mpccut)

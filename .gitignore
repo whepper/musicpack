@@ -45,6 +45,12 @@ tests/fixtures/_src.wav
 !tests/reference/**/*.mpc
 !tests/reference/**/*.wav
 
+# Decoder benchmark outputs (corpus + recorded results)
+bench/corpus-wav/
+bench/corpus/
+bench/fixtures/
+bench/results/
+
 # Editor / OS
 .DS_Store
 *.swp

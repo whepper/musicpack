@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/build-wasm"
 
-emcmake cmake -S "$ROOT" -B "$BUILD"
+emcmake cmake -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD" --target musepack_wasm -j
 
 cp "$BUILD/wasm/musepack.js" "$BUILD/wasm/musepack.wasm" "$DEMO/"

@@ -11,6 +11,31 @@ set(MPCDEC_SOURCES
     ${PROJECT_SOURCE_DIR}/common/crc32.c)
 
 # ---------------------------------------------------------------------------
+# SIMD synthesis filter kernel (NEON / SSE2 / wasm SIMD128 via mpc_simd.h).
+# Supported where a 128-bit baseline SIMD ISA exists: aarch64 (Advanced SIMD
+# is mandatory), x86-64 (SSE2 is the baseline) and wasm SIMD128 (only when
+# -msimd128 is enabled). The scalar path always stays compiled as the
+# reference/fallback. MPC_ENABLE_SIMD is the master switch (top-level).
+# ---------------------------------------------------------------------------
+set(MPC_SIMD_SUPPORTED FALSE)
+if(EMSCRIPTEN AND MPC_WASM_SIMD)
+  set(MPC_SIMD_SUPPORTED TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|AARCH64|ARM64")
+  set(MPC_SIMD_SUPPORTED TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|x64|amd64|AMD64|X86_64")
+  set(MPC_SIMD_SUPPORTED TRUE)
+endif()
+
+set(MPC_USE_SIMD FALSE)
+if(MPC_ENABLE_SIMD AND MPC_SIMD_SUPPORTED)
+  set(MPC_USE_SIMD TRUE)
+endif()
+
+if(MPC_USE_SIMD)
+  list(APPEND MPCDEC_SOURCES synth_filter_simd.c)
+endif()
+
+# ---------------------------------------------------------------------------
 # Shared variant (default off Windows, on elsewhere). Its public symbols are
 # exported via MUSEPACK_API/MPC_API; everything else is hidden with
 # -fvisibility=hidden so internal tables and bit readers stay out of the ABI.
@@ -65,6 +90,32 @@ if(MPC_BUILD_SHARED)
   target_link_libraries(musepack_static PUBLIC mpc_headers Threads::Threads)
   if(UNIX AND NOT APPLE)
     target_link_libraries(musepack_static PUBLIC m)
+  endif()
+endif()
+
+# ---- SIMD kernel + wasm build configuration ------------------------------
+# MPC_ENABLE_SIMD_KERNEL marks the synthesis SIMD implementation as compiled
+# in (see decoder.h/internal.h dispatch). The wasm build explicitly gets -O3
+# on objects (the historical link-only -O3 left the library unoptimized) and
+# -msimd128 when MPC_WASM_SIMD is on.
+if(MPC_USE_SIMD)
+  target_compile_definitions(musepack PRIVATE MPC_ENABLE_SIMD_KERNEL)
+endif()
+if(EMSCRIPTEN)
+  target_compile_options(musepack PRIVATE -O3)
+  if(MPC_WASM_SIMD)
+    target_compile_options(musepack PRIVATE -msimd128)
+  endif()
+endif()
+if(MPC_BUILD_SHARED)
+  if(MPC_USE_SIMD)
+    target_compile_definitions(musepack_static PRIVATE MPC_ENABLE_SIMD_KERNEL)
+  endif()
+  if(EMSCRIPTEN)
+    target_compile_options(musepack_static PRIVATE -O3)
+    if(MPC_WASM_SIMD)
+      target_compile_options(musepack_static PRIVATE -msimd128)
+    endif()
   endif()
 endif()
 

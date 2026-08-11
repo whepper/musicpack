@@ -24,3 +24,6 @@ target_link_options(musepack_wasm PRIVATE
     "-sEXPORTED_FUNCTIONS=_mpc_wasm_create,_mpc_wasm_open,_mpc_wasm_open_range,_mpc_wasm_sample_rate,_mpc_wasm_channels,_mpc_wasm_stream_version,_mpc_wasm_length_samples,_mpc_wasm_position,_mpc_wasm_read,_mpc_wasm_seek_sample,_mpc_wasm_seek_seconds,_mpc_wasm_check,_mpc_wasm_destroy,_malloc,_free"
     "-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32"
     "-sENVIRONMENT=web,worker,node")
+if(MPC_WASM_SIMD)
+  target_link_options(musepack_wasm PRIVATE "-msimd128")
+endif()

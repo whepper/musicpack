@@ -53,6 +53,13 @@ enum {
     MPC_DECODER_MEMSIZE = 16384,  // overall buffer size
 };
 
+struct mpc_decoder_t;
+/// Synthesis filter implementation. Dispatched through the decoder so the
+/// scalar reference path stays available alongside SIMD kernels (NEON/SSE2/
+/// wasm SIMD128). Selected once in mpc_decoder_setup.
+typedef void (*mpc_decoder_synth_fn)(struct mpc_decoder_t *d,
+                                     MPC_SAMPLE_FORMAT *out, mpc_int_t channels);
+
 struct mpc_decoder_t {
     /// @name internal state variables
     //@{
@@ -90,8 +97,22 @@ struct mpc_decoder_t {
     MPC_SAMPLE_FORMAT Y_L[36][32];
     MPC_SAMPLE_FORMAT Y_R[36][32];
     MPC_SAMPLE_FORMAT SCF[256]; ///< holds adapted scalefactors (for clipping prevention)
+
+    /// Transposed synthesis coefficients DiT[m][k] = Di_opt[k][m], for the
+    /// SIMD matrixing kernel (built once in mpc_decoder_setup; the scalar
+    /// path reads Di_opt directly). Always present so the struct layout is
+    /// identical in white-box builds.
+    MPC_SAMPLE_FORMAT DiT[16][32];
+
+    /// synthesis filter implementation (scalar default; see mpc_decoder_setup)
+    mpc_decoder_synth_fn synth;
     //@}
 };
+
+/// Synthesis coefficient table (synth_filter.c). Rows are subband
+/// coefficients used by the scalar matrixing; see DiT for the transposed
+/// SIMD form.
+extern const MPC_SAMPLE_FORMAT Di_opt[32][16];
 
 #ifdef __cplusplus
 }

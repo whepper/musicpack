@@ -56,6 +56,31 @@ if(WIN32)
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$ENV{PATH}")
 endif()
 
+# ---- scalar-vs-SIMD synthesis differential test ---------------------------
+# Decodes the fixtures once per synthesis path and asserts they agree within
+# the fixture tolerance. Requires MPC_ENABLE_SIMD (both kernels compiled in);
+# with SIMD off the forced-simd request falls back to scalar and the test
+# trivially passes. White-box (links the static lib + internal headers).
+if(MPC_BUILD_SHARED)
+  set(MPC_WHITEBOX_LIB musepack_static)
+else()
+  set(MPC_WHITEBOX_LIB musepack)
+endif()
+add_executable(mpc_synth_diff synth_diff.c)
+target_link_libraries(mpc_synth_diff PRIVATE ${MPC_WHITEBOX_LIB})
+target_include_directories(mpc_synth_diff PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_synth_diff PRIVATE m)
+endif()
+
+add_test(NAME synth_ab COMMAND mpc_synth_diff
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine32-q8.mpc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine37-q4.mpc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5-48s.mpc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q7.mpc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine48-q6.mpc)
+
 # ---- .mpack / libmusicpack tests ------------------------------------------
 add_executable(mpc_mpack_tests mpack_tests.c)
 target_link_libraries(mpc_mpack_tests PRIVATE musicpack musepack)
