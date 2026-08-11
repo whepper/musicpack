@@ -31,39 +31,48 @@ if (!moduleJs || !inputMpc) {
 const bytes = fs.readFileSync(path.resolve(inputMpc));
 const module_ = require(path.resolve(moduleJs));
 
+function openDecoder(M) {
+  const h = M._mpc_wasm_create();
+  const inPtr = M._malloc(bytes.length);
+  M.HEAPU8.set(bytes, inPtr);
+  const err = M._mpc_wasm_open(h, inPtr, bytes.length);
+  if (err !== 0) throw new Error(`mpc_wasm_open returned ${err}`);
+  return { h, inPtr };
+}
+
 async function main() {
   const M = await module_();
-  const rate = M._mpc_wasm_sample_rate, ch = M._mpc_wasm_channels;
-  const lengthSamples = M._mpc_wasm_length_samples;
 
   for (const block of blockSizes) {
     // Warm-up decode (lazy init, caches).
     {
-      const h = M._mpc_wasm_open(bytes, bytes.length);
+      const d = openDecoder(M);
       const ptr = M._malloc(block * 4 * 2);
       let frames;
-      do { frames = M._mpc_wasm_read(h, ptr, block); } while (frames > 0);
-      M._free(ptr); M._mpc_wasm_destroy(h);
+      do { frames = M._mpc_wasm_read(d.h, ptr, block); } while (frames > 0);
+      M._free(ptr);
+      M._free(d.inPtr);
+      M._mpc_wasm_destroy(d.h);
     }
 
-    const h = M._mpc_wasm_open(bytes, bytes.length);
+    const d = openDecoder(M);
     const ptr = M._malloc(block * 4 * 2);
-    const totalSamples = lengthSamples(h);
-    const rateHz = rate(h);
-    const chan = ch(h);
-    const audioS = totalSamples / rateHz;
+    const rateHz = M._mpc_wasm_sample_rate(d.h);
+    const chan = M._mpc_wasm_channels(d.h);
+    const audioS = M._mpc_wasm_length_samples(d.h) / rateHz;
 
     const t0 = process.hrtime.bigint();
     let total = 0;
     let frames;
     do {
-      frames = M._mpc_wasm_read(h, ptr, block);
+      frames = M._mpc_wasm_read(d.h, ptr, block);
       if (frames > 0) total += frames;
     } while (frames > 0);
     const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;
 
     M._free(ptr);
-    M._mpc_wasm_destroy(h);
+    M._free(d.inPtr);
+    M._mpc_wasm_destroy(d.h);
 
     console.log(
       `${inputMpc}\t${rateHz}hz\t${chan}ch\tblock=${block}\t` +
