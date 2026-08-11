@@ -113,15 +113,23 @@ main ( void )
         int l;
 
         mpc_psy_set_impl (MPC_PSY_SCALAR);
+        fprintf (stderr, "[psy_ab] batch scalar\n");
         PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
+        fprintf (stderr, "[psy_ab] batch scalar 1024\n");
         PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
+        fprintf (stderr, "[psy_ab] batch scalar 2048\n");
         PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
+        fprintf (stderr, "[psy_ab] batch scalar polar\n");
         PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
 
         mpc_psy_set_impl (MPC_PSY_SIMD);
+        fprintf (stderr, "[psy_ab] batch simd 256\n");
         PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
+        fprintf (stderr, "[psy_ab] batch simd 1024\n");
         PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
+        fprintf (stderr, "[psy_ab] batch simd 2048\n");
         PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
+        fprintf (stderr, "[psy_ab] batch simd polar\n");
         PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
 
         for ( l = 0; l < 4 && !failures; l++ )
