@@ -222,3 +222,21 @@ elseif(WIN32)
                          $<TARGET_FILE:mpcenc>)
     endif()
 endif()
+
+# ---- Phase 2 bit-exact encoder regression (extended corpus, q5/q6/q7) -----
+# Same two modes as compat (live REF_MPCENC comparison on CI; committed
+# -O0 manifest locally). The manifest doubles as the cross-platform scalar
+# ground-truth probe: when it is run without REF_MPCENC on every CI platform,
+# any platform whose encoder differs from the frozen pristine manifest is
+# evidence the scalar encoder is not cross-platform byte-identical.
+if(UNIX)
+    add_test(NAME enc_compat
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_enc_compat.sh
+                     $<TARGET_FILE:mpcenc>)
+elseif(WIN32)
+    if(MPC_GIT_BASH)
+        add_test(NAME enc_compat
+                 COMMAND ${MPC_GIT_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/run_enc_compat.sh
+                         $<TARGET_FILE:mpcenc>)
+    endif()
+endif()

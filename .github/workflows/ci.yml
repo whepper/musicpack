@@ -89,6 +89,9 @@ jobs:
           [ -x "$REF_MPCENC" ] || { echo "reference mpcenc not found"; exit 1; }
           export REF_MPCENC
           ctest --test-dir build -C Release -R "^compat$" --output-on-failure
+          # Phase 2: extended-corpus q5/q6/q7 bit-exact regression (live mode,
+          # same reference encoder => toolchain-agnostic per-platform proof).
+          ctest --test-dir build -C Release -R "^enc_compat$" --output-on-failure
 
   wasm-build:
     name: wasm
