@@ -71,6 +71,9 @@
    versions. */
 #define MUSICPACK_AUTHOR_API 1
 
+static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
+static void json_error_out(const char *code, const char *msg);
+
 static int usage_error(const char *msg)
 {
     fprintf(stderr, "%s: %s\n", ABOUT, msg);
@@ -252,6 +255,69 @@ out:
 /* command: info                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Sonic analysis summary for `info`: reads the referenced sonic document
+   (if any) and reports its shape without validating the whole package. */
+typedef struct {
+    int present;   /* a sonic document was found and parsed */
+    int failed;    /* referenced but unreadable/unparseable */
+    int format;
+    char *profile;
+    musicpack_sonic_profile_state profile_state;
+    size_t track_count;
+    size_t present_count;
+    int album_present;
+} sonic_summary;
+
+static void
+sonic_summary_free(sonic_summary *ss)
+{
+    free(ss->profile);
+}
+
+static void
+load_sonic_summary(const musicpack_package *pkg, const musicpack_manifest *m,
+                   sonic_summary *ss)
+{
+    size_t i;
+    char abs[MUSICPACK_PATH_MAX + 2];
+    char *json;
+    musicpack_status s;
+
+    memset(ss, 0, sizeof *ss);
+    ss->format = -1;
+    for (i = 0; i < m->analysis_count; i++) {
+        musicpack_sonic *sonic;
+        size_t t;
+        if (strcmp(m->analysis[i].type, "sonic") != 0)
+            continue;
+        if (musicpack_package_resolve_path(pkg, m->analysis[i].asset.path,
+                                           abs, sizeof abs) != MUSICPACK_OK)
+            break;
+        json = read_file_bounded(abs, MUSICPACK_SONIC_DOC_MAX, &s);
+        if (json == 0) {
+            ss->failed = 1;
+            break;
+        }
+        sonic = musicpack_sonic_parse(json, strlen(json), &s);
+        free(json);
+        if (sonic == 0) {
+            ss->failed = 1;
+            break;
+        }
+        ss->present = 1;
+        ss->format = MUSICPACK_SONIC_VERSION;
+        ss->profile = strdup(sonic->profile_id);
+        musicpack_sonic_validate(sonic, 0, &ss->profile_state);
+        ss->track_count = sonic->track_count;
+        for (t = 0; t < sonic->track_count; t++)
+            if (sonic->tracks[t].embedding.present)
+                ss->present_count++;
+        ss->album_present = sonic->album.present;
+        musicpack_sonic_free(sonic);
+        break;
+    }
+}
+
 static void
 print_track(const musicpack_track *t)
 {
@@ -329,20 +395,169 @@ package_codec(const musicpack_manifest *m)
 }
 
 static int
-cmd_info(const char *dir)
+cmd_info(const char *dir, int json)
 {
     musicpack_package *pkg;
     const musicpack_manifest *m;
     musicpack_report rep = { 0, 0 };
+    sonic_summary ss;
     musicpack_status s;
     size_t d, t, i, track_total = 0;
 
     pkg = musicpack_package_open_dir(dir, &s);
     if (pkg == 0) {
-        fprintf(stderr, "cannot open package '%s' (error %d)\n", dir, (int) s);
+        if (json)
+            json_error_out("not_found", "cannot open package");
+        else
+            fprintf(stderr, "cannot open package '%s' (error %d)\n", dir, (int) s);
         return 1;
     }
     m = musicpack_package_manifest(pkg);
+    load_sonic_summary(pkg, m, &ss);
+
+    if (json) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON *o, *arr, *item, *so;
+        char buf[128];
+
+        cJSON_AddStringToObject(root, "package", dir);
+        o = cJSON_AddObjectToObject(root, "album");
+        cJSON_AddStringToObject(o, "title", m->album_title);
+        {
+            cJSON *arts = cJSON_AddArrayToObject(o, "artists");
+            for (i = 0; i < m->album_artist_count; i++) {
+                cJSON *a = cJSON_CreateObject();
+                cJSON_AddStringToObject(a, "name", m->album_artists[i].name);
+                if (m->album_artists[i].role != 0)
+                    cJSON_AddStringToObject(a, "role", m->album_artists[i].role);
+                cJSON_AddItemToArray(arts, a);
+            }
+        }
+        if (m->release_type != 0)
+            cJSON_AddStringToObject(o, "releaseType", m->release_type);
+        if (m->original_release_date != 0)
+            cJSON_AddStringToObject(o, "originalReleaseDate", m->original_release_date);
+        if (m->genre_count > 0) {
+            arr = cJSON_AddArrayToObject(o, "genres");
+            for (i = 0; i < m->genre_count; i++)
+                cJSON_AddItemToArray(arr, cJSON_CreateString(m->genres[i]));
+        }
+        if (m->release.present) {
+            o = cJSON_AddObjectToObject(root, "release");
+            if (m->release.release_date != 0)
+                cJSON_AddStringToObject(o, "releaseDate", m->release.release_date);
+            if (m->release.edition != 0)
+                cJSON_AddStringToObject(o, "edition", m->release.edition);
+            if (m->release.country != 0)
+                cJSON_AddStringToObject(o, "country", m->release.country);
+            if (m->release.label != 0)
+                cJSON_AddStringToObject(o, "label", m->release.label);
+            if (m->release.catalogue_number != 0)
+                cJSON_AddStringToObject(o, "catalogueNumber", m->release.catalogue_number);
+            if (m->release.notes != 0)
+                cJSON_AddStringToObject(o, "notes", m->release.notes);
+        }
+        {
+            const char *fmt = medium_format_display(m, buf, sizeof buf);
+            if (fmt != 0)
+                cJSON_AddStringToObject(root, "medium", fmt);
+        }
+        if (m->barcode != 0)
+            cJSON_AddStringToObject(root, "barcode", m->barcode);
+        if (m->identity_source != 0 || m->identity_confidence != 0) {
+            o = cJSON_AddObjectToObject(root, "identity");
+            if (m->identity_source != 0)
+                cJSON_AddStringToObject(o, "source", m->identity_source);
+            if (m->identity_confidence != 0)
+                cJSON_AddStringToObject(o, "confidence", m->identity_confidence);
+        }
+        if (m->musicbrainz_release_group_id != 0)
+            cJSON_AddStringToObject(root, "musicbrainzReleaseGroupId",
+                                    m->musicbrainz_release_group_id);
+        if (m->musicbrainz_release_id != 0)
+            cJSON_AddStringToObject(root, "musicbrainzReleaseId", m->musicbrainz_release_id);
+        if (m->source_type != 0 || m->source_store != 0) {
+            o = cJSON_AddObjectToObject(root, "source");
+            if (m->source_type != 0)
+                cJSON_AddStringToObject(o, "type", m->source_type);
+            if (m->source_store != 0)
+                cJSON_AddStringToObject(o, "store", m->source_store);
+        }
+        {
+            const char *codec = package_codec(m);
+            if (codec != 0)
+                cJSON_AddStringToObject(root, "codec", codec);
+        }
+
+        arr = cJSON_AddArrayToObject(root, "discs");
+        for (d = 0; d < m->disc_count; d++) {
+            cJSON *disc = cJSON_CreateObject();
+            cJSON_AddNumberToObject(disc, "disc", m->discs[d].disc);
+            item = cJSON_AddArrayToObject(disc, "tracks");
+            for (t = 0; t < m->discs[d].track_count; t++) {
+                const musicpack_track *tr = &m->discs[d].tracks[t];
+                cJSON *to = cJSON_CreateObject();
+                cJSON_AddNumberToObject(to, "track", tr->number);
+                cJSON_AddStringToObject(to, "title", tr->title);
+                if (tr->has_duration)
+                    cJSON_AddNumberToObject(to, "duration", tr->duration);
+                cJSON_AddStringToObject(to, "audio", tr->audio.path);
+                if (tr->loudness.present) {
+                    cJSON *lo = cJSON_AddObjectToObject(to, "loudness");
+                    cJSON_AddNumberToObject(lo, "trackLUFS", tr->loudness.lufs);
+                    cJSON_AddNumberToObject(lo, "truePeakDbTP", tr->loudness.true_peak_db);
+                }
+                cJSON_AddItemToArray(item, to);
+            }
+            cJSON_AddItemToArray(arr, disc);
+        }
+        for (d = 0; d < m->disc_count; d++)
+            for (t = 0; t < m->discs[d].track_count; t++)
+                track_total++;
+        cJSON_AddNumberToObject(root, "totalTracks", (double) track_total);
+        if (m->has_album_loudness) {
+            o = cJSON_AddObjectToObject(root, "albumLoudness");
+            cJSON_AddNumberToObject(o, "albumLUFS", m->album_loudness.lufs);
+            cJSON_AddNumberToObject(o, "albumTruePeakDbTP", m->album_loudness.true_peak_db);
+            if (m->loudness_algorithm != 0)
+                cJSON_AddStringToObject(o, "algorithm", m->loudness_algorithm);
+        }
+        if (m->provenance_tool != 0 || m->provenance_tool_version != 0) {
+            o = cJSON_AddObjectToObject(root, "provenance");
+            if (m->provenance_tool != 0)
+                cJSON_AddStringToObject(o, "tool", m->provenance_tool);
+            if (m->provenance_tool_version != 0)
+                cJSON_AddStringToObject(o, "toolVersion", m->provenance_tool_version);
+        }
+
+        s = musicpack_package_verify(pkg, &rep, 0, 0);
+        o = cJSON_AddObjectToObject(root, "integrity");
+        cJSON_AddBoolToObject(o, "ok", s == MUSICPACK_OK ? 1 : 0);
+        cJSON_AddNumberToObject(o, "errors", (double) rep.errors);
+        cJSON_AddNumberToObject(o, "warnings", (double) rep.warnings);
+
+        if (ss.present) {
+            so = cJSON_AddObjectToObject(root, "sonic");
+            cJSON_AddNumberToObject(so, "format", (double) ss.format);
+            cJSON_AddStringToObject(so, "profile", ss.profile);
+            cJSON_AddNumberToObject(so, "tracks", (double) ss.track_count);
+            cJSON_AddNumberToObject(so, "tracksWithEmbedding", (double) ss.present_count);
+            cJSON_AddBoolToObject(so, "albumEmbedding", ss.album_present ? 1 : 0);
+            cJSON_AddStringToObject(so, "profileState",
+                                    ss.profile_state == MUSICPACK_SONIC_PROFILE_SUPPORTED
+                                        ? "supported"
+                                        : ss.profile_state == MUSICPACK_SONIC_PROFILE_RESERVED
+                                              ? "reserved"
+                                              : "unknown");
+        } else {
+            cJSON_AddNullToObject(root, "sonic");
+        }
+        draft_print(root);
+        cJSON_Delete(root);
+        musicpack_package_close(pkg);
+        sonic_summary_free(&ss);
+        return s == MUSICPACK_OK ? 0 : 1;
+    }
 
     printf("Package: %s\n", dir);
     printf("Album: %s\n", m->album_title);
@@ -422,11 +637,24 @@ cmd_info(const char *dir)
         printf("Provenance: %s %s\n", m->provenance_tool,
                m->provenance_tool_version != 0 ? m->provenance_tool_version : "");
 
+    if (ss.present) {
+        printf("Sonic Analysis:\n");
+        printf("  format: %d\n", ss.format);
+        printf("  profile: %s\n", ss.profile);
+        printf("  tracks: %zu/%zu\n", ss.present_count, ss.track_count);
+        printf("  album embedding: %s\n", ss.album_present ? "yes" : "no");
+        if (ss.profile_state != MUSICPACK_SONIC_PROFILE_SUPPORTED)
+            printf("  profile: not supported for comparison\n");
+    } else if (ss.failed) {
+        printf("Sonic Analysis: referenced document is unreadable or malformed\n");
+    }
+
     s = musicpack_package_verify(pkg, &rep, 0, 0);
     printf("Integrity: %s (%zu errors, %zu warnings)\n",
            s == MUSICPACK_OK ? "OK" : "FAILED", rep.errors, rep.warnings);
 
     musicpack_package_close(pkg);
+    sonic_summary_free(&ss);
     return s == MUSICPACK_OK ? 0 : 1;
 }
 
@@ -2859,6 +3087,95 @@ extract_embedded_artwork(const char *srcpath, const char *role, const char *artd
     return 1;
 }
 
+/* Attaches a completed sonic document (draft `sonicAnalysis.path`) into the
+   package: validates it against the built manifest, copies it to
+   analysis/sonic.json and adds the analysis[] reference. Never fails the
+   build — an unreadable, malformed or mismatched document is dropped with a
+   clear warning and the package is built without sonic (per the sonic
+   spec). Returns 1 when sonic was included, 0 when skipped (with a reason
+   in \p warn). */
+static int
+attach_sonic_document(cJSON *draft, musicpack_manifest *m, const char *out_dir,
+                      char *warn, size_t warn_cap)
+{
+    cJSON *sa;
+    const char *path;
+    char *json;
+    musicpack_status s;
+    musicpack_sonic *sonic;
+    char dst[MUSICPACK_PATH_MAX + 2];
+    char adir[MUSICPACK_PATH_MAX + 2];
+    char hex[MUSICPACK_SHA256_HEX_SIZE];
+    musicpack_analysis *na;
+
+    sa = cJSON_GetObjectItemCaseSensitive(draft, "sonicAnalysis");
+    if (!cJSON_IsObject(sa))
+        return 0;
+    path = djstr(sa, "path");
+    if (path == 0 || *path == '\0')
+        return 0;
+
+    json = read_file_bounded(path, MUSICPACK_SONIC_DOC_MAX, &s);
+    if (json == 0) {
+        snprintf(warn, warn_cap,
+                 "sonic analysis file '%s' cannot be read; building without sonic",
+                 path);
+        return 0;
+    }
+    sonic = musicpack_sonic_parse(json, strlen(json), &s);
+    free(json);
+    if (sonic == 0) {
+        snprintf(warn, warn_cap,
+                 "sonic analysis document is malformed; building without sonic");
+        return 0;
+    }
+    if (musicpack_sonic_validate(sonic, m, 0) != MUSICPACK_OK) {
+        snprintf(warn, warn_cap,
+                 "sonic analysis does not match the package tracks; building without sonic");
+        musicpack_sonic_free(sonic);
+        return 0;
+    }
+
+    /* reserve the manifest slot before touching disk */
+    na = (musicpack_analysis *) realloc(m->analysis,
+                                        (m->analysis_count + 1) * sizeof *na);
+    if (na == 0) {
+        snprintf(warn, warn_cap, "out of memory adding sonic reference");
+        musicpack_sonic_free(sonic);
+        return 0;
+    }
+    m->analysis = na;
+    na = &m->analysis[m->analysis_count];
+    memset(na, 0, sizeof *na);
+
+    snprintf(adir, sizeof adir, "%s/analysis", out_dir);
+    if (mkdir_p(adir) != 0) {
+        snprintf(warn, warn_cap, "cannot create analysis directory; building without sonic");
+        musicpack_sonic_free(sonic);
+        return 0;
+    }
+    snprintf(dst, sizeof dst, "%s/analysis/sonic.json", out_dir);
+    if (copy_file(path, dst) != 0) {
+        snprintf(warn, warn_cap, "cannot copy sonic analysis; building without sonic");
+        musicpack_sonic_free(sonic);
+        return 0;
+    }
+    if (musicpack_sha256_file(dst, hex, sizeof hex) != MUSICPACK_OK) {
+        remove(dst);
+        snprintf(warn, warn_cap, "cannot hash sonic analysis; building without sonic");
+        musicpack_sonic_free(sonic);
+        return 0;
+    }
+
+    na->type = strdup("sonic");
+    na->profile = strdup(sonic->profile_id);
+    na->asset.path = strdup("analysis/sonic.json");
+    na->asset.sha256 = strdup(hex);
+    m->analysis_count++;
+    musicpack_sonic_free(sonic);
+    return 1;
+}
+
 static int
 cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, int json)
 {
@@ -2877,7 +3194,8 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
     char hex[MUSICPACK_SHA256_HEX_SIZE];
     char srcpath[MUSICPACK_PATH_MAX + 2];
     size_t d, t, i;
-    int bad = 0, verified = 0;
+    int bad = 0, verified = 0, sonic_included = 0;
+    char *sonic_hint = 0;
     size_t verr = 0, vwarn = 0;
 
     draft = draft_read_json(draft_path, err, sizeof err);
@@ -3108,6 +3426,16 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
     }
 
     if (!bad) {
+        char sonichint[512];
+        sonichint[0] = '\0';
+        if (attach_sonic_document(draft, &m, out_dir, sonichint, sizeof sonichint)) {
+            sonic_included = 1;
+        } else if (sonichint[0] != '\0') {
+            sonic_hint = strdup(sonichint);
+        }
+    }
+
+    if (!bad) {
         char *manifest_json = 0;
         char mpath[MUSICPACK_PATH_MAX + 2];
         if (musicpack_manifest_write(&m, &manifest_json) == MUSICPACK_OK) {
@@ -3161,16 +3489,25 @@ done:
             cJSON_AddStringToObject(root, "outputPath", out_dir);
             cJSON_AddNumberToObject(v, "errors", (double) verr);
             cJSON_AddNumberToObject(v, "warnings", (double) vwarn);
+            cJSON_AddBoolToObject(root, "sonic", sonic_included ? 1 : 0);
+            if (sonic_hint != 0)
+                cJSON_AddStringToObject(root, "sonicWarning", sonic_hint);
         }
         draft_print(root);
         cJSON_Delete(root);
     } else {
         if (bad)
             fprintf(stderr, "build-draft: %s\n", err[0] != '\0' ? err : "build failed");
-        else
+        else {
+            if (sonic_included)
+                printf("sonic analysis: included\n");
+            if (sonic_hint != 0)
+                fprintf(stderr, "build-draft: warning: %s\n", sonic_hint);
             printf("created package '%s' (%zu error(s), %zu warning(s))\n",
                    out_dir, verr, vwarn);
+        }
     }
+    free(sonic_hint);
     return bad ? 1 : 0;
 }
 
@@ -3330,8 +3667,21 @@ main(int argc, char **argv)
         return 2;
     }
     cmd = argv[1];
-    if (strcmp(cmd, "info") == 0)
-        return argc >= 3 ? cmd_info(argv[2]) : usage_error("info requires a package");
+    if (strcmp(cmd, "info") == 0) {
+        const char *dir = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--json") == 0)
+                json = 1;
+            else if (dir == 0)
+                dir = argv[i];
+            else
+                return usage_error("too many arguments");
+        }
+        if (dir == 0)
+            return usage_error("info requires a package");
+        return cmd_info(dir, json);
+    }
     if (strcmp(cmd, "verify") == 0) {
         int quiet = 0, json = 0, i;
         for (i = 2; i < argc; i++) {

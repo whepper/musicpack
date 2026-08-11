@@ -417,6 +417,131 @@ else
     fail "unknown fields survive update-metadata"
 fi
 
+# 10. Sonic analysis: build with/without sonic, verify, info, invalid handling
+SONIC_SRC="$TMP/sonic-src"
+SONIC_OUT="$TMP/sonic-out"
+SONIC_DRAFT="$TMP/sonic-draft.json"
+SONIC_DOC="$TMP/sonic.json"
+mkdir -p "$SONIC_SRC"
+printf 'AAAA' > "$SONIC_SRC/01 - One.mpc"
+printf 'BBBB' > "$SONIC_SRC/02 - Two.mpc"
+python3 - "$SONIC_DOC" "$SONIC_DRAFT" "$SONIC_SRC" <<'EOF'
+import base64, json, struct, sys
+def unit(dims):
+    v = [0.0] * dims
+    v[0] = 1.0
+    return base64.b64encode(struct.pack("<%df" % dims, *v)).decode()
+b = unit(512)
+doc = {
+    "format": "musicpack-sonic", "version": 1,
+    "profile": {"id": "musicpack-sonic-openl3-v1", "dimensions": 512,
+                "distance": "cosine", "encoding": "base64-f32le"},
+    "analyzer": {"tool": "musicpack", "toolVersion": "test"},
+    "album": {"embedding": {"encoding": "base64-f32le", "dimensions": 512,
+                            "data": b}, "tracksContributing": 2},
+    "tracks": [
+        {"disc": 1, "track": 1, "embedding": {"encoding": "base64-f32le",
+                                              "dimensions": 512, "data": b}},
+        {"disc": 1, "track": 2, "embedding": {"encoding": "base64-f32le",
+                                              "dimensions": 512, "data": b}},
+    ],
+}
+json.dump(doc, open(sys.argv[1], "w"))
+draft = {
+    "schema": "musicpack-draft", "version": 1,
+    "sourceRoot": sys.argv[3],
+    "album": {"title": "Sonic Test", "artists": [{"name": "Tester"}]},
+    "release": {"releaseDate": "2026-01-01", "edition": "Test",
+                "catalogueNumber": "SCT-1"},
+    "identifiers": {}, "identity": {"source": "local", "confidence": "none"},
+    "media": [{"disc": 1, "tracks": [
+        {"track": 1, "title": "One", "audioPath": "01 - One.mpc"},
+        {"track": 2, "title": "Two", "audioPath": "02 - Two.mpc"}]}],
+    "artwork": [], "booklet": [], "lyrics": [], "extras": [],
+    "sonicAnalysis": {"status": "ready",
+                      "profile": "musicpack-sonic-openl3-v1",
+                      "path": sys.argv[1]},
+}
+json.dump(draft, open(sys.argv[2], "w"))
+EOF
+
+# build with sonic: package contains analysis/sonic.json + analysis[] ref
+if "$MUSICPACK" build-draft --draft "$SONIC_DRAFT" -o "$SONIC_OUT" >/dev/null 2>&1 &&
+   [ -f "$SONIC_OUT/analysis/sonic.json" ]; then
+    pass "build-draft includes sonic analysis"
+else
+    fail "build-draft includes sonic analysis"
+fi
+if python3 - "$SONIC_OUT/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+a = m.get("analysis", [])
+assert len(a) == 1 and a[0]["type"] == "sonic"
+assert a[0]["profile"] == "musicpack-sonic-openl3-v1"
+assert a[0]["path"] == "analysis/sonic.json"
+assert len(a[0]["sha256"]) == 64
+print("ok")
+EOF
+then
+    pass "manifest analysis[] reference written"
+else
+    fail "manifest analysis[] reference written"
+fi
+if "$MUSICPACK" verify "$SONIC_OUT" >/dev/null 2>&1; then
+    pass "verify ok with sonic"
+else
+    fail "verify ok with sonic"
+fi
+if "$MUSICPACK" info "$SONIC_OUT" --json 2>/dev/null |
+   python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["sonic"]["profile"]=="musicpack-sonic-openl3-v1" and d["sonic"]["tracks"]==2 and d["sonic"]["tracksWithEmbedding"]==2'; then
+    pass "info --json exposes sonic"
+else
+    fail "info --json exposes sonic"
+fi
+if "$MUSICPACK" info "$SONIC_OUT" 2>/dev/null | grep -q "Sonic Analysis:"; then
+    pass "info text shows Sonic Analysis"
+else
+    fail "info text shows Sonic Analysis"
+fi
+
+# build without sonic: valid package, no analysis
+python3 -c "
+import json,sys
+d=json.load(open('$SONIC_DRAFT'))
+del d['sonicAnalysis']
+json.dump(d, open('$SONIC_DRAFT','w'))
+"
+rm -rf "$SONIC_OUT"
+if "$MUSICPACK" build-draft --draft "$SONIC_DRAFT" -o "$SONIC_OUT" >/dev/null 2>&1 &&
+   [ ! -e "$SONIC_OUT/analysis" ] && "$MUSICPACK" verify "$SONIC_OUT" >/dev/null 2>&1; then
+    pass "build-draft without sonic stays valid"
+else
+    fail "build-draft without sonic stays valid"
+fi
+
+# invalid sonic (track mismatch) is dropped with a warning; package still valid
+python3 -c "
+import json,sys
+d=json.load(open('$SONIC_DOC'))
+d['tracks']=[{'disc':1,'track':9,'embedding':d['album']['embedding']}]
+json.dump(d, open('$SONIC_DOC','w'))
+d2=json.load(open('$SONIC_DRAFT'))
+d2['sonicAnalysis']={'status':'ready','profile':'musicpack-sonic-openl3-v1','path':'$SONIC_DOC'}
+json.dump(d2, open('$SONIC_DRAFT','w'))
+"
+rm -rf "$SONIC_OUT"
+if "$MUSICPACK" build-draft --draft "$SONIC_DRAFT" -o "$SONIC_OUT" --json 2>/dev/null |
+   python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] and d["sonic"] is False and "sonicWarning" in d'; then
+    pass "invalid sonic dropped with warning"
+else
+    fail "invalid sonic dropped with warning"
+fi
+if "$MUSICPACK" verify "$SONIC_OUT" >/dev/null 2>&1; then
+    pass "package without sonic verifies after drop"
+else
+    fail "package without sonic verifies after drop"
+fi
+
 echo
 echo "== $PASSED passed, $FAILED failed =="
 [ "$FAILED" -eq 0 ]
