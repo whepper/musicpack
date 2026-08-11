@@ -42,6 +42,29 @@ endif()
 # ---- global settings --------------------------------------------------------
 include(GNUInstallDirs)
 
+# ---- encoder FP-semantics pin (Phase 2) -------------------------------------
+# The encoder must be bit-reproducible against its scalar reference, so FP
+# contraction (FMA) is disabled in every encoder translation unit whose
+# results can affect output decisions (libmpcenc, libmpcpsy, mpcenc). This
+# makes the scalar and SIMD paths provably identical (both do separate
+# multiply + add). Rationale: FMA contraction is a compiler optimization not
+# specified by the encoder algorithm; allowing it makes encoded output
+# depend on target/compiler behavior.
+#
+# Controls: GCC/Clang -ffp-contract=off. MSVC: /fp:precise is sufficient
+# because Visual Studio 2022's /fp:precise defaults to fp_contract(off)
+# (no contractions); /fp:strict is reserved as a fallback only if an older
+# MSVC toolchain (VS2019 and earlier, where /fp:precise may contract) is
+# ever used. The decoder intentionally keeps its default (it allows
+# contraction; see milestone 1).
+function(mpc_pin_encoder_fp target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /fp:precise)
+  else()
+    target_compile_options(${target} PRIVATE -ffp-contract=off)
+  endif()
+endfunction()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # The codebase uses POSIX APIs throughout (fseeko/ftello via common/fileio.h,

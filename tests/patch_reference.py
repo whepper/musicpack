@@ -89,8 +89,22 @@ def main():
         txt = f.read()
     txt = txt.replace(
         'set(CMAKE_C_FLAGS "-O3 -Wall -fomit-frame-pointer -pipe")',
-        'set(CMAKE_C_FLAGS "-O0 -Wall -fomit-frame-pointer -pipe -Wno-error=incompatible-pointer-types")',
+        'set(CMAKE_C_FLAGS "-O0 -Wall -fomit-frame-pointer -pipe -Wno-error=incompatible-pointer-types -ffp-contract=off")',
     )
+    # The modernized encoder pins FP semantics with -ffp-contract=off
+    # (GCC/Clang) and /fp:precise (MSVC; VS2022's /fp:precise defaults to
+    # fp_contract(off), so no contractions) so its scalar and SIMD paths are
+    # provably identical. The pristine reference build must use the same
+    # policy so the live-mode comparison stays meaningful. At -O0 (Unix) the
+    # flag is a no-op, so the canonical manifest (also produced under this
+    # policy) is unaffected.
+    fp_pin = 'if(MSVC)\n  set(CMAKE_C_FLAGS "/fp:precise")\nendif(MSVC)\n'
+    if 'set(CMAKE_C_FLAGS "/fp:precise")' not in txt:
+        marker = "endif(NOT MSVC)\n"
+        if marker in txt:
+            txt = txt.replace(marker, marker + "\n" + fp_pin, 1)
+        else:
+            txt += "\n" + fp_pin
     with open(path, "w", encoding="utf-8") as f:
         f.write(txt)
 
