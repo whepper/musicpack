@@ -175,7 +175,8 @@ mpc_simd_blend_lo_lo(mpc_f32x4 a, mpc_f32x4 b)
 #elif defined(MPC_SIMD_NEON)
     return vcombine_f32(vget_low_f32(a), vget_low_f32(b));
 #else
-    return _mm_movelh_ps(_mm_movehl_ps(b, b), a);
+    return _mm_shuffle_ps(_mm_unpacklo_ps(a, b), _mm_unpacklo_ps(a, b),
+                          _MM_SHUFFLE(3, 1, 2, 0));
 #endif
 }
 
@@ -189,7 +190,8 @@ mpc_simd_blend_x(mpc_f32x4 a, mpc_f32x4 b)
     return vcombine_f32(vzip_f32(vget_low_f32(a), vget_low_f32(b)).val[0],
                         vzip_f32(vget_high_f32(a), vget_high_f32(b)).val[0]);
 #else
-    return _mm_movelh_ps(_mm_unpacklo_ps(a, b), _mm_unpackhi_ps(a, b));
+    return _mm_shuffle_ps(_mm_unpacklo_ps(a, b), _mm_unpackhi_ps(a, b),
+                          _MM_SHUFFLE(1, 0, 1, 0));
 #endif
 }
 

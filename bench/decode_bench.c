@@ -18,7 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <mpc/mpcdec.h>
 #include <mpc/reader.h>
@@ -35,19 +34,35 @@ extern void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
 static int iterations = 1;
 static int impl_forced = IMPL_AUTO;
 
+#if defined(_WIN32)
+# include <windows.h>
+# include <time.h>
+static double now_wall(void)
+{
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (double) c.QuadPart / (double) f.QuadPart;
+}
+static double now_cpu(void)
+{
+    return (double) clock() / (double) CLOCKS_PER_SEC;
+}
+#else
+# include <time.h>
 static double now_wall(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
 }
-
 static double now_cpu(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
     return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
 }
+#endif
 
 static int run_file(const char *path)
 {
