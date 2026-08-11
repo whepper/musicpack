@@ -19,6 +19,7 @@
 #pragma once
 
 #include <mpc/mpc_types.h>
+#include <mpc/datatypes.h>
 #include <stdio.h>
 
 // FIXME : define this somewhere else
@@ -28,6 +29,35 @@
 
 #define MPC_FRAME_LENGTH (36 * 32)
 #define MAX_FRAME_SIZE 4352
+
+// ---- bit-exact analyser dispatch (Phase 2) -------------------------------
+// The analysis filterbank kernels (Vectoring/Matrixing, analy_filter.c) run
+// through function pointers so the scalar reference path and the SIMD
+// kernels (analy_filter_simd.c) can be selected once at init and A/B
+// compared. Scalar is always available; SIMD is compiled in with
+// MPC_ENABLE_ENC_SIMD_KERNEL.
+typedef void (*mpc_vectoring_fn) ( const float* x, float* y );
+typedef void (*mpc_matrixing_fn) ( const int MaxBand, const float* mi, const float* y, float* samples );
+
+enum {
+    MPC_ENC_AUTO   = 0, ///< best available (default; SIMD when compiled in)
+    MPC_ENC_SCALAR = 1, ///< force the scalar reference path
+    MPC_ENC_SIMD   = 2, ///< force the SIMD path (no-op if not compiled in)
+};
+
+void mpc_enc_set_impl ( int impl );
+void mpc_enc_select_impl ( void );
+void mpc_enc_reset_filter ( void );
+
+// Analysis filterbank (analyz_filter.c).
+void Klemm ( void );
+void Analyse_Filter ( const PCMDataTyp* in, SubbandFloatTyp* out, const int MaxBand );
+void Analyse_Init ( float Left, float Right, SubbandFloatTyp* out, const int MaxBand );
+#ifdef MPC_ENABLE_ENC_SIMD_KERNEL
+void mpc_enc_simd_init ( void );
+void mpc_vectoring_simd ( const float* x, float* y );
+void mpc_matrixing_simd ( const int MaxBand, const float* mi, const float* y, float* samples );
+#endif
 
 typedef struct {
 	mpc_uint16_t	Code;        // >= 14 bit

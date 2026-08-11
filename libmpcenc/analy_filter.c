@@ -23,6 +23,8 @@
 #include <mpc/mpcmath.h>
 #include <mpc/datatypes.h>
 
+#include "libmpcenc.h"
+
 #define FASTER
 
 /* C O N S T A N T S */
@@ -30,7 +32,7 @@
 #undef _
 #define _(value)  (float)(value##.##L / 0x200000)
 
-static float  Ci_opt [512] = {
+float  Ci_opt [512] = {
     _(   0), _(  213), _( 2037), _(  6574), _(75038), _( 6574), _(2037), _(213),
     _(  -1), _(  218), _( 2000), _(  5959), _(74992), _( 7134), _(2063), _(208),
     _(  -1), _(  222), _( 1952), _(  5288), _(74856), _( 7640), _(2080), _(202),
@@ -99,7 +101,7 @@ static float  Ci_opt [512] = {
 #undef _
 
 
-static float M [1024];
+float M [1024];
 
 void
 Klemm ( void )
@@ -143,8 +145,62 @@ float  X_R [ X_MEM + 480 ];
 /* F U N C T I O N S */
 // vectoring & partial calculation
 
+// Bit-exact analyser dispatch (see libmpcenc.h): the scalar kernels stay
+// the reference, the SIMD kernels (analy_filter_simd.c) are selected once
+// after Klemm() when compiled in.
+static int enc_impl_forced = MPC_ENC_AUTO;
+static void Vectoring_scalar ( const float* x, float* y );
+static void Matrixing_scalar ( const int MaxBand, const float* mi, const float* y, float* samples );
+static mpc_vectoring_fn vectoring_impl = 0;
+static mpc_matrixing_fn matrixing_impl = 0;
+
+void
+mpc_enc_set_impl ( int impl )
+{
+    // Force a specific implementation (white-box A/B). AUTO selects the
+    // best compiled in. Only the selection state is set here; the SIMD
+    // coefficient tables are built separately by mpc_enc_simd_init() after
+    // Klemm() (see mpc_encoder_init), because they read the post-Klemm
+    // Ci_opt/M layout.
+    if ( impl == MPC_ENC_SIMD )
+        enc_impl_forced = MPC_ENC_SIMD;
+    else if ( impl == MPC_ENC_SCALAR )
+        enc_impl_forced = MPC_ENC_SCALAR;
+    else
+        enc_impl_forced = MPC_ENC_AUTO;
+    mpc_enc_select_impl ();
+}
+
+// White-box A/B helper: reset the analyser window so two impls can be run
+// from the identical initial state (the encoder's real start state is the
+// zero-initialized static buffers).
+void
+mpc_enc_reset_filter ( void )
+{
+    memset ( X_L, 0, sizeof X_L );
+    memset ( X_R, 0, sizeof X_R );
+}
+
+void
+mpc_enc_select_impl ( void )
+{
+#ifdef MPC_ENABLE_ENC_SIMD_KERNEL
+    const int want = (enc_impl_forced == MPC_ENC_SIMD)
+                  || (enc_impl_forced == MPC_ENC_AUTO);
+#else
+    const int want = 0;
+#endif
+    if ( want ) {
+        vectoring_impl = mpc_vectoring_simd;
+        matrixing_impl = mpc_matrixing_simd;
+    } else {
+        vectoring_impl = Vectoring_scalar;
+        matrixing_impl = Matrixing_scalar;
+    }
+}
+
 static void
-Vectoring ( const float* x, float* y )
+Vectoring_scalar ( const float* x, float* y )
 {
 #ifdef FASTER
     int           i = 0;
@@ -197,7 +253,7 @@ Vectoring ( const float* x, float* y )
 // matrixing with Mi[32][32] = Mi[1024]
 
 static void
-Matrixing ( const int MaxBand, const float* mi, const float* y, float* samples )
+Matrixing_scalar ( const int MaxBand, const float* mi, const float* y, float* samples )
 {
     int  i;
 #ifdef FASTER
@@ -265,8 +321,8 @@ Analyse_Filter ( const PCMDataTyp* in, SubbandFloatTyp* out, const int MaxBand )
         for ( i = 0; i < 32; i++ )
             x[i] = *pcm--;
 #endif
-        Vectoring ( x, Y_L );                           // vectoring & partial calculation
-        Matrixing ( MaxBand, M, Y_L, &out[0].L[n] );    // matrixing
+        vectoring_impl ( x, Y_L );                        // vectoring & partial calculation
+        matrixing_impl ( MaxBand, M, Y_L, &out[0].L[n] );   // matrixing
     }
 
     /************************* calculate R-signal ***************************/
@@ -284,8 +340,8 @@ Analyse_Filter ( const PCMDataTyp* in, SubbandFloatTyp* out, const int MaxBand )
         for ( i = 0; i < 32; i++ )
             x[i] = *pcm--;
 #endif
-        Vectoring ( x, Y_R );                           // vectoring & partial calculation
-        Matrixing ( MaxBand, M, Y_R, &out[0].R[n] );    // matrixing
+        vectoring_impl ( x, Y_R );                        // vectoring & partial calculation
+        matrixing_impl ( MaxBand, M, Y_R, &out[0].R[n] );   // matrixing
     }
 }
 
@@ -318,8 +374,8 @@ Analyse_Init ( float Left, float Right, SubbandFloatTyp* out, const int MaxBand 
         for ( i = 0; i < 32; i++ )
             x[i] = Left;
 #endif
-        Vectoring ( x, Y_L );                           // vectoring & partial calculation
-        Matrixing ( MaxBand, M, Y_L, &out[0].L[n] );    // matrixing
+        vectoring_impl ( x, Y_L );                        // vectoring & partial calculation
+        matrixing_impl ( MaxBand, M, Y_L, &out[0].L[n] );   // matrixing
     }
 
     /************************* calculate R-signal ***************************/
@@ -336,8 +392,8 @@ Analyse_Init ( float Left, float Right, SubbandFloatTyp* out, const int MaxBand 
         for ( i = 0; i < 32; i++ )
             x[i] = Right;
 #endif
-        Vectoring ( x, Y_R );                           // vectoring & partial calculation
-        Matrixing ( MaxBand, M, Y_R, &out[0].R[n] );    // matrixing
+        vectoring_impl ( x, Y_R );                        // vectoring & partial calculation
+        matrixing_impl ( MaxBand, M, Y_R, &out[0].R[n] );   // matrixing
     }
 }
 

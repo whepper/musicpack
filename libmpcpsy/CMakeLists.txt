@@ -14,4 +14,7 @@ target_link_libraries(mpcpsy PUBLIC mpc_headers)
 # which also uses the FAST_MATH path.
 target_compile_definitions(mpcpsy PUBLIC FAST_MATH CVD_FASTLOG)
 
+# Bit-exact encoder: disable FP contraction (see CMakeLists.txt helper).
+mpc_pin_encoder_fp(mpcpsy)
+
 install(TARGETS mpcpsy ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

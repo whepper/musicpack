@@ -243,3 +243,20 @@ elseif(WIN32)
                          $<TARGET_FILE:mpcenc>)
     endif()
 endif()
+
+# ---- encoder scalar-vs-SIMD differential test ----------------------------
+# White-box: forces the analysis filterbank scalar and SIMD paths and asserts
+# bit-identical subband output over several frames (with state evolution).
+# Links mpcenc_static + mpcpsy (libm). Only meaningful when the encoder SIMD
+# kernel is compiled in (MPC_ENABLE_SIMD on aarch64/x86-64); otherwise the
+# forced-simd request falls back to scalar and the test trivially passes.
+add_executable(mpc_enc_synth_ab enc_synth_ab.c)
+target_link_libraries(mpc_enc_synth_ab PRIVATE mpcenc_static mpcpsy)
+target_include_directories(mpc_enc_synth_ab PRIVATE
+    ${PROJECT_SOURCE_DIR}/libmpcenc
+    ${PROJECT_SOURCE_DIR}/libmpcpsy)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_enc_synth_ab PRIVATE m)
+endif()
+
+add_test(NAME enc_ab COMMAND mpc_enc_synth_ab)

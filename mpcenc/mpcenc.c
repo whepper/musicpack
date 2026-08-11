@@ -892,6 +892,17 @@ EvalParameters (PsyModel * m, int argc, char** argv, char** InputFile, char** Ou
             if ( ++k >= argc ) { stderr_printf ( errmsg, arg ); return -1; }
             SetQualityParams (m, atof (argv[k]) );
         }
+        else if ( 0 == strcmp ( arg, "impl" ) ) {                                        // Phase 2 white-box A/B
+            if ( ++k >= argc ) { stderr_printf ( errmsg, arg ); return -1; }
+            if ( 0 == strcmp ( argv[k], "scalar" ) )
+                mpc_enc_set_impl (MPC_ENC_SCALAR);
+            else if ( 0 == strcmp ( argv[k], "simd" ) )
+                mpc_enc_set_impl (MPC_ENC_SIMD);
+            else {
+                stderr_printf ( "unknown --impl %s (scalar|simd)\n", argv[k] );
+                return -1;
+            }
+        }
         else if ( 0 == strcmp ( arg, "neveroverwrite") ) {                              // NeverOverWrite
             WriteMode = MODE_NEVER_OVERWRITE;
         }

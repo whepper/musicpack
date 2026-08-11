@@ -33,7 +33,7 @@
 */
 /// \file synth_filter_simd.c
 /// SIMD128 synthesis filter (ARM64 NEON / x86-64 SSE2 / wasm SIMD128) via
-/// the shared mpc_simd.h abstraction.
+/// the shared mpc_simd.h abstraction (common/mpc_simd.h).
 ///
 /// Two kernels:
 ///   - matrixing FIR: lane = output index; four outputs processed in

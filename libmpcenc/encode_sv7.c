@@ -59,6 +59,13 @@ mpc_encoder_init ( mpc_encoder_t * e,
 	Init_Skalenfaktoren ();
 	Klemm    ();
 
+	// Select the analyser implementation once. The SIMD coefficient tables
+	// must be built after Klemm (they read the post-Klemm Ci_opt/M layout).
+#ifdef MPC_ENABLE_ENC_SIMD_KERNEL
+	mpc_enc_simd_init ();
+#endif
+	mpc_enc_select_impl ();
+
 	memset(e, 0, sizeof(*e));
 
 	if (SeekDistance > 15)

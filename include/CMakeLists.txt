@@ -8,6 +8,7 @@ configure_file(musepack/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/musepack/versio
 target_include_directories(mpc_headers
     INTERFACE
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/common>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
         $<INSTALL_INTERFACE:include>)
 

@@ -16,6 +16,10 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifndef MPC_MATH_H_
+#define MPC_MATH_H_
+#pragma once
+
 #include <math.h>
 #include <string.h>
 
@@ -168,3 +172,5 @@ static mpc_inline float my_sqrt ( float x )
 # define IFLOORF(x)   IFLOOR (x)
 #endif
 
+
+#endif /* MPC_MATH_H_ */

@@ -17,6 +17,9 @@ target_link_libraries(mpcenc PRIVATE mpcpsy mpcenc_static)
 # Encoder uses the optimized math tables and must match libmpcpsy's FAST_MATH.
 target_compile_definitions(mpcenc PRIVATE FAST_MATH)
 
+# Bit-exact encoder: disable FP contraction (see CMakeLists.txt helper).
+mpc_pin_encoder_fp(mpcenc)
+
 if(MPC_BIG_ENDIAN_HOST)
   target_compile_definitions(mpcenc PRIVATE MPC_BIG_ENDIAN)
 endif()
