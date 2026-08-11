@@ -149,36 +149,57 @@ not require expanding to 200 tracks.
   quantitative margin, a close human verdict is not expected, but the pages
   are ready for confirmation.
 
+### Three-way blind listening verdict + agreement analysis
+
+**Reviewer verdict (blind A/B/C, 16 seeds, metadata hidden):**
+**Discogs-EffNet is best; OpenL3 is not bad either; CLAP is not preferred.**
+This confirms the quantitative picture perceptually: the similarity-trained
+reference (Discogs) is the strongest, and among permissive candidates OpenL3
+is the closest.
+
+Agreement with the Discogs recommendation lists (reference = Discogs;
+same cosine retrieval, seed excluded; unordered set overlap):
+
+| k | metric | OpenL3 | CLAP |
+|---|---|---|---|
+| 5 | jaccard (all 100 pool) | **0.400** | 0.188 |
+| 5 | jaccard (16 review seeds) | **0.425** | 0.212 |
+| 10 | jaccard (all 100 pool) | **0.400** | 0.257 |
+| 10 | jaccard (16 review seeds) | **0.381** | 0.294 |
+| 5 | mean rank of shared items | **2.3** | 2.9 |
+
+OpenL3 agrees with Discogs roughly **2× more than CLAP** on which tracks are
+recommended, and orders the shared items closer to Discogs. CLAP is
+therefore not merely weaker on metadata-oriented diagnostics — its
+recommendation lists are also least aligned with the perceptual reference.
+
 ## 5. Recommendation
 
-**Decision-gate outcome: CLAP is rejected.** The only permissively licensed,
-music-specific similarity candidate found in the survey
-(`laion/larger_clap_music`, Apache-2.0) is **measurably worse than OpenL3**
-and nowhere near Discogs-EffNet. It is not frozen merely because it is
-permissive.
+**Model decision (perceptual verdict): do not freeze a single model as
+normative.** Discogs-EffNet is perceptually and quantitatively best, but is
+CC BY-NC-SA (non-commercial). Freezing a weaker model merely because it is
+permissive would standardize a core feature prematurely. Instead:
 
-The question this phase set out to answer — *"is there a permissively
-usable model close enough to Discogs to freeze on?"* — is answered: **No,
-not among the models evaluated.** Discogs-EffNet remains the (non-commercial)
-quality reference; OpenL3 remains the best *permissive* option tested.
+- **Freeze the generic Sonic container contract** (`musicpack-sonic` format
+  v1): a model-independent, versioned `analysis/sonic.json` carrying an
+  explicit profile id, track + album embeddings, base64-f32le, cosine
+  distance, null no-embedding, profile-compatibility rules. Profiles evolve
+  under this stable container.
+- **Default permissive profile: `musicpack-sonic-openl3-v1`** — OpenL3 is
+  the closest permissive option to the Discogs reference (agreement 2×
+  CLAP's; "not bad" perceptually). It is the recommended *default* for the
+  open ecosystem, documented honestly as weaker than Discogs — **not** the
+  permanent normative model.
+- **Quality reference: `musicpack-sonic-discogs-v1`** (Discogs-EffNet,
+  CC BY-NC-SA) — the server may offer it per-collection where the operator
+  accepts non-commercial terms. Never the mandatory profile.
+- **Rejected: `musicpack-sonic-clap-v1`** — CLAP performed worst on
+  quantitative diagnostics, was not preferred in blind listening, and its
+  lists agree least with the Discogs reference.
+- **Open follow-up:** continue watching for a permissively licensed,
+  similarity-trained model; when one reaches acceptable quality it becomes a
+  new profile (and potentially the new default) without a container change.
 
-> **Recommended Sonic v1 profile:** OpenL3 `music`/`mel256`/`emb512`,
-> hop 1.0 s, pooling mean-norm, silence gate off, 48 kHz, kapre frontend,
-> base64-float32-le storage, cosine distance.
-
-**Recommendation: freeze this profile as the practical, permissive Sonic v1**
-so MusicPack Author Phase 2 can proceed with a working, honest, validated
-baseline — with the Discogs-EffNet quality gap recorded as a documented
-limitation, and "evaluate a future permissively licensed, similarity-trained
-model" as an ongoing follow-up rather than a blocker.
-
-The evidence does **not** support claiming OpenL3 is as good as
-Discogs-EffNet: it is quantitatively weaker (same-album@10 0.152 vs 0.201,
-genre purity 0.36 vs 0.55) and the blind reviewer judged Discogs better. The
-server may therefore allow per-collection opt-in to Discogs-EffNet-style
-embeddings where the operator accepts the CC BY-NC-SA terms — but the
-mandatory, format-level profile is OpenL3 (permissive, reproducible,
-cross-codec-stable at 0.9998+, ~0.055× realtime, ~15 s/track).
-
-The draft `specs/musicpack-sonic-v1.md` reflects this: DRAFT — RESEARCH
-PHASE — NOT YET NORMATIVE.
+The draft `specs/musicpack-sonic-v1.md` reflects this: the **container** is
+stable; the **default model** is OpenL3 but explicitly not frozen as
+normative.
