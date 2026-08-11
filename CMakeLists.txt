@@ -15,6 +15,12 @@ option(MPC_BUILD_TESTS   "Build and run the fixture regression tests" OFF)
 option(MPC_BUILD_MPCGAIN "Build mpcgain (requires libreplaygain)" ON)
 option(MPC_BUILD_MPCCHAP "Build mpcchap (requires libcuefile)" ON)
 
+# Testing is enabled up front so subdirectories (e.g. sonic/, tests/) can
+# register CTest cases when MPC_BUILD_TESTS is on.
+if(MPC_BUILD_TESTS)
+  enable_testing()
+endif()
+
 if(WIN32)
   # Static by default on Windows: the MSVC DLL/import-lib build is more
   # fragile and the historical Windows build was static. Shared can still be
@@ -80,6 +86,5 @@ add_subdirectory(mpcgain)
 add_subdirectory(mpcchap)
 
 if(MPC_BUILD_TESTS)
-  enable_testing()
   add_subdirectory(tests)
 endif()
