@@ -45,9 +45,12 @@ jobs:
       - name: Test (unit + mpack + server)
         run: ctest --test-dir build -C Release -R "^(unit|mpack|server_unit)$" --output-on-failure
 
+      # enc_compat is excluded here: its manifest mode is a local developer
+      # fallback pinned to the arm64-clang -O0 reference build. CI enforces
+      # the Phase 2 guarantee in live mode (REF_MPCENC) in the compat step.
       - name: Test (integration + fuzz + fixtures)
         if: matrix.os != 'windows-latest'
-        run: ctest --test-dir build -C Release -E "^unit$|^mpack$|^compat$" --output-on-failure
+        run: ctest --test-dir build -C Release -E "^unit$|^mpack$|^compat$|^enc_compat$" --output-on-failure
 
       # Build the pristine reference encoder (05d97a5) and verify the built
       # encoder is byte-identical to it. Runs on all platforms: the live

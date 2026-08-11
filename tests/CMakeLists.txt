@@ -224,11 +224,14 @@ elseif(WIN32)
 endif()
 
 # ---- Phase 2 bit-exact encoder regression (extended corpus, q5/q6/q7) -----
-# Same two modes as compat (live REF_MPCENC comparison on CI; committed
-# -O0 manifest locally). The manifest doubles as the cross-platform scalar
-# ground-truth probe: when it is run without REF_MPCENC on every CI platform,
-# any platform whose encoder differs from the frozen pristine manifest is
-# evidence the scalar encoder is not cross-platform byte-identical.
+# Two modes: live REF_MPCENC comparison on CI (the authoritative per-platform
+# gate, run in the ci.yml compat step) and a committed -O0 manifest for local
+# use. IMPORTANT ground-truth: the scalar encoder is NOT cross-platform
+# byte-identical today (verified: arm64 clang -O0 282/282 vs the frozen
+# manifest, x86-64 gcc -O0 only 28/282) because of FP codegen + libm in the
+# init tables. The manifest therefore only matches the platform/compiler/
+# optimization it was frozen for (arm64 clang -O0). CI excludes this test
+# from the generic run and gates it live-mode instead.
 if(UNIX)
     add_test(NAME enc_compat
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_enc_compat.sh
