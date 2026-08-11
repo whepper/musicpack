@@ -20,6 +20,33 @@ mkdir -p "$WAV" "$MPC"
 
 python3 "$ROOT/tests/generate_corpus.py" "$WAV"
 
+# Long tracks: short corpus files make per-file timings noise-dominated by
+# fixed open/header overhead. Two deterministic synthetic tracks (30s/60s)
+# give the decode path a workload where the SIMD gain is actually visible.
+python3 - "$WAV" <<'PY'
+import math, random, struct, sys, wave
+outdir = sys.argv[1]
+rng = random.Random(99)
+def write(name, rate, dur):
+    n = rate * dur
+    w = wave.open(f"{outdir}/{name}.wav", "wb")
+    w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
+    frames = bytearray()
+    for i in range(n):
+        t = i / rate
+        # dense tonal + noise mix (deterministic)
+        l = 0.5 * math.sin(2 * math.pi * 440 * t) + 0.3 * math.sin(2 * math.pi * 2000 * t) \
+            + 0.08 * rng.uniform(-1, 1)
+        r = 0.4 * math.sin(2 * math.pi * 660 * t) + 0.25 * math.sin(2 * math.pi * 3000 * t) \
+            + 0.08 * rng.uniform(-1, 1)
+        for v in (l, r):
+            iv = int(round(max(-1.0, min(1.0, v)) * 32767))
+            frames += struct.pack("<h", iv)
+    w.writeframes(bytes(frames)); w.close()
+write("long_30s", 44100, 30)
+write("long_60s", 44100, 60)
+PY
+
 encoded=0
 for w in "$WAV"/*.wav; do
     base="$(basename "$w" .wav)"

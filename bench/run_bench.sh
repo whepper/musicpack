@@ -16,7 +16,14 @@ CORPUS="${1:?corpus dir}"
 
 IMPL=""
 ITERATIONS="3"
-if [ "${2:-}" = "--impl" ]; then IMPL="$3"; ITERATIONS="${4:-$ITERATIONS}"; fi
+ARGS=()
+for A in "$@"; do
+  case "$A" in
+    --impl=*) IMPL="${A#--impl=}" ;;
+    --iterations=*) ITERATIONS="${A#--iterations=}" ;;
+  esac
+done
+if [ -n "${2:-}" ] && [ "$2" = "--impl" ]; then IMPL="$3"; fi
 
 [ -x "$BIN" ] || { echo "decode_bench not found at $BIN (build with -DMPC_BUILD_TESTS=ON)"; exit 1; }
 
