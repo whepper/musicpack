@@ -9,6 +9,7 @@
  */
 
 #if defined(_WIN32)
+# define _USE_MATH_DEFINES /* must precede <math.h> for M_PI on MSVC */
 # include <windows.h>
 # include <direct.h>
 # define mkdir_one(p) _mkdir(p)

@@ -6,6 +6,10 @@
   match the numpy reference exactly (research/sonic/frontend.py).
 */
 
+#if defined(_WIN32)
+# define _USE_MATH_DEFINES /* must precede <math.h> for M_PI on MSVC */
+#endif
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
