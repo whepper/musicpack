@@ -93,15 +93,19 @@ jobs:
           bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build-native/mpcenc/mpcenc"
 
       - name: Run wasm benchmarks
+        shell: bash
         run: |
+          set -euo pipefail
           FILES="/tmp/mpc-bench/corpus/uncorrelated_noise-q7.mpc /tmp/mpc-bench/corpus/stereo_sine-q5.mpc /tmp/mpc-bench/corpus/silence-q5.mpc /tmp/mpc-bench/corpus/clipping_edge-q7.mpc tests/fixtures/sine44-q5-48s.mpc"
           mkdir -p bench/results
+          : > bench/results/wasm.tsv
           for CFG in scalar autovec simd; do
-            echo "# === wasm $CFG ==="
+            echo "# === wasm $CFG ===" >> bench/results/wasm.tsv
             for F in $FILES; do
-              node bench/wasm_bench.mjs "build-wasm-$CFG/wasm/musepack.js" "$F"
+              node bench/wasm_bench.mjs "build-wasm-$CFG/wasm/musepack.js" "$F" >> bench/results/wasm.tsv
             done
-          done | tee bench/results/wasm.tsv
+          done
+          cat bench/results/wasm.tsv
 
       - name: Upload results
         uses: actions/upload-artifact@v4

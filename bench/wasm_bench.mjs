@@ -10,6 +10,9 @@
  * Usage: node wasm_bench.mjs <module.js> <file.mpc> [--blocks 1152,4608]
  */
 
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
 const fs = require("fs");
 
 const moduleJs = process.argv[2];
@@ -28,7 +31,7 @@ const bytes = fs.readFileSync(inputMpc);
 const module_ = require(moduleJs);
 
 async function main() {
-  const M = await module_({ locateFile: () => moduleJs.replace(/\.js$/, ".wasm") });
+  const M = await module_();
   const rate = M._mpc_wasm_sample_rate, ch = M._mpc_wasm_channels;
   const lengthSamples = M._mpc_wasm_length_samples;
 
