@@ -428,8 +428,13 @@ Resolved by this freeze:
    Discogs-EffNet's 0.976 s patch hop, are expressed per profile).
 6. The model weights SHA-256 is mandatory in every profile definition that
    has immutable weights (the openl3-v1 definition carries it).
-7. Production runtime: resolved by the production-integration phase (ONNX
-   conversion spike vs isolated helper); the container is runtime-agnostic.
+7. Production runtime: **resolved by the production-integration phase.** The
+   mel frontend (STFT/mel/decibel) is deterministic DSP, reimplemented in
+   the `musicpack-sonic` analyzer (`sonic/`); only the learned network after
+   the frontend is converted to ONNX (Research `convert_openl3.py`) and run
+   through ONNX Runtime. Compatibility with the research harness is verified
+   by `research/sonic/compat_measure.py` (gates: cosine ≥ 0.9999, meandiff
+   ≤ 1e-4, maxdiff ≤ 2e-3 — all PASS). The container is runtime-agnostic.
 8. The container is **model-independent by contract**: a package must be
    readable, parseable and (structurally) valid regardless of which profile
    it claims.

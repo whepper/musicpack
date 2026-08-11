@@ -124,6 +124,24 @@ machine-readable schema live in `specs/musicpack-v1.md` and
 `specs/musicpack-v1.schema.json`; committed reference packages (a Musepack
 album and a FLAC album) are under `tests/reference/`.
 
+### Sonic analysis — content-based discovery
+
+MusicPack sonic analysis stores a versioned audio embedding per track (and a
+deterministic album embedding) in the package, so a server can later offer
+content-based similarity and radio without a centralized recommendation
+service. The **container format is frozen and model-independent**
+(`specs/musicpack-sonic-v1.md`): `analysis/sonic.json`, referenced from the
+manifest's optional `analysis[]`, with model-scoped **profiles**
+(`musicpack-sonic-openl3-v1` = default permissive profile, not normative;
+`musicpack-sonic-discogs-v1` = research-only quality reference;
+`musicpack-sonic-clap-v1` = rejected). libmusicpack owns all Sonic parsing,
+validation and profile-compatibility semantics (`musicpack/sonic.h`); the
+`musicpack` CLI reports it in `info`/`verify` and attaches a completed
+document in `build-draft`. The `musicpack-sonic` analyzer (in `sonic/`, ONNX
+Runtime) computes embeddings at authoring time with a SHA-256-pinned model;
+MusicPack Author exposes it as a model-independent "Sonic Analysis" panel.
+Server-side recommendations are deliberately **not** implemented yet.
+
 ## musicpack-server — self-hosted library server
 
 `musicpack-server` (in `server/`) indexes a real `.mpack` collection into a

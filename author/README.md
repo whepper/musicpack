@@ -305,17 +305,64 @@ package build time (the authoring view shows “Loudness · at build”).
   packaging job are future work (the build/smoke scripts are structured so a
   CI job is a thin wrapper).
 
-## Future: sonic analysis hook
+## Sonic analysis
 
-Sonic analysis is **not** implemented in Phase 1 and no fake fields are put
-into `manifest.json`. The UI already reserves the status chip
-`Sonic Analysis · not analysed`, and the draft model has no `analysis`
-concept. The planned pipeline is:
+Sonic analysis computes a content-based audio embedding per track (and a
+deterministic album embedding) into the package's optional
+`analysis/sonic.json` (container format `musicpack-sonic` v1 — frozen and
+model-independent; see `specs/musicpack-sonic-v1.md`). The UI exposes a
+**model-independent** "Sonic Analysis" panel: profile *MusicPack OpenL3 v1*
+(`musicpack-sonic-openl3-v1`, the default permissive profile — not a
+permanent normative model), with states *not analysed → analysing n/m
+tracks (cancelable) → ready / ready-with-warnings / error*, and a
+re-analyse action. Analysis is never started automatically; a package can
+always be built without sonic.
 
 ```text
-Import → Metadata / Identity → Assets → Analysis (BS.1770-5 · sonic) → Validate → Create
+Sonic Analysis panel (Author)
+      ↓  sonic_analyze / sonic_cancel (Tauri commands)
+AuthorService → spawns `musicpack-sonic` (the analyzer binary)
+      ↓  job JSON (draft audio paths + app-data model/cache/output dirs)
+      ↓  progress events (sonic-progress) + cancellation (SIGTERM)
+sonic.json written to the app data directory (outside the package)
+      ↓  Draft.sonicAnalysis.path
+build-draft (create_package) copies it to analysis/sonic.json, validates it
+      and writes the manifest's analysis[] reference (sha256-protected)
 ```
 
-The likely future model is an optional package asset such as
-`analysis/sonic.json`, referenced from the manifest with type/path/hash/
-algorithm metadata — to be designed and specified separately, not ad hoc.
+### The analyzer (`musicpack-sonic`)
+
+The analyzer lives in `sonic/` (C11 + ONNX Runtime, single-threaded for
+determinism): it decodes MPC/FLAC/WAV to mono float32, resamples with a
+faithful port of resampy `kaiser_best`, runs the mel frontend (kapre
+STFT/mel/decibel) and the SHA-256-pinned post-frontend ONNX graph, pools
+with mean-norm and aggregates the album equal-track. Compatibility against
+the research harness is measured by `research/sonic/compat_measure.py
+--c-doc` (gates: cosine ≥ 0.9999, meandiff ≤ 1e-4, maxdiff ≤ 2e-3 — all
+PASS on the deterministic corpus). libmusicpack remains the authority on
+Sonic semantics; the analyzer never reimplements them.
+
+The model is **not bundled** in the `.app`. It is downloaded separately and
+verified against a pinned SHA-256 (see the analyzer's `acquire.c` and the
+profile in `sonic/sonic_profile.h`). A package-provided profile id can never
+trigger a download or model execution — analyzer selection is trusted
+Author configuration. Per-track embeddings are cached by audio SHA-256 +
+profile + weights, so re-analysis of unchanged audio is free.
+
+### Backend resolution
+
+The analyzer resolves like the CLI but separately: a packaged app uses the
+`musicpack-sonic` sidecar next to the bundled CLI; development uses
+`MUSICPACK_SONIC`, then the CMake build tree (`build/sonic/musicpack-sonic`).
+It is only required when the user actually runs a sonic analysis.
+
+### Standalone macOS implications
+
+- The `.app` bundle gains the `musicpack-sonic` sidecar (small; it links
+  ONNX Runtime as a dynamic library). The ONNX Runtime runtime and the
+  ~37 MB post-frontend model are **not** in the bundle — the model is
+  fetched once (pinned + SHA-256-verified) into the app data directory.
+- Analysis RAM is far below the research TensorFlow stack (~1.9 GB): the
+  ONNX Runtime path runs a single-threaded session with a few hundred MB.
+- arm64 and x86_64 both build; a universal build remains future work (the
+  analyzer is compiled per-host like the CLI sidecar).

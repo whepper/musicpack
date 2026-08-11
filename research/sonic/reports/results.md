@@ -203,3 +203,49 @@ permissive would standardize a core feature prematurely. Instead:
 The draft `specs/musicpack-sonic-v1.md` reflects this: the **container** is
 stable; the **default model** is OpenL3 but explicitly not frozen as
 normative.
+
+## 6. Production integration — runtime + compatibility (completed)
+
+The container freeze and production integration are complete
+(`specs/musicpack-sonic-v1.md` is NORMATIVE; `libmusicpack` owns Sonic
+semantics; the `musicpack` CLI verifies/attaches sonic documents; MusicPack
+Author has a Sonic Analysis panel). The OpenL3 analyzer runs as
+`sonic/musicpack-sonic` (C11 + ONNX Runtime, single-threaded):
+
+- **Frontend**: the kapre mel frontend (STFT hann/242, librosa-slaney mel
+  256, decibel −80) is deterministic DSP, ported to C and verified against
+  the numpy reference (`research/sonic/frontend.py`) to float precision.
+- **Model**: only the learned network after the frontend is converted to
+  ONNX (`convert_openl3.py`, weights SHA-256 pinned, in-process
+  verification cosine 1.0). The ONNX artifact is itself SHA-256-pinned
+  (`3b4b7dac…`).
+- **Resampler**: a faithful polyphase port of resampy 0.4.3 `kaiser_best`
+  (float32 per-tap accumulation, matching resampy bit-for-bit to ~1e-9).
+
+### Research-vs-production compatibility (`compat_measure.py --c-doc`)
+
+The C analyzer's output document compared against the research harness on
+the deterministic corpus (chord/harmonics at 44.1 kHz, tone/noise at 48 kHz,
+plus a short 2-window edge case):
+
+| track | cosine | maxdiff | meandiff |
+|---|---|---|---|
+| chord-44k | 0.999998 | 5.34e-04 | 5.24e-05 |
+| tone-48k | 1.000000 | 8.04e-05 | 3.86e-06 |
+| harmonics-44k | 1.000000 | 2.52e-04 | 2.38e-05 |
+| noise-48k | 1.000000 | 2.98e-08 | 5.48e-09 |
+| edge-44k (1.2 s, 2 windows) | 1.000000 | 3.51e-04 | 2.13e-05 |
+
+Gates: cosine ≥ 0.9999, meandiff ≤ 1e-4, maxdiff ≤ 2e-3 — **all PASS**. The
+residual differences are float32 matmul noise in near-silent mel bins
+(log-domain); the reference itself shows the same character versus TF. They
+cannot materially change recommendation ordering. Known limitation: a
+1.0 s track whose second window is pure silence amplifies this noise (cosine
+~0.998) — an artificial worst case, not representative of real content.
+
+### Model acquisition
+
+The post-frontend ONNX is not committed and not bundled. It is produced from
+the SHA-256-pinned OpenL3 H5 (`624ee7b1…`) by `convert_openl3.py` and
+verified against its own pinned SHA-256 (`3b4b7dac…`) before use. A
+package-provided profile id can never trigger a download or model execution.
