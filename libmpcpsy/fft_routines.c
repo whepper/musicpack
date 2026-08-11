@@ -195,7 +195,7 @@ Init_FFT ( PsyModel* m )
 // input : Signal *x
 // output: energy spectrum *erg
 void
-PowSpec256 ( const float* x, float* erg )
+PowSpec256_scalar ( const float* x, float* erg )
 {
     int i;
     // windowing
@@ -212,7 +212,7 @@ PowSpec256 ( const float* x, float* erg )
 // input : Signal *x
 // output: energy spectrum *erg
 void
-PowSpec1024 ( const float* x, float* erg )
+PowSpec1024_scalar ( const float* x, float* erg )
 {
     int i;
     // windowing
@@ -229,7 +229,7 @@ PowSpec1024 ( const float* x, float* erg )
 // input : Signal *x
 // output: energy spectrum *erg
 void
-PowSpec2048 ( const float* x, float* erg )
+PowSpec2048_scalar ( const float* x, float* erg )
 {
     int i;
     // windowing (only 1600 samples available -> centered in 2048!)
@@ -248,7 +248,7 @@ PowSpec2048 ( const float* x, float* erg )
 // input : Signal *x
 // output: energy spectrum *erg and phase spectrum *phs
 void
-PolarSpec1024 ( const float* x, float* erg, float* phs )
+PolarSpec1024_scalar ( const float* x, float* erg, float* phs )
 {
     int i;
     for( i = 0; i < 1024; i++ )
@@ -262,6 +262,70 @@ PolarSpec1024 ( const float* x, float* erg, float* phs )
         erg[i]  = a[i*2] * a[i*2] + a[i*2+1] * a[i*2+1];
         phs[i]  = ATAN2F( a[i*2+1], a[i*2] );
     }
+}
+
+// ---- bit-exact kernel dispatch (Phase 3) -----------------------------------
+// The spectrum kernels used by the psychoacoustic model run through function
+// pointers so the scalar reference and the SIMD kernels can be selected once
+// and A/B compared (see libmpcpsy.h). Scalar is always available; the SIMD
+// kernels (fft_simd.c) are compiled in with MPC_ENABLE_PSY_SIMD_KERNEL.
+static mpc_powspec_fn   powspec256_impl   = PowSpec256_scalar;
+static mpc_powspec_fn   powspec1024_impl  = PowSpec1024_scalar;
+static mpc_powspec_fn   powspec2048_impl  = PowSpec2048_scalar;
+static mpc_polarspec_fn polarspec1024_impl = PolarSpec1024_scalar;
+
+void
+mpc_psy_set_impl ( int impl )
+{
+#ifdef MPC_ENABLE_PSY_SIMD_KERNEL
+    const int want = impl == MPC_PSY_SIMD || impl == MPC_PSY_AUTO;
+    if ( want ) {
+        powspec256_impl    = mpc_powspec256_simd;
+        powspec1024_impl   = mpc_powspec1024_simd;
+        powspec2048_impl   = mpc_powspec2048_simd;
+        polarspec1024_impl = mpc_polarspec1024_simd;
+        return;
+    }
+#endif
+    (void) impl;
+    powspec256_impl    = PowSpec256_scalar;
+    powspec1024_impl   = PowSpec1024_scalar;
+    powspec2048_impl   = PowSpec2048_scalar;
+    polarspec1024_impl = PolarSpec1024_scalar;
+}
+
+void
+mpc_psy_reset_state ( PsyModel* m )
+{
+    // Restore every mutable value that can influence later psychoacoustic
+    // output: temporal-masking integrators, FFT history, transient/preecho
+    // state, vocal/cepstrum state and loudness tracking. Immutable config and
+    // tables are untouched.
+    memset ( &m->state, 0, sizeof m->state );
+}
+
+void
+PowSpec256 ( const float* x, float* erg )
+{
+    powspec256_impl ( x, erg );
+}
+
+void
+PowSpec1024 ( const float* x, float* erg )
+{
+    powspec1024_impl ( x, erg );
+}
+
+void
+PowSpec2048 ( const float* x, float* erg )
+{
+    powspec2048_impl ( x, erg );
+}
+
+void
+PolarSpec1024 ( const float* x, float* erg, float* phs )
+{
+    polarspec1024_impl ( x, erg, phs );
 }
 
 // input : logarithmized energy spectrum *cep

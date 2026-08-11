@@ -123,3 +123,32 @@ typedef struct {
 
 } PsyModel;
 
+// ---- bit-exact psychoacoustic kernel dispatch (Phase 3) --------------------
+// The hot spectrum/FFT kernels run through function pointers so the scalar
+// reference and the SIMD kernels can be selected once and A/B compared.
+// Internal/testable machinery, not a public API.
+typedef void (*mpc_powspec_fn)   ( const float* x, float* erg );
+typedef void (*mpc_polarspec_fn) ( const float* x, float* erg, float* phs );
+
+enum {
+    MPC_PSY_AUTO   = 0, ///< best available (default; SIMD when compiled in)
+    MPC_PSY_SCALAR = 1, ///< force the scalar reference path
+    MPC_PSY_SIMD   = 2, ///< force the SIMD path (no-op if not compiled in)
+};
+
+void mpc_psy_set_impl ( int impl );
+void mpc_psy_reset_state ( PsyModel* m );
+
+// Spectrum/FFT kernels (fft_routines.c; dispatchers for the psy A/B).
+void PowSpec256    ( const float* x, float* erg );
+void PowSpec1024   ( const float* x, float* erg );
+void PowSpec2048   ( const float* x, float* erg );
+void PolarSpec1024 ( const float* x, float* erg, float* phs );
+
+#ifdef MPC_ENABLE_PSY_SIMD_KERNEL
+void mpc_powspec256_simd   ( const float* x, float* erg );
+void mpc_powspec1024_simd  ( const float* x, float* erg );
+void mpc_powspec2048_simd  ( const float* x, float* erg );
+void mpc_polarspec1024_simd ( const float* x, float* erg, float* phs );
+#endif
+

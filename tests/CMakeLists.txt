@@ -260,3 +260,18 @@ if(UNIX AND NOT APPLE)
 endif()
 
 add_test(NAME enc_ab COMMAND mpc_enc_synth_ab)
+
+# ---- psychoacoustic scalar-vs-SIMD differential test ----------------------
+# White-box: forces the psychoacoustic spectrum/FFT kernels (and the full
+# model) scalar vs SIMD and asserts bit-identical outputs, reporting the first
+# divergence. Links mpcpsy (libm). Only meaningful with MPC_ENABLE_SIMD; the
+# forced-simd request falls back to scalar otherwise and the test trivially
+# passes.
+add_executable(mpc_psy_ab psy_ab.c)
+target_link_libraries(mpc_psy_ab PRIVATE mpcpsy)
+target_include_directories(mpc_psy_ab PRIVATE ${PROJECT_SOURCE_DIR}/libmpcpsy)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_psy_ab PRIVATE m)
+endif()
+
+add_test(NAME psy_ab COMMAND mpc_psy_ab)
