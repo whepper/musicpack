@@ -23,6 +23,8 @@
 #define SONIC_PROFILE_ONNX_FILE "openl3_post.onnx"
 #define SONIC_PROFILE_ONNX_SHA256 \
     "3b4b7dac370d8f3dc6c3b22613269301ce7d4540d857f8d434f67bfb1a9ca986"
+/* Expected artifact size in bytes (the immutable release asset). */
+#define SONIC_PROFILE_ONNX_SIZE 18742941
 
 /* Frontend (openl3 0.4.0 + kapre 0.3.6). */
 #define SONIC_SAMPLE_RATE 48000

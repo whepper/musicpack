@@ -92,6 +92,18 @@ emit_error(const char *message)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "event", "error");
+    cJSON_AddStringToObject(o, "code", "ANALYSIS_FAILED");
+    cJSON_AddStringToObject(o, "message", message);
+    emit_json(o);
+    cJSON_Delete(o);
+}
+
+static void
+emit_error_code(const char *code, const char *message)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "event", "error");
+    cJSON_AddStringToObject(o, "code", code);
     cJSON_AddStringToObject(o, "message", message);
     emit_json(o);
     cJSON_Delete(o);
@@ -545,11 +557,27 @@ main(int argc, char **argv)
     }
     free(job_json);
 
-    model_path = sonic_acquire_model(j.model_dir);
-    if (model_path == 0) {
-        free_job(&j);
-        emit_error("model unavailable");
-        return 1;
+    model_path = 0;
+    {
+        sonic_model_status st = sonic_acquire_model(j.model_dir, &model_path);
+        if (st != SONIC_MODEL_OK || model_path == 0) {
+            free_job(&j);
+            switch (st) {
+            case SONIC_MODEL_CHECKSUM:
+                emit_error_code("MODEL_CHECKSUM_MISMATCH",
+                                "the analysis model fails the pinned SHA-256 check");
+                break;
+            case SONIC_MODEL_UNREADABLE:
+                emit_error_code("MODEL_UNREADABLE",
+                                "the analysis model cannot be read");
+                break;
+            default:
+                emit_error_code("MODEL_MISSING",
+                                "the analysis model is not installed");
+                break;
+            }
+            return 1;
+        }
     }
     {
         cJSON *o = cJSON_CreateObject();
@@ -563,7 +591,8 @@ main(int argc, char **argv)
     if (model == 0) {
         free(model_path);
         free_job(&j);
-        emit_error("cannot load the ONNX model");
+        emit_error_code("RUNTIME_LOAD_FAILED",
+                        "the ONNX Runtime model could not be loaded");
         return 1;
     }
 
