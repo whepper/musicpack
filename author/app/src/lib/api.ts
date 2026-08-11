@@ -15,6 +15,7 @@ import type {
   IdentifyOptions,
   IdentifyResult,
   ReadImageResult,
+  SonicResult,
   ValidationResult,
 } from './types';
 
@@ -99,6 +100,19 @@ export class AuthorApi {
 
   async readImage(path: string): Promise<ReadImageResult> {
     return (await this.invokeFn('read_image', { path })) as ReadImageResult;
+  }
+
+  /** Runs the sonic analyzer for the draft. Progress arrives as
+   * `sonic-progress` Tauri events; the promise resolves when the run ends. */
+  async sonicAnalyze(draft: Draft): Promise<SonicResult> {
+    return (await this.invokeFn('sonic_analyze', {
+      draftJson: JSON.stringify(draft),
+    })) as SonicResult;
+  }
+
+  /** Cancels a running sonic analysis. */
+  async sonicCancel(): Promise<void> {
+    await this.invokeFn('sonic_cancel', {});
   }
 
   pickDirectory(): Promise<string | null> {

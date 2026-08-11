@@ -383,6 +383,71 @@ impl AuthorService {
         self.ensure_handshake()?;
         self.run_json(&["verify", path, "--json"])
     }
+
+    // ---- Sonic analysis ----------------------------------------------
+
+    /// Resolves the `musicpack-sonic` analyzer binary. Bundled apps use the
+    /// sidecar next to the CLI; development uses MUSICPACK_SONIC, then the
+    /// CMake build tree. Like the CLI, analyzer selection is trusted
+    /// configuration — a package-provided profile never triggers it.
+    fn sonic_resolve(&self) -> Result<PathBuf, AuthorError> {
+        match &self.location {
+            Ok(BackendLocation::Bundled(cli)) => {
+                let sonic = cli.parent().unwrap_or_else(|| Path::new("")).join("musicpack-sonic");
+                if sonic.is_file() {
+                    Ok(sonic)
+                } else {
+                    Err(AuthorError::CliNotFound(format!(
+                        "bundled sonic analyzer not found at {}; reinstall MusicPack Author",
+                        sonic.display()
+                    )))
+                }
+            }
+            Ok(BackendLocation::Development(cli)) => {
+                if let Ok(p) = std::env::var("MUSICPACK_SONIC") {
+                    let p = PathBuf::from(p.trim());
+                    if !p.as_os_str().is_empty() && p.is_file() {
+                        return Ok(p);
+                    }
+                }
+                let base = cli.parent().unwrap_or_else(|| Path::new("."));
+                for cand in [
+                    base.join("../sonic/musicpack-sonic"),
+                    base.join("sonic/musicpack-sonic"),
+                ] {
+                    if cand.is_file() {
+                        return Ok(cand);
+                    }
+                }
+                Err(AuthorError::CliNotFound(
+                    "cannot find the `musicpack-sonic` analyzer; build it with \
+                     `cmake --build build -j --target musicpack_sonic_cmd \
+                     -DSONIC_ONNXRUNTIME_DIR=<onnxruntime>` or set MUSICPACK_SONIC"
+                        .to_string(),
+                ))
+            }
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Spawns the sonic analyzer with a job document file. Returns the child
+    /// (stdout piped, for progress events) and the job temp path (removed by
+    /// the caller). The child handle is kept for cancellation.
+    pub fn sonic_spawn(&self, job_json: &str) -> Result<(std::process::Child, PathBuf), AuthorError> {
+        let sonic = self.sonic_resolve()?;
+        let job_tmp = self.temp_file("sonic-job.json", job_json)?;
+        let child = Command::new(sonic)
+            .arg(&job_tmp)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&job_tmp);
+                AuthorError::Io(format!("cannot run `musicpack-sonic`: {e}"))
+            })?;
+        Ok((child, job_tmp))
+    }
 }
 
 #[cfg(test)]
@@ -564,5 +629,78 @@ mod tests {
         let mut service = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let err = service.ensure_handshake().unwrap_err();
         assert!(err.to_string().contains("unknown command"));
+    }
+
+    // ---- sonic analyzer resolution ----
+
+    fn make_sonic(tmp: &Path, rel: &str) -> PathBuf {
+        let dir = tmp.join(rel);
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("musicpack-sonic");
+        fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&bin, perms).unwrap();
+        }
+        bin
+    }
+
+    #[test]
+    fn sonic_dev_prefers_env_override() {
+        let tmp = TempDir::new().unwrap();
+        let sonic = make_sonic(tmp.path(), "custom");
+        let loc = AuthorService::resolve_development(Some("/p/cli"), tmp.path(), no_path).unwrap();
+        let svc = AuthorService::new(Ok(loc));
+        std::env::set_var("MUSICPACK_SONIC", &sonic);
+        let p = svc.sonic_resolve().unwrap();
+        std::env::remove_var("MUSICPACK_SONIC");
+        assert_eq!(p, sonic);
+    }
+
+    #[test]
+    fn sonic_dev_prefers_build_tree() {
+        let tmp = TempDir::new().unwrap();
+        let sonic = make_sonic(tmp.path(), "build/sonic");
+        let cli = make_cli(tmp.path(), "build/musicpack", "#!/bin/sh\n");
+        let loc = AuthorService::resolve_development(None, tmp.path(), on_path).unwrap();
+        assert_eq!(loc.path(), &cli);
+        let svc = AuthorService::new(Ok(loc));
+        let p = svc.sonic_resolve().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&p).unwrap(),
+            std::fs::canonicalize(&sonic).unwrap()
+        );
+    }
+
+    #[test]
+    fn sonic_dev_missing_is_actionable() {
+        let tmp = TempDir::new().unwrap();
+        let loc = AuthorService::resolve_development(Some("/p/cli"), tmp.path(), no_path).unwrap();
+        let svc = AuthorService::new(Ok(loc));
+        let err = svc.sonic_resolve().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MUSICPACK_SONIC"), "{msg}");
+    }
+
+    #[test]
+    fn sonic_bundled_sits_next_to_cli() {
+        let tmp = TempDir::new().unwrap();
+        make_sonic(tmp.path(), "MacOS");
+        let cli = make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli.clone())));
+        let p = svc.sonic_resolve().unwrap();
+        assert_eq!(p, cli.parent().unwrap().join("musicpack-sonic"));
+    }
+
+    #[test]
+    fn sonic_bundled_missing_is_actionable() {
+        let tmp = TempDir::new().unwrap();
+        let cli = make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+        let err = svc.sonic_resolve().unwrap_err();
+        assert!(err.to_string().contains("reinstall MusicPack Author"));
     }
 }

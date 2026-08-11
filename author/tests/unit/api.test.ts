@@ -85,6 +85,19 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'read_image', args: { path: '/art.png' } });
   });
 
+  it('runs and cancels sonic analysis', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    const d = draft();
+    await api.sonicAnalyze(d);
+    await api.sonicCancel();
+    expect(calls[0]).toEqual({
+      cmd: 'sonic_analyze',
+      args: { draftJson: JSON.stringify(d) },
+    });
+    expect(calls[1]).toEqual({ cmd: 'sonic_cancel', args: {} });
+  });
+
   it('fetches the backend capability handshake', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);

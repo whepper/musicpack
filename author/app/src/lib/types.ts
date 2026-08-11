@@ -98,6 +98,19 @@ export interface AssetEntry {
   path: string;
 }
 
+/** Sonic analysis state carried by the authoring draft (application state,
+ * not part of the .mpack manifest). The completed document lives outside the
+ * package until build; `path` points at it for create_package to attach. */
+export interface SonicAnalysis {
+  status: 'not_analysed' | 'pending' | 'ready' | 'ready-with-warnings' | 'error';
+  profile?: string;
+  path?: string;
+  tracksAnalysed?: number;
+  tracksTotal?: number;
+  warnings?: string[];
+  error?: string;
+}
+
 export interface Draft {
   schema: 'musicpack-draft';
   version: 1;
@@ -112,6 +125,7 @@ export interface Draft {
   booklet: AssetEntry[];
   lyrics: AssetEntry[];
   extras: AssetEntry[];
+  sonicAnalysis?: SonicAnalysis;
 }
 
 export const RELEASE_TYPES = [
@@ -187,6 +201,32 @@ export interface CreateResult {
 export interface ReadImageResult {
   mime: string;
   dataBase64: string;
+}
+
+/** Result of a sonic analysis run. `cancelled` is distinct from failure. */
+export interface SonicResult {
+  ok: boolean;
+  cancelled?: boolean;
+  profile?: string;
+  outputPath?: string;
+  sha256?: string;
+  tracks?: number;
+  contributing?: number;
+}
+
+/** A progress event emitted during sonic analysis. */
+export interface SonicProgress {
+  event: 'model' | 'track' | 'album' | 'done' | 'error' | 'cancelled';
+  state?: string;
+  path?: string;
+  done?: number;
+  total?: number;
+  disc?: number;
+  track?: number;
+  status?: 'ok' | 'no-embedding' | 'error';
+  message?: string;
+  contributing?: number;
+  sha256?: string;
 }
 
 export interface BackendInfo {

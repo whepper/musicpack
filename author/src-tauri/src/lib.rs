@@ -13,13 +13,15 @@ mod author_service;
 use author_service::AuthorService;
 use base64::Engine as _;
 use serde::Serialize;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 struct AppState {
     service: Mutex<AuthorService>,
+    running: Mutex<Option<Child>>,
 }
 
 #[derive(Serialize)]
@@ -177,6 +179,146 @@ fn read_image(path: String) -> Result<ReadImage, String> {
     })
 }
 
+/// Builds a sonic analyzer job from the authoring draft: absolute audio
+/// paths (sourceRoot + audioPath) plus the app-local model/cache/output
+/// locations under the app data directory.
+fn build_sonic_job(app: &tauri::AppHandle, draft_json: &str) -> Result<String, String> {
+    let draft: serde_json::Value = serde_json::from_str(draft_json)
+        .map_err(|e| format!("invalid draft: {e}"))?;
+    let source_root = draft
+        .get("sourceRoot")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?;
+    let sonic_dir = data_dir.join("sonic");
+    std::fs::create_dir_all(&sonic_dir).map_err(|e| format!("cannot create sonic dir: {e}"))?;
+    let model_dir = sonic_dir.join("models");
+    let cache_dir = sonic_dir.join("cache");
+    let out_path = sonic_dir.join("sonic.json");
+
+    let mut tracks = Vec::new();
+    if let Some(media) = draft.get("media").and_then(|m| m.as_array()) {
+        for disc in media {
+            let disc_no = disc.get("disc").and_then(|d| d.as_i64()).unwrap_or(0);
+            if let Some(trs) = disc.get("tracks").and_then(|t| t.as_array()) {
+                for tr in trs {
+                    let track_no = tr.get("track").and_then(|t| t.as_i64()).unwrap_or(0);
+                    let ap = tr.get("audioPath").and_then(|p| p.as_str()).unwrap_or("");
+                    let abs = if ap.is_empty() {
+                        String::new()
+                    } else if Path::new(ap).is_absolute() {
+                        ap.to_string()
+                    } else {
+                        PathBuf::from(&source_root)
+                            .join(ap)
+                            .to_string_lossy()
+                            .into_owned()
+                    };
+                    tracks.push(json!({ "disc": disc_no, "track": track_no, "path": abs }));
+                }
+            }
+        }
+    }
+    if tracks.is_empty() {
+        return Err("the draft has no tracks to analyse".to_string());
+    }
+    let job = json!({
+        "profile": "musicpack-sonic-openl3-v1",
+        "modelDir": model_dir.to_string_lossy(),
+        "cacheDir": cache_dir.to_string_lossy(),
+        "outPath": out_path.to_string_lossy(),
+        "tracks": tracks,
+    });
+    Ok(job.to_string())
+}
+
+/// Runs the sonic analyzer for the current draft. Progress events stream as
+/// `sonic-progress` Tauri events; the command resolves when the run finishes
+/// (or is cancelled). The resulting sonic document is written to the app data
+/// directory; `Draft.sonicAnalysis.path` points at it for `create_package`.
+#[tauri::command]
+async fn sonic_analyze(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    draft_json: String,
+) -> Result<serde_json::Value, String> {
+    let job = build_sonic_job(&app, &draft_json)?;
+    let (mut child, job_tmp) = {
+        let svc = state.service.lock().unwrap();
+        svc.sonic_spawn(&job).map_err(cli_err)?
+    };
+    let stdout = child.stdout.take().ok_or("sonic analyzer produced no stdout")?;
+    *state.running.lock().unwrap() = Some(child);
+
+    let app2 = app.clone();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut final_event: Option<serde_json::Value> = None;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { continue };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                let _ = app2.emit("sonic-progress", &v);
+                let ev = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
+                if matches!(ev, "done" | "error" | "cancelled") {
+                    final_event = Some(v);
+                }
+            }
+        }
+        final_event
+    });
+    let final_event = reader.join().unwrap_or(None);
+    let _ = std::fs::remove_file(&job_tmp);
+    *state.running.lock().unwrap() = None;
+
+    let out_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?
+        .join("sonic/sonic.json");
+    let Some(event) = final_event else {
+        return Err("sonic analyzer produced no result".to_string());
+    };
+    let ev = event
+        .get("event")
+        .and_then(|e| e.as_str())
+        .unwrap_or("error");
+    if ev == "cancelled" {
+        return Ok(json!({ "ok": false, "cancelled": true, "outputPath": out_path }));
+    }
+    if ev == "error" {
+        let message = event
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("sonic analysis failed");
+        return Err(format!("sonic analysis failed: {message}"));
+    }
+    Ok(json!({
+        "ok": true,
+        "cancelled": false,
+        "profile": "musicpack-sonic-openl3-v1",
+        "outputPath": out_path,
+        "sha256": event.get("sha256"),
+        "tracks": event.get("tracks"),
+        "contributing": event.get("contributing"),
+    }))
+}
+
+/// Cancels a running sonic analysis (SIGTERM to the analyzer child).
+#[tauri::command]
+fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
+    let mut running = state.running.lock().unwrap();
+    if let Some(child) = running.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *running = None;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -196,6 +338,7 @@ pub fn run() {
             };
             app.manage(AppState {
                 service: Mutex::new(AuthorService::new(location)),
+                running: Mutex::new(None),
             });
             Ok(())
         })
@@ -206,7 +349,9 @@ pub fn run() {
             identify_draft,
             create_package,
             verify_package,
-            read_image
+            read_image,
+            sonic_analyze,
+            sonic_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running MusicPack Author");
