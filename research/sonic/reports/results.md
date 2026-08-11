@@ -245,7 +245,15 @@ cannot materially change recommendation ordering. Known limitation: a
 
 ### Model acquisition
 
-The post-frontend ONNX is not committed and not bundled. It is produced from
-the SHA-256-pinned OpenL3 H5 (`624ee7b1…`) by `convert_openl3.py` and
-verified against its own pinned SHA-256 (`3b4b7dac…`) before use. A
-package-provided profile id can never trigger a download or model execution.
+The post-frontend ONNX is not committed and not bundled. **Production**
+(MusicPack Author, phase 2.1) downloads it once on first use from an
+immutable release asset (`scripts/publish-sonic-model.sh` →
+`https://github.com/whepper/musicpack/releases/download/sonic-model-openl3-v1/openl3_post.onnx`)
+into the application-data model cache, verifies it against its pinned
+SHA-256 (`3b4b7dac…`, 18,742,941 bytes) before the atomic rename, and reuses
+a valid cached copy offline. It is generated **reproducibly** from the
+SHA-256-pinned OpenL3 H5 (`624ee7b1…`) by `convert_openl3.py` — developers
+build it that way; end users never run Python or a conversion. The analyzer
+itself stays offline (it only resolves and re-verifies a model that trusted
+Author configuration placed on disk), and a package-provided profile id can
+never trigger a download or model execution. See `author/README.md`.

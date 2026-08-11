@@ -37,6 +37,23 @@ echo "ok: author-API handshake matches"
 echo "== runtime dependency check =="
 "$ROOT/scripts/verify-backend-dylibs.sh" "$BACKEND"
 
+SONIC="$MACOS/musicpack-sonic"
+[ -f "$SONIC" ] || { echo "fail: bundled sonic analyzer missing at $SONIC" >&2; exit 1; }
+[ -x "$SONIC" ] || { echo "fail: bundled sonic analyzer not executable" >&2; exit 1; }
+echo "ok: bundled sonic analyzer present and executable"
+
+echo "== sonic analyzer runs and reports typed model state =="
+JOB="$(mktemp)"
+trap 'rm -f "$JOB"' EXIT
+cat > "$JOB" <<EOF
+{"profile":"musicpack-sonic-openl3-v1","modelDir":"/nonexistent","cacheDir":"/tmp","outPath":"/tmp/sonic.json","tracks":[{"disc":1,"track":1,"path":"/tmp/does-not-exist.wav"}]}
+EOF
+OUT="$("$SONIC" "$JOB" 2>/dev/null || true)"
+echo "$OUT"
+echo "$OUT" | grep -q '"code":"MODEL_MISSING"' \
+  || { echo "fail: analyzer did not report MODEL_MISSING" >&2; exit 1; }
+echo "ok: analyzer binary loads and reports MODEL_MISSING (no model installed)"
+
 echo "== harmless structured operation (verify a reference package) =="
 PKG="$ROOT/tests/reference/test-musicpack-album.mpack"
 [ -d "$PKG" ] || PKG="$(find "$ROOT/tests/reference" -maxdepth 1 -name '*.mpack' -type d | head -1)"

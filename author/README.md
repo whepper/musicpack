@@ -342,12 +342,28 @@ the research harness is measured by `research/sonic/compat_measure.py
 PASS on the deterministic corpus). libmusicpack remains the authority on
 Sonic semantics; the analyzer never reimplements them.
 
-The model is **not bundled** in the `.app`. It is downloaded separately and
-verified against a pinned SHA-256 (see the analyzer's `acquire.c` and the
-profile in `sonic/sonic_profile.h`). A package-provided profile id can never
-trigger a download or model execution — analyzer selection is trusted
-Author configuration. Per-track embeddings are cached by audio SHA-256 +
-profile + weights, so re-analysis of unchanged audio is free.
+The model is **not bundled** in the `.app`. The ONNX Runtime runtime is
+bundled, but the ~18 MB post-frontend ONNX artifact is downloaded once on
+first use and verified against a pinned SHA-256 (`3b4b7dac…`, 18,742,941
+bytes) before activation. Acquisition is trusted Author application logic
+(`src-tauri/src/sonic_model.rs`) — a package-provided profile id can never
+trigger a download or model execution. The model cache lives at:
+
+```text
+Application Support/MusicPack Author/sonic/models/musicpack-sonic-openl3-v1/openl3_post.onnx
+```
+
+(resolved through the platform-native Tauri app-data path, never hardcoded).
+Offline with a valid cached model, analysis works normally; offline without
+one, the panel reports that the model could not be downloaded and the package
+can still be built without sonic. Per-track embeddings are cached by audio
+SHA-256 + profile + weights, so re-analysis of unchanged audio is free.
+
+The model artifact is generated **reproducibly** from the pinned OpenL3 0.4.0
+weights (CC BY 4.0, marl/openl3) by `research/sonic/convert_openl3.py`;
+normal users download the already-produced, SHA-pinned artifact from the
+immutable release asset (`scripts/publish-sonic-model.sh`), never a `latest`
+asset and never a Python/ONNX-conversion step.
 
 ### Backend resolution
 
@@ -358,11 +374,40 @@ It is only required when the user actually runs a sonic analysis.
 
 ### Standalone macOS implications
 
-- The `.app` bundle gains the `musicpack-sonic` sidecar (small; it links
-  ONNX Runtime as a dynamic library). The ONNX Runtime runtime and the
-  ~37 MB post-frontend model are **not** in the bundle — the model is
-  fetched once (pinned + SHA-256-verified) into the app data directory.
+- The `.app` bundle gains the `musicpack-sonic` sidecar and a relocatable
+  **ONNX Runtime dylib** (`Contents/Frameworks/libonnxruntime*.dylib`,
+  loaded via `@loader_path/../Frameworks`). arm64 bundles ONNX Runtime
+  1.28.0; x86_64 uses 1.23.0 (the last Intel-macOS ONNX Runtime release) —
+  both pinned + checksummed by `scripts/build-author-macos.sh`.
+- The ~18 MB post-frontend **model** is fetched once on first use
+  (pinned + SHA-256-verified) into the app data directory; it is not in the
+  bundle.
+- The build runs `scripts/audit-author-macos.sh` as a gate: it fails on a
+  missing piece, a Homebrew/local/external dependency, an absolute rpath, or
+  a mixed architecture.
 - Analysis RAM is far below the research TensorFlow stack (~1.9 GB): the
   ONNX Runtime path runs a single-threaded session with a few hundred MB.
-- arm64 and x86_64 both build; a universal build remains future work (the
-  analyzer is compiled per-host like the CLI sidecar).
+- arm64 and x86_64 both build (host-architecture only); a universal build
+  remains future work (the analyzer is compiled per-host like the CLI
+  sidecar, and ONNX Runtime would need a universal build).
+
+### Clean-machine smoke procedure
+
+On a clean macOS user account (or equivalent isolated environment):
+
+1. `./scripts/build-author-macos.sh` → `MusicPack Author.app`.
+2. Confirm no Homebrew ONNX Runtime is reachable via loader paths
+   (`echo $DYLD_LIBRARY_PATH` empty; `brew list | grep onnx` nothing).
+3. Launch Author, import an album, click **Analyse Sonic**.
+4. Confirm the first-use model acquisition (~18 MB) with progress and
+   SHA-256 verification.
+5. Confirm the analysis completes and the `.mpack` builds.
+6. `musicpack verify <album>.mpack --json` — confirm `analysis/sonic.json`
+   is present and valid.
+7. Quit/relaunch Author and re-analyse — confirm the cached model is reused
+   with no network access.
+
+(Verified on this machine up to and including the build/audit/smoke gates and
+the analyzer's relocatable load; the full GUI click-through + first-use
+download is the remaining manual step on a clean Mac.)
+

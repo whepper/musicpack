@@ -138,8 +138,12 @@ manifest's optional `analysis[]`, with model-scoped **profiles**
 validation and profile-compatibility semantics (`musicpack/sonic.h`); the
 `musicpack` CLI reports it in `info`/`verify` and attaches a completed
 document in `build-draft`. The `musicpack-sonic` analyzer (in `sonic/`, ONNX
-Runtime) computes embeddings at authoring time with a SHA-256-pinned model;
-MusicPack Author exposes it as a model-independent "Sonic Analysis" panel.
+Runtime, single-threaded) computes embeddings at authoring time with a
+SHA-256-pinned model; MusicPack Author exposes it as a model-independent
+"Sonic Analysis" panel and downloads the ~18 MB pinned ONNX artifact on first
+use (never a Python/ONNX-conversion step for end users). The standalone
+`.app` bundles ONNX Runtime; the model lives in the app data directory. See
+`author/README.md` for the acquisition, offline and packaging details.
 Server-side recommendations are deliberately **not** implemented yet.
 
 ## musicpack-server — self-hosted library server

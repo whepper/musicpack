@@ -148,6 +148,12 @@ if(UNIX)
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_author.sh
                      $<TARGET_FILE:musicpack_cmd>)
 
+    # Standalone .app packaging audit (skips when the app is not built; the
+    # authoritative gate runs inside scripts/build-author-macos.sh).
+    add_test(NAME author_app_audit
+             COMMAND ${CMAKE_COMMAND} -E env
+                     ${CMAKE_CURRENT_SOURCE_DIR}/run_author_app_audit.sh)
+
     # .mpack fuzz-lite: truncated/flipped manifests and path injection.
     add_test(NAME mpack_fuzz
              COMMAND ${CMAKE_COMMAND} -E env
