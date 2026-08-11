@@ -703,4 +703,40 @@ mod tests {
         let err = svc.sonic_resolve().unwrap_err();
         assert!(err.to_string().contains("reinstall MusicPack Author"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn sonic_spawn_passes_the_verified_model_dir_through() {
+        // A fake analyzer that echoes the modelDir it received in the job.
+        let tmp = TempDir::new().unwrap();
+        make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let sonic = tmp.path().join("MacOS/musicpack-sonic");
+        fs::write(
+            &sonic,
+            "#!/bin/sh\ngrep -o '\"modelDir\":\"[^\"]*\"' \"$1\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&sonic).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&sonic, perms).unwrap();
+        }
+        let cli = tmp.path().join("MacOS/musicpack");
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+
+        let job = format!(
+            r#"{{"profile":"musicpack-sonic-openl3-v1","modelDir":"/verified/models/profile","tracks":[]}}"#
+        );
+        let (mut child, _tmp) = svc.sonic_spawn(&job).unwrap();
+        use std::io::{BufRead, Read};
+        let mut out = String::new();
+        let child_out = child.stdout.as_mut().unwrap();
+        child_out.read_to_string(&mut out).unwrap();
+        let _ = child.wait();
+        assert!(
+            out.contains("\"modelDir\":\"/verified/models/profile\""),
+            "analyzer received the verified model dir: {out}"
+        );
+    }
 }

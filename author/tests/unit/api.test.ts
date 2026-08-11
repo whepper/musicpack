@@ -98,6 +98,13 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'sonic_cancel', args: {} });
   });
 
+  it('reports the sonic model status', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    await api.sonicModelStatus();
+    expect(calls[0]).toEqual({ cmd: 'sonic_model_status', args: {} });
+  });
+
   it('fetches the backend capability handshake', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);

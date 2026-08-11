@@ -15,6 +15,7 @@ import type {
   Draft,
   IdentifyOptions,
   IdentifyResult,
+  ModelStatus,
   ReadImageResult,
   SonicProgress,
   SonicResult,
@@ -128,7 +129,12 @@ export class AuthorApi {
     }
   }
 
-  /** Cancels a running sonic analysis. */
+  /** Reports the current Sonic model state without downloading anything. */
+  async sonicModelStatus(): Promise<ModelStatus> {
+    return (await this.invokeFn('sonic_model_status', {})) as ModelStatus;
+  }
+
+  /** Cancels a running sonic analysis or model download. */
   async sonicCancel(): Promise<void> {
     await this.invokeFn('sonic_cancel', {});
   }

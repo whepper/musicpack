@@ -214,19 +214,51 @@ export interface SonicResult {
   contributing?: number;
 }
 
-/** A progress event emitted during sonic analysis. */
+/** Persistent Sonic model state (idle view). */
+export type ModelState =
+  | 'missing'
+  | 'checking'
+  | 'downloading'
+  | 'verifying'
+  | 'ready'
+  | 'error';
+
+export interface ModelStatus {
+  profile: string;
+  state: ModelState;
+  path?: string;
+  sizeBytes: number;
+}
+
+/** A progress event emitted during sonic analysis / model acquisition. */
 export interface SonicProgress {
   event: 'model' | 'track' | 'album' | 'done' | 'error' | 'cancelled';
-  state?: string;
+  state?: 'checking' | 'downloading' | 'verifying' | 'ready';
   path?: string;
+  downloaded?: number;
   done?: number;
   total?: number;
   disc?: number;
   track?: number;
   status?: 'ok' | 'no-embedding' | 'error';
+  code?: string;
   message?: string;
   contributing?: number;
   sha256?: string;
+}
+
+/** Typed error rejection from the sonic commands: `{ code, message }`. */
+export interface SonicError {
+  code?:
+    | 'model_missing'
+    | 'download_failed'
+    | 'checksum_mismatch'
+    | 'offline'
+    | 'download_cancelled'
+    | 'analyzer_unavailable'
+    | 'runtime_dependency_missing'
+    | 'analysis_failed';
+  message?: string;
 }
 
 export interface BackendInfo {

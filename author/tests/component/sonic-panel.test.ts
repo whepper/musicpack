@@ -2,8 +2,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import SonicPanel from '../../app/src/lib/ui/SonicPanel.svelte';
 import { api, draftStore } from '../../app/src/lib/bootstrap';
-import { render, click, type RenderResult } from './helpers';
-import type { Draft } from '../../app/src/lib/types';
+import { render, click, tick, type RenderResult } from './helpers';
+import type { Draft, SonicResult } from '../../app/src/lib/types';
 
 function draft(): Draft {
   return {
@@ -103,5 +103,66 @@ describe('SonicPanel', () => {
     const btn = view.queryAll('button').find((b) => (b.textContent ?? '').includes('Analyse Sonic'))!;
     await click(btn);
     expect(draftStore.draft.get()?.sonicAnalysis?.status).toBe('not_analysed');
+  });
+
+  it('shows model download progress during first-use acquisition', async () => {
+    vi.spyOn(api, 'sonicModelStatus').mockResolvedValue({
+      profile: 'musicpack-sonic-openl3-v1',
+      state: 'missing',
+      sizeBytes: 18_742_941,
+    });
+    let resolve: (r: SonicResult) => void = () => {};
+    vi.spyOn(api, 'sonicAnalyze').mockImplementation(async (_d, onProgress) => {
+      onProgress?.({
+        event: 'model',
+        state: 'downloading',
+        downloaded: 5_000_000,
+        total: 18_742_941,
+      });
+      return new Promise<SonicResult>((res) => {
+        resolve = res;
+      });
+    });
+    view = render(SonicPanel);
+    await tick();
+    const btn = view.queryAll('button').find((b) => (b.textContent ?? '').includes('Analyse Sonic'))!;
+    await click(btn);
+    expect(view.target.textContent).toContain('Downloading Sonic model');
+    expect(view.target.textContent).toContain('4.8 MB / 17.9 MB');
+    resolve({ ok: true, profile: 'musicpack-sonic-openl3-v1', outputPath: '/d/sonic.json', tracks: 2, contributing: 2 });
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    expect(draftStore.draft.get()?.sonicAnalysis?.status).toBe('ready');
+  });
+
+  it('shows an offline acquisition hint when the model is missing', async () => {
+    vi.spyOn(api, 'sonicModelStatus').mockResolvedValue({
+      profile: 'musicpack-sonic-openl3-v1',
+      state: 'missing',
+      sizeBytes: 18_742_941,
+    });
+    view = render(SonicPanel);
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    expect(view.target.textContent).toContain('requires a 17.9 MB analysis model');
+  });
+
+  it('maps a typed offline error to a clear message', async () => {
+    vi.spyOn(api, 'sonicModelStatus').mockResolvedValue({
+      profile: 'musicpack-sonic-openl3-v1',
+      state: 'missing',
+      sizeBytes: 18_742_941,
+    });
+    vi.spyOn(api, 'sonicAnalyze').mockRejectedValue({
+      code: 'offline',
+      message: 'could not download',
+    });
+    view = render(SonicPanel);
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    const btn = view.queryAll('button').find((b) => (b.textContent ?? '').includes('Analyse Sonic'))!;
+    await click(btn);
+    expect(draftStore.draft.get()?.sonicAnalysis?.status).toBe('error');
+    expect(draftStore.draft.get()?.sonicAnalysis?.error).toContain('Connect to the internet');
   });
 });

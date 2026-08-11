@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, draft, draftStore } from '../bootstrap';
-  import type { SonicProgress } from '../types';
+  import type { ModelStatus, SonicError, SonicProgress } from '../types';
 
   /** The profiles exposed in the UI. Only the permissive openl3-v1 profile is
    * shipped; the list keeps future profiles selectable without a redesign.
@@ -13,6 +13,9 @@
   let running = $state(false);
   let done = $state(0);
   let total = $state(0);
+  let modelStatus = $state<ModelStatus | null>(null);
+  let modelProgress = $state<{ downloaded: number; total: number } | null>(null);
+  let verifying = $state(false);
 
   function selectedProfile(): { id: string; label: string } {
     const id = $draft?.sonicAnalysis?.profile ?? DEFAULT_PROFILE.id;
@@ -23,6 +26,42 @@
     return $draft ? $draft.media.reduce((n, m) => n + m.tracks.length, 0) : 0;
   }
 
+  function mb(bytes: number): string {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  async function refreshModelStatus(): Promise<void> {
+    try {
+      modelStatus = await api.sonicModelStatus();
+    } catch {
+      modelStatus = null;
+    }
+  }
+  void refreshModelStatus();
+
+  function errorMessage(e: unknown): string {
+    const err = e as SonicError;
+    switch (err?.code) {
+      case 'model_missing':
+      case 'offline':
+        return 'The Sonic analysis model is not installed and could not be downloaded. Connect to the internet and try again.';
+      case 'download_failed':
+        return 'The Sonic analysis model could not be downloaded.';
+      case 'checksum_mismatch':
+        return 'The downloaded Sonic analysis model failed verification.';
+      case 'download_cancelled':
+        return 'The Sonic model download was cancelled.';
+      case 'analyzer_unavailable':
+        return 'The Sonic analysis engine is not installed.';
+      case 'runtime_dependency_missing':
+        return 'The Sonic analysis engine is missing a required runtime component.';
+      case 'analysis_failed':
+        return err.message ?? 'Sonic analysis failed.';
+      default:
+        return err?.message ?? 'Sonic analysis failed.';
+    }
+  }
+
   async function analyse(): Promise<void> {
     const d = draft.get();
     if (!d || running) return;
@@ -30,6 +69,8 @@
     const n = trackCount();
     done = 0;
     total = n;
+    modelProgress = null;
+    verifying = false;
     draftStore.updateSonicAnalysis((s) => {
       s.status = 'pending';
       s.profile = selectedProfile().id;
@@ -41,7 +82,18 @@
     let warnings: string[] = [];
     try {
       const result = await api.sonicAnalyze(d, (p: SonicProgress) => {
-        if (p.event === 'track') {
+        if (p.event === 'model') {
+          if (p.state === 'downloading') {
+            modelProgress = { downloaded: p.downloaded ?? 0, total: p.total ?? 0 };
+            verifying = false;
+          } else if (p.state === 'verifying') {
+            verifying = true;
+          } else if (p.state === 'ready') {
+            modelProgress = null;
+            verifying = false;
+            modelStatus = { ...(modelStatus ?? { profile: '', state: 'ready', sizeBytes: 0 }), state: 'ready' };
+          }
+        } else if (p.event === 'track') {
           done = p.done ?? done;
           total = p.total ?? total;
           draftStore.updateSonicAnalysis((s) => {
@@ -72,10 +124,12 @@
     } catch (e) {
       draftStore.updateSonicAnalysis((s) => {
         s.status = 'error';
-        s.error = e instanceof Error ? e.message : 'Sonic analysis failed';
+        s.error = errorMessage(e);
       });
     } finally {
       running = false;
+      modelProgress = null;
+      verifying = false;
     }
   }
 
@@ -97,12 +151,29 @@
     </p>
 
     {#if running}
-      <p><span class="chip idle">◐</span> Analysing {done} / {total} tracks…</p>
-      <button class="btn ghost" onclick={cancel}>Cancel</button>
+      {#if modelProgress || verifying}
+        {#if verifying}
+          <p><span class="chip idle">◐</span> Verifying model…</p>
+        {:else}
+          <p>
+            <span class="chip idle">↓</span> Downloading Sonic model…
+            {mb(modelProgress?.downloaded ?? 0)} / {mb(modelProgress?.total ?? 0)}
+          </p>
+        {/if}
+        <button class="btn ghost" onclick={cancel}>Cancel</button>
+      {:else}
+        <p><span class="chip idle">◐</span> Analysing {done} / {total} tracks…</p>
+        <button class="btn ghost" onclick={cancel}>Cancel</button>
+      {/if}
     {:else}
       {@const s = $draft.sonicAnalysis}
       {#if !s}
         <p>○ Not analysed</p>
+        {#if modelStatus?.state === 'missing'}
+          <p class="muted">
+            {selectedProfile().label} requires a {mb(modelStatus.sizeBytes || 18_742_941)} analysis model, downloaded on first use.
+          </p>
+        {/if}
         <button class="btn" onclick={analyse}>Analyse Sonic</button>
       {:else if s.status === 'pending'}
         <p><span class="chip idle">◐</span> Analysing…</p>

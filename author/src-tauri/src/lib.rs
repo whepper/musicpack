@@ -9,19 +9,94 @@
 // uses MUSICPACK_CLI / the CMake build tree / PATH.
 
 mod author_service;
+mod sonic_model;
 
 use author_service::AuthorService;
 use base64::Engine as _;
 use serde::Serialize;
 use serde_json::json;
+use sonic_model::SonicModelManager;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 struct AppState {
     service: Mutex<AuthorService>,
     running: Mutex<Option<Child>>,
+    model: SonicModelManager,
+    model_cancel: Arc<AtomicBool>,
+}
+
+/// Typed error the frontend can distinguish without parsing prose. The
+/// serialized value is `{ code, message }` (Tauri sends the Err as-is).
+#[derive(Debug, Serialize)]
+pub struct SonicError {
+    code: &'static str,
+    message: String,
+}
+
+impl SonicError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        SonicError {
+            code,
+            message: message.into(),
+        }
+    }
+    fn model_missing() -> Self {
+        Self::new(
+            "model_missing",
+            "The Sonic analysis model is not installed and could not be downloaded.",
+        )
+    }
+    fn download_failed(msg: impl Into<String>) -> Self {
+        Self::new("download_failed", msg.into())
+    }
+    fn checksum_mismatch() -> Self {
+        Self::new(
+            "checksum_mismatch",
+            "The downloaded Sonic analysis model failed verification.",
+        )
+    }
+    fn offline() -> Self {
+        Self::new(
+            "offline",
+            "The Sonic analysis model is not installed and could not be downloaded. Connect to the internet and try again.",
+        )
+    }
+    fn download_cancelled() -> Self {
+        Self::new("download_cancelled", "The Sonic model download was cancelled.")
+    }
+    fn analyzer_unavailable(msg: impl Into<String>) -> Self {
+        Self::new("analyzer_unavailable", msg.into())
+    }
+    fn runtime_dependency_missing() -> Self {
+        Self::new(
+            "runtime_dependency_missing",
+            "The Sonic analysis engine is missing a required runtime component.",
+        )
+    }
+    fn analysis_failed(msg: impl Into<String>) -> Self {
+        Self::new("analysis_failed", msg.into())
+    }
+}
+
+impl From<sonic_model::ModelAcquireError> for SonicError {
+    fn from(e: sonic_model::ModelAcquireError) -> Self {
+        match e {
+            sonic_model::ModelAcquireError::Cancelled => Self::download_cancelled(),
+            sonic_model::ModelAcquireError::Offline(_) => Self::offline(),
+            sonic_model::ModelAcquireError::ChecksumMismatch => Self::checksum_mismatch(),
+            sonic_model::ModelAcquireError::SizeMismatch { expected, got } => {
+                Self::download_failed(format!(
+                    "downloaded model has the wrong size (expected {expected} bytes, got {got})"
+                ))
+            }
+            sonic_model::ModelAcquireError::DownloadFailed(m) => Self::download_failed(m),
+            sonic_model::ModelAcquireError::Io(m) => Self::download_failed(m),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -180,23 +255,23 @@ fn read_image(path: String) -> Result<ReadImage, String> {
 }
 
 /// Builds a sonic analyzer job from the authoring draft: absolute audio
-/// paths (sourceRoot + audioPath) plus the app-local model/cache/output
-/// locations under the app data directory.
-fn build_sonic_job(app: &tauri::AppHandle, draft_json: &str) -> Result<String, String> {
+/// paths (sourceRoot + audioPath) plus the verified model directory and the
+/// app-local cache/output locations under `data_dir`.
+fn build_sonic_job_at(
+    data_dir: &Path,
+    draft_json: &str,
+    model_dir: &Path,
+) -> Result<String, SonicError> {
     let draft: serde_json::Value = serde_json::from_str(draft_json)
-        .map_err(|e| format!("invalid draft: {e}"))?;
+        .map_err(|e| SonicError::analysis_failed(format!("invalid draft: {e}")))?;
     let source_root = draft
         .get("sourceRoot")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("no app data directory: {e}"))?;
     let sonic_dir = data_dir.join("sonic");
-    std::fs::create_dir_all(&sonic_dir).map_err(|e| format!("cannot create sonic dir: {e}"))?;
-    let model_dir = sonic_dir.join("models");
+    std::fs::create_dir_all(&sonic_dir)
+        .map_err(|e| SonicError::analysis_failed(format!("cannot create sonic dir: {e}")))?;
     let cache_dir = sonic_dir.join("cache");
     let out_path = sonic_dir.join("sonic.json");
 
@@ -224,7 +299,7 @@ fn build_sonic_job(app: &tauri::AppHandle, draft_json: &str) -> Result<String, S
         }
     }
     if tracks.is_empty() {
-        return Err("the draft has no tracks to analyse".to_string());
+        return Err(SonicError::analysis_failed("the draft has no tracks to analyse"));
     }
     let job = json!({
         "profile": "musicpack-sonic-openl3-v1",
@@ -236,22 +311,87 @@ fn build_sonic_job(app: &tauri::AppHandle, draft_json: &str) -> Result<String, S
     Ok(job.to_string())
 }
 
-/// Runs the sonic analyzer for the current draft. Progress events stream as
-/// `sonic-progress` Tauri events; the command resolves when the run finishes
-/// (or is cancelled). The resulting sonic document is written to the app data
+fn build_sonic_job(
+    app: &tauri::AppHandle,
+    draft_json: &str,
+    model_dir: &Path,
+) -> Result<String, SonicError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| SonicError::analysis_failed(format!("no app data directory: {e}")))?;
+    build_sonic_job_at(&data_dir, draft_json, model_dir)
+}
+
+/// Emits a model progress event with the given state.
+fn emit_model_event(app: &tauri::AppHandle, state: &str, extra: serde_json::Value) {
+    let mut o = json!({ "event": "model", "state": state });
+    if let Some(obj) = extra.as_object() {
+        for (k, v) in obj {
+            o[k] = v.clone();
+        }
+    }
+    let _ = app.emit("sonic-progress", o);
+}
+
+/// Ensures a verified model is on disk, acquiring it (with progress events
+/// and cancellation) when missing or invalid. Returns the verified cache
+/// directory the analyzer job must use.
+async fn ensure_sonic_model(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<PathBuf, SonicError> {
+    let manager = state.model.clone();
+    let manager2 = manager.clone();
+    let cancel = state.model_cancel.clone();
+    let app2 = app.clone();
+    emit_model_event(app, "checking", json!({}));
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        manager2.acquire(&cancel, |downloaded, total| {
+            if downloaded >= total {
+                let _ = app2.emit(
+                    "sonic-progress",
+                    json!({ "event": "model", "state": "verifying", "downloaded": downloaded, "total": total }),
+                );
+            } else {
+                let _ = app2.emit(
+                    "sonic-progress",
+                    json!({ "event": "model", "state": "downloading", "downloaded": downloaded, "total": total }),
+                );
+            }
+        })
+    })
+    .await
+    .map_err(|e| SonicError::download_failed(format!("model acquisition thread panicked: {e}")))?;
+    let dir = match result {
+        Ok(_) => manager.cache_dir().to_path_buf(),
+        Err(e) => return Err(e.into()),
+    };
+    emit_model_event(app, "ready", json!({ "path": dir }));
+    Ok(dir)
+}
+
+/// Runs the sonic analyzer for the current draft. The required model is
+/// acquired automatically when missing (streaming `sonic-progress` events),
+/// then per-track analysis progress streams until the run finishes or is
+/// cancelled. The resulting document is written to the application data
 /// directory; `Draft.sonicAnalysis.path` points at it for `create_package`.
 #[tauri::command]
 async fn sonic_analyze(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     draft_json: String,
-) -> Result<serde_json::Value, String> {
-    let job = build_sonic_job(&app, &draft_json)?;
+) -> Result<serde_json::Value, SonicError> {
+    let model_dir = ensure_sonic_model(&app, &state).await?;
+    let job = build_sonic_job(&app, &draft_json, &model_dir)?;
     let (mut child, job_tmp) = {
         let svc = state.service.lock().unwrap();
-        svc.sonic_spawn(&job).map_err(cli_err)?
+        svc.sonic_spawn(&job)
+            .map_err(|e| SonicError::analyzer_unavailable(e.to_string()))?
     };
-    let stdout = child.stdout.take().ok_or("sonic analyzer produced no stdout")?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        SonicError::analyzer_unavailable("sonic analyzer produced no stdout")
+    })?;
     *state.running.lock().unwrap() = Some(child);
 
     let app2 = app.clone();
@@ -277,10 +417,10 @@ async fn sonic_analyze(
     let out_path = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("no app data directory: {e}"))?
+        .map_err(|e| SonicError::analysis_failed(format!("no app data directory: {e}")))?
         .join("sonic/sonic.json");
     let Some(event) = final_event else {
-        return Err("sonic analyzer produced no result".to_string());
+        return Err(SonicError::analysis_failed("sonic analyzer produced no result"));
     };
     let ev = event
         .get("event")
@@ -290,11 +430,17 @@ async fn sonic_analyze(
         return Ok(json!({ "ok": false, "cancelled": true, "outputPath": out_path }));
     }
     if ev == "error" {
+        let code = event.get("code").and_then(|c| c.as_str()).unwrap_or("");
         let message = event
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("sonic analysis failed");
-        return Err(format!("sonic analysis failed: {message}"));
+        return match code {
+            "MODEL_CHECKSUM_MISMATCH" => Err(SonicError::checksum_mismatch()),
+            "MODEL_MISSING" => Err(SonicError::model_missing()),
+            "RUNTIME_LOAD_FAILED" => Err(SonicError::runtime_dependency_missing()),
+            _ => Err(SonicError::analysis_failed(message.to_string())),
+        };
     }
     Ok(json!({
         "ok": true,
@@ -307,9 +453,19 @@ async fn sonic_analyze(
     }))
 }
 
-/// Cancels a running sonic analysis (SIGTERM to the analyzer child).
+/// Reports the current Sonic model state (missing / ready / error) without
+/// downloading anything.
+#[tauri::command]
+fn sonic_model_status(state: State<AppState>) -> Result<sonic_model::ModelStatus, String> {
+    Ok(state.model.status())
+}
+
+/// Cancels whatever sonic work is in flight: an active model download or a
+/// running analysis. A cancelled download never leaves a partial model; a
+/// running analysis child is terminated.
 #[tauri::command]
 fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
+    state.model_cancel.store(true, Ordering::Relaxed);
     let mut running = state.running.lock().unwrap();
     if let Some(child) = running.as_mut() {
         let _ = child.kill();
@@ -336,9 +492,16 @@ pub fn run() {
                     musicpack_on_path,
                 )
             };
+            let data_dir = app.path().app_data_dir();
+            let manager = match &data_dir {
+                Ok(d) => SonicModelManager::new(d),
+                Err(_) => SonicModelManager::new(&std::env::temp_dir()),
+            };
             app.manage(AppState {
                 service: Mutex::new(AuthorService::new(location)),
                 running: Mutex::new(None),
+                model: manager,
+                model_cancel: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -351,8 +514,58 @@ pub fn run() {
             verify_package,
             read_image,
             sonic_analyze,
-            sonic_cancel
+            sonic_cancel,
+            sonic_model_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running MusicPack Author");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const DRAFT: &str = r#"{"schema":"musicpack-draft","version":1,"sourceRoot":"/music/A","media":[{"disc":1,"tracks":[{"track":1,"title":"T","audioPath":"01.mpc"}]}]}"#;
+
+    #[test]
+    fn sonic_job_uses_verified_model_dir_and_absolute_paths() {
+        let dir = TempDir::new().unwrap();
+        let model_dir = dir.path().join("sonic/models/musicpack-sonic-openl3-v1");
+        let job = build_sonic_job_at(dir.path(), DRAFT, &model_dir).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&job).unwrap();
+        assert_eq!(v["profile"], "musicpack-sonic-openl3-v1");
+        assert_eq!(v["modelDir"], model_dir.to_string_lossy().into_owned());
+        assert_eq!(v["tracks"][0]["path"], "/music/A/01.mpc");
+        assert_eq!(v["tracks"][0]["disc"], 1);
+        assert_eq!(v["tracks"][0]["track"], 1);
+        assert_eq!(
+            v["cacheDir"],
+            dir.path().join("sonic/cache").to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            v["outPath"],
+            dir.path().join("sonic/sonic.json").to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn sonic_job_rejects_draft_without_tracks() {
+        let dir = TempDir::new().unwrap();
+        let err = build_sonic_job_at(
+            dir.path(),
+            r#"{"sourceRoot":"/m","media":[]}"#,
+            &dir.path().join("models"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "analysis_failed");
+    }
+
+    #[test]
+    fn sonic_error_serializes_a_typed_code() {
+        let v = serde_json::to_value(SonicError::offline()).unwrap();
+        assert_eq!(v["code"], "offline");
+        let v = serde_json::to_value(SonicError::checksum_mismatch()).unwrap();
+        assert_eq!(v["code"], "checksum_mismatch");
+    }
 }
