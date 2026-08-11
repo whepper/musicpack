@@ -106,6 +106,11 @@ void Init_Psychoakustik ( PsyModel* m)
 {
     int  i;
 
+    // Select the best compiled spectrum/FFT implementation (Phase 3). The
+    // SIMD kernels (fft_routines_simd.c) replace the scalar windowing/power
+    // loops (and later the lane-parallel FFT) bit-exactly.
+    mpc_psy_set_impl (MPC_PSY_AUTO);
+
     // initializing arrays with zero
 	memset ( m->state.Xsave_L, 0, sizeof m->state.Xsave_L );
 	memset ( m->state.Xsave_R, 0, sizeof m->state.Xsave_R );

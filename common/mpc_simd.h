@@ -195,6 +195,34 @@ mpc_simd_blend_x(mpc_f32x4 a, mpc_f32x4 b)
 #endif
 }
 
+/// De-interleave even lanes of two vectors: (a0,a1,a2,a3)+(b0,b1,b2,b3)
+/// -> (a0,a2,b0,b2). Used to split interleaved real/imag FFT output.
+static mpc_inline mpc_f32x4
+mpc_simd_even(mpc_f32x4 a, mpc_f32x4 b)
+{
+#if defined(MPC_SIMD_WASM)
+    return wasm_i32x4_shuffle(a, b, 0, 2, 4, 6);
+#elif defined(MPC_SIMD_NEON)
+    return vuzp1q_f32(a, b);
+#else
+    return _mm_shuffle_ps(a, b, _MM_SHUFFLE(2, 0, 2, 0));
+#endif
+}
+
+/// De-interleave odd lanes of two vectors: (a0,a1,a2,a3)+(b0,b1,b2,b3)
+/// -> (a1,a3,b1,b3).
+static mpc_inline mpc_f32x4
+mpc_simd_odd(mpc_f32x4 a, mpc_f32x4 b)
+{
+#if defined(MPC_SIMD_WASM)
+    return wasm_i32x4_shuffle(a, b, 1, 3, 5, 7);
+#elif defined(MPC_SIMD_NEON)
+    return vuzp2q_f32(a, b);
+#else
+    return _mm_shuffle_ps(a, b, _MM_SHUFFLE(3, 1, 3, 1));
+#endif
+}
+
 /// Extract one lane as a scalar. \p lane must be a compile-time constant
 /// (the underlying intrinsics require an immediate).
 #if defined(MPC_SIMD_WASM)

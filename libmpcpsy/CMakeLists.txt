@@ -8,6 +8,23 @@ add_library(mpcpsy STATIC
     psy_tab.c
     ${PROJECT_SOURCE_DIR}/common/fastmath.c)
 
+# Bit-exact psychoacoustic SIMD kernels (Phase 3): fft_routines_simd.c
+# (windowing/power lane=bin) and fft4g_simd.c (lane-parallel FFT). Supported
+# on aarch64 (NEON) and x86-64 (SSE2 baseline); wasm encoder is out of
+# scope. MPC_ENABLE_SIMD is the master switch; the scalar kernels always stay
+# compiled as the reference.
+set(MPC_PSY_SIMD_SUPPORTED FALSE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|AARCH64|ARM64")
+  set(MPC_PSY_SIMD_SUPPORTED TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|x64|amd64|AMD64|X86_64")
+  set(MPC_PSY_SIMD_SUPPORTED TRUE)
+endif()
+
+if(MPC_ENABLE_SIMD AND MPC_PSY_SIMD_SUPPORTED)
+  target_sources(mpcpsy PRIVATE fft_routines_simd.c)
+  target_compile_definitions(mpcpsy PRIVATE MPC_ENABLE_PSY_SIMD_KERNEL)
+endif()
+
 target_link_libraries(mpcpsy PUBLIC mpc_headers)
 
 # Optimized math tables + CVD fast log. Must stay consistent with mpcenc,

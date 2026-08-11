@@ -75,12 +75,12 @@
 
 
 /* V A R I A B L E S */
-static int    ip [4096];   // bitinverse for maximum 2048 FFT
-static float  w  [4096];   // butterfly-coefficient for maximum 2048 FFT
-static float  a  [4096];   // holds real input for FFT
-static float  Hann_256  [ 256];
-static float  Hann_1024 [1024];
-static float  Hann_1600 [1600];
+int    ip [4096];   // bitinverse for maximum 2048 FFT
+float  w  [4096];   // butterfly-coefficient for maximum 2048 FFT
+float  a  [4096];   // holds real input for FFT (shared with the SIMD kernels)
+float  Hann_256  [ 256];
+float  Hann_1024 [1024];
+float  Hann_1600 [1600];
 
 void   Generate_FFT_Tables ( const int, int*, float* );
 void   rdft                ( const int, float*, int*, float* );
