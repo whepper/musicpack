@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 
 from pooling import WindowEmbeddings
-from profile import Profile
+from sonic_profile import Profile
 
 MISSING = object()
 

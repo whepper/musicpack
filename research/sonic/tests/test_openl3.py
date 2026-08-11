@@ -10,7 +10,7 @@ import pytest
 import conftest
 from analyzers.openl3 import WEIGHTS_SHA256, WEIGHTS_BASENAME, OpenL3Analyzer
 from pooling import POOL_MEAN_NORM, cosine, pool_windows
-from profile import Profile, PoolingParams, SilenceParams
+from sonic_profile import Profile, PoolingParams, SilenceParams
 
 pytestmark = [conftest.openl3]
 

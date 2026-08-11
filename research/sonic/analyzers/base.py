@@ -14,7 +14,7 @@ from typing import Dict
 import numpy as np
 
 from pooling import WindowEmbeddings
-from profile import Profile
+from sonic_profile import Profile
 
 
 class Analyzer(ABC):

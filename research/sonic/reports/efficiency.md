@@ -1,12 +1,12 @@
 # Efficiency benchmark
 
-Environment: host=Darwin/arm64 25.5.0, kapre=0.3.6, name=openl3, openl3=0.4.0, profile=musicpack-sonic-v1-99459eca2f647cbe, tensorflow=2.15.1, weight_file=openl3_audio_mel256_music.h5, weight_sha256=624ee7b1dd5ff87e18073f66fd8b2052bebb8ac70210e9c0937c0c940c63e9d6, weights_cc_license=CC BY 4.0.
+Environment: checkpoint_commit=a0b4534a14f58e20944452dff00a22a06ce629d1, host=Darwin/arm64 25.5.0, model=laion/larger_clap_music, name=clap-music, profile=musicpack-sonic-v1-5e6059049aab4cee, projection_dim=512, sample_rate=48000, torch=2.13.0, transformers=5.15.0, weight_file=pytorch_model.bin, weight_sha256=5c289311f4a030d768af7ffbfdecd01b008aa64824211899a4e59f4f9d154fd1, weights_license=apache-2.0.
 
 | metric | n | mean | std | min | median | max |
 |---|---|---|---|---|---|---|
-| wall s / track | 10 | 15.3649 | 4.2652 | 8.4830 | 15.0595 | 25.4580 |
-| wall s / min audio | 10 | 3.3048 | 0.1505 | 3.1095 | 3.2586 | 3.5805 |
-| realtime factor | 10 | 0.0551 | 0.0025 | 0.0518 | 0.0543 | 0.0597 |
+| wall s / track | 10 | 6.3316 | 2.0806 | 3.6530 | 6.0465 | 11.8280 |
+| wall s / min audio | 10 | 1.3534 | 0.1056 | 1.2972 | 1.3152 | 1.6635 |
+| realtime factor | 10 | 0.0226 | 0.0018 | 0.0216 | 0.0219 | 0.0277 |
 
 
 Realtime factor: seconds of analysis per second of audio (0.15x = 1 min of music in 9 s). Wall s / min audio is the same quantity scaled to one minute of music.

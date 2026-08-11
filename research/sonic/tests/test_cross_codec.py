@@ -71,7 +71,7 @@ def test_report_rendering(tmp_path):
     text = out.read_text()
     assert "# Cross-codec stability" in text
     assert "cos_source_flac" in text
-    assert (tmp_path / "raw" / "cross-codec-musicpac.json").is_file()
+    assert (tmp_path / "raw" / "cross-codec-musicpack-sonic-v1-abcdef.json").is_file()
 
 
 @require_decoders

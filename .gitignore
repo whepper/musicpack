@@ -57,6 +57,7 @@ demo/musepack.wasm
 # Research workspace (MusicPack Sonic; see research/sonic/README.md)
 research/sonic/.venv/
 research/sonic/.venv-essentia/
+research/sonic/.venv-clap/
 research/sonic/wheels/
 research/sonic/cache/
 research/sonic/models/

@@ -11,6 +11,23 @@ pending a human reviewer.
 | OpenL3 `music`/`mel256`/`emb512` | marl/openl3 | code MIT; weights CC BY 4.0 | 48000 | mel256 (kapre) | 512 | primary candidate |
 | Discogs-EffNet `multi` | MTG/Essentia | Essentia AGPL-3.0; weights CC BY-NC-SA 4.0 | 16000 | 96-band log-mel | 1280 | eval-only comparator |
 | Discogs-EffNet `release` | MTG/Essentia | CC BY-NC-SA 4.0 | 16000 | 96-band log-mel | 1280 | eval-only comparator |
+| **LAION-CLAP `larger_clap_music`** | LAION | **apache-2.0** | 48000 | 64-band log-mel (SWIN) | 512 | decision-gate candidate |
+
+### Provenance lock — LAION-CLAP `larger_clap_music`
+
+Verified from the Hugging Face model card and files (2026-08-11):
+
+- **Model id:** `laion/larger_clap_music` — "an improved CLAP checkpoint, specifically trained on music"
+- **License:** **apache-2.0** (HF card); paper arXiv:2211.06687 CC BY 4.0
+- **Upstream code:** LAION-CLAP (github.com/LAION-AI/CLAP, MIT)
+- **Checkpoint commit (repo sha):** `a0b4534a14f58e20944452dff00a22a06ce629d1`
+- **Weights file:** `pytorch_model.bin` — **776 MB**
+- **Weights SHA-256:** `5c289311f4a030d768af7ffbfdecd01b008aa64824211899a4e59f4f9d154fd1`
+- **Architecture:** `ClapModel`; audio encoder SWIN-like (`hidden_size` 1024, depths [2,2,12,2]), `projection_dim` **512**
+- **Preprocessing:** `ClapProcessor` — 48 kHz, 64 mel bands (n_fft 1024, hop 480, freq 50–14000 Hz), native chunk **10 s**, `padding: repeatpad`, `truncation: rand_trunc` (avoided by feeding exact 10 s segments)
+- **Embedding:** `get_audio_features().pooler_output` — **L2-normalized 512-dim** per clip; verified bit-identical across runs
+- **Deterministic track aggregation:** non-overlapping 10 s segments (final segment kept if ≥5 s), mean-norm pooled; segment length is a profile parameter
+- **Environment:** torch + transformers in `.venv-clap` (CPython 3.11); checkpoint downloaded at runtime to gitignored `models/`, never committed
 
 Verified technical facts: OpenL3 window 1 s, 48 kHz (resampy `kaiser_best`),
 mel256 kapre (n_fft 2048, hop 242, decibel, pad_end), `center=True`; window
@@ -100,31 +117,68 @@ Even *double-encoded* MPC (already-lossy source re-encoded at Q6) keeps a
 | 20-track | 215.9 kB (95.1 kB gz) | 55.5 kB (41.3 kB gz) | 41.0 kB (37.9 kB gz) |
 | 100-track | 1080 kB (470 kB gz) | 277 kB (206 kB gz) | 205 kB (190 kB gz) |
 
+### CLAP decision gate (staged 100-track benchmark)
+
+Primary profile only (mean-norm, silence off, settled baseline), same 100
+tracks for all three models (OpenL3/Discogs embeddings reused from cache;
+only CLAP was newly analyzed, ~10 min).
+
+| metric | OpenL3 | **CLAP-music** | Discogs-multi |
+|---|---|---|---|
+| same-album@10 | 0.152 | **0.093** | 0.201 |
+| same-artist@10 | 0.223 | **0.136** | 0.316 |
+| genre_purity@10 | 0.355 | **0.270** | 0.546 |
+| album_coherence@10 | 0.036 | **0.038** | 0.049 |
+
+**CLAP-music is materially worse than OpenL3 on every diagnostic** and far
+below Discogs-EffNet. Expected in hindsight: CLAP is audio–text
+contrastive, not music-similarity-trained; the 10 s chunk-mean pooling
+dilutes track identity. The result is unambiguous, so the staged rule did
+not require expanding to 200 tracks.
+
+- **Cross-codec:** source↔FLAC 1.000, source↔MPC-Q6 0.99999 mean (10 tracks)
+  — stable, like OpenL3.
+- **Runtime:** ~0.022× realtime (1.3 s/min; ~6 s per 4-min track),
+  peak RSS ≈ 1.5 GB — *faster and lighter than OpenL3*, but moot given quality.
+- **Product size:** 776 MB checkpoint (apache-2.0); torch runtime ~1.5 GB.
+  Bundling would add ~0.8 GB (or ~2.5 GB with torch); first-use download
+  would be the sane distribution choice. Evidence only — no packaging work.
+- **Human eval:** blind pairwise pages generated
+  (`human-pairwise-clap-vs-discogs-effnet.html`,
+  `human-pairwise-clap-vs-openl3.html`, 12 seeds each); given the
+  quantitative margin, a close human verdict is not expected, but the pages
+  are ready for confirmation.
+
 ## 5. Recommendation
+
+**Decision-gate outcome: CLAP is rejected.** The only permissively licensed,
+music-specific similarity candidate found in the survey
+(`laion/larger_clap_music`, Apache-2.0) is **measurably worse than OpenL3**
+and nowhere near Discogs-EffNet. It is not frozen merely because it is
+permissive.
+
+The question this phase set out to answer — *"is there a permissively
+usable model close enough to Discogs to freeze on?"* — is answered: **No,
+not among the models evaluated.** Discogs-EffNet remains the (non-commercial)
+quality reference; OpenL3 remains the best *permissive* option tested.
 
 > **Recommended Sonic v1 profile:** OpenL3 `music`/`mel256`/`emb512`,
 > hop 1.0 s, pooling mean-norm, silence gate off, 48 kHz, kapre frontend,
-> base64-float32-le storage, cosine distance — the cheapest fully
-> permissive profile, with no measurable quality loss vs the expensive
-> variants.
+> base64-float32-le storage, cosine distance.
 
-**But the evidence does not support freezing yet, and the human review
-now confirms why:**
+**Recommendation: freeze this profile as the practical, permissive Sonic v1**
+so MusicPack Author Phase 2 can proceed with a working, honest, validated
+baseline — with the Discogs-EffNet quality gap recorded as a documented
+limitation, and "evaluate a future permissively licensed, similarity-trained
+model" as an ongoing follow-up rather than a blocker.
 
-- The only model explicitly trained for music similarity
-  (Discogs-EffNet, CC BY-NC-SA — non-commercial) **outperforms OpenL3 on
-  every quantitative diagnostic** (same-album@10 0.183 vs 0.128, genre
-  purity 0.52 vs 0.39) **and was judged better by a blind human review**
-  (B consistently better than A).
-- OpenL3 is therefore the *permissive fallback*, not the evidence-based
-  winner. Adopting it as the normative profile would freeze in measurably
-  weaker recommendations.
-- **Verdict: "insufficient evidence for a final freeze."** Keep OpenL3
-  (hop 1.0 / mean-norm / no silence) as the working v1 baseline so the
-  pipeline and format can be validated end-to-end, record the gap as a
-  known weakness, and **make evaluating a permissively licensed,
-  similarity-trained model (CLAP/MERT-class with OSI/CC-BY weights) a
-  decision gate before the spec goes normative.**
+The evidence does **not** support claiming OpenL3 is as good as
+Discogs-EffNet: it is quantitatively weaker (same-album@10 0.152 vs 0.201,
+genre purity 0.36 vs 0.55) and the blind reviewer judged Discogs better. The
+server may therefore allow per-collection opt-in to Discogs-EffNet-style
+embeddings where the operator accepts the CC BY-NC-SA terms — but the
+mandatory, format-level profile is OpenL3 (permissive, reproducible,
+cross-codec-stable at 0.9998+, ~0.055× realtime, ~15 s/track).
 
 The draft `specs/musicpack-sonic-v1.md` reflects this: DRAFT — RESEARCH
 PHASE — NOT YET NORMATIVE.

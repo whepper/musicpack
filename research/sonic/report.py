@@ -91,7 +91,7 @@ def float_repr_table(results: Dict[str, Dict]) -> str:
 
 def write_float_repr_report(report_root: Path, results: Dict[str, Dict],
                             profile_id: str, dimensions: int) -> Path:
-    out = Path(report_root) / ("float-repr-%s.md" % profile_id[:8])
+    out = Path(report_root) / ("float-repr-%s.md" % profile_id)
     md = [
         "# Float representation study — profile %s" % profile_id,
         "",
@@ -107,7 +107,7 @@ def write_float_repr_report(report_root: Path, results: Dict[str, Dict],
 def write_evaluate_report(report_root: Path, profile_id: str, k: int,
                           per_profile: Dict[str, Dict[str, float]],
                           dataset: Dict[str, object]) -> Path:
-    out = Path(report_root) / ("evaluate-%s.md" % profile_id[:8])
+    out = Path(report_root) / ("evaluate-%s.md" % profile_id)
     rows = []
     for combo, metrics in sorted(per_profile.items()):
         rows.append([
@@ -139,7 +139,7 @@ def write_evaluate_report(report_root: Path, profile_id: str, k: int,
 
 def write_cross_codec_report(report_root: Path, profile_id: str, rows,
                              per_track: List[Dict]) -> Path:
-    out = Path(report_root) / ("cross-codec-%s.md" % profile_id[:8])
+    out = Path(report_root) / ("cross-codec-%s.md" % profile_id)
     md = [
         "# Cross-codec stability — profile %s" % profile_id,
         "",
@@ -151,7 +151,7 @@ def write_cross_codec_report(report_root: Path, profile_id: str, rows,
             ["metric", "n", "mean", "std", "min", "median", "max"], rows),
     ]
     out.write_text("\n".join(md))
-    write_raw(report_root, "cross-codec-" + profile_id[:8],
+    write_raw(report_root, "cross-codec-" + profile_id,
               {"profile": profile_id, "per_track": per_track})
     return out
 

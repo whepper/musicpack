@@ -34,7 +34,7 @@ from typing import Dict, Optional
 import numpy as np
 
 from pooling import WindowEmbeddings
-from profile import Profile
+from sonic_profile import Profile
 
 from .base import Analyzer
 

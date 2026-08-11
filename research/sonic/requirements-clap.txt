@@ -1,0 +1,14 @@
+# LAION-CLAP (decision-gate candidate) — pinned research environment.
+#
+# Separate venv because CLAP needs PyTorch, which conflicts with the
+# openl3/TF (numpy<2) environment. Apache-2.0 checkpoint, downloaded at
+# runtime into research/sonic/models/ (gitignored, SHA-256 verified).
+# RESEARCH-ONLY; never a MusicPack runtime dependency.
+
+torch
+transformers
+huggingface_hub
+resampy
+numpy
+soundfile
+psutil

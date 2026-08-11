@@ -13,7 +13,7 @@ from pooling import (
     silence_mask,
     window_rms_db,
 )
-from profile import POOL_MEAN, POOL_MEAN_NORM, POOL_ROBUST_MEAN, SilenceParams
+from sonic_profile import POOL_MEAN, POOL_MEAN_NORM, POOL_ROBUST_MEAN, SilenceParams
 
 
 def test_l2_normalize_unit():

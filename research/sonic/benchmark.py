@@ -40,7 +40,7 @@ import report as rep  # noqa: E402
 from library import Album, Track, scan  # noqa: E402
 from metrics import summary_at_k, album_coherence_at_k  # noqa: E402
 from pooling import apply_silence_and_pool, cosine  # noqa: E402
-from profile import (  # noqa: E402
+from sonic_profile import (  # noqa: E402
     POOL_MEAN,
     POOL_MEAN_NORM,
     POOL_ROBUST_MEAN,
@@ -93,6 +93,11 @@ def canonical_profile(prof: Profile, models_dir: Path) -> Profile:
         d = dict(prof.canonical())
         d["model_weights_sha256"] = model_sha256(prof.model_variant)
         return Profile.from_dict(d)
+    if prof.model == "clap":
+        from analyzers.clap import WEIGHTS_SHA256 as CLAP_WEIGHTS
+        d = dict(prof.canonical())
+        d["model_weights_sha256"] = CLAP_WEIGHTS
+        return Profile.from_dict(d)
     return prof
 
 
@@ -104,6 +109,9 @@ def build_analyzer(profile: Profile, models_dir: Path, batch_size: int = 32):
     if profile.model == "discogs-effnet":
         from analyzers.essentia_discogs import DiscogsAnalyzer
         return DiscogsAnalyzer(profile, models_dir)
+    if profile.model == "clap":
+        from analyzers.clap import ClapAnalyzer
+        return ClapAnalyzer(profile, models_dir)
     raise ValueError("unknown analyzer model: %s" % profile.model)
 
 
@@ -119,8 +127,17 @@ def profile_grid(analyzer: str, hops, poolings, silences, variants=None) -> list
                     model_sample_rate=16000, frontend="essentia", center=False)
         variants = variants or ["multi", "release"]
         window = PATCH_WINDOW_SECONDS  # model-fixed patch window (~2.096 s)
+    elif analyzer == "clap":
+        from analyzers.clap import SEGMENT_SECONDS
+        base = dict(model="clap", model_variant="music", model_content="music",
+                    model_input_repr="mel64", model_embedding_size=512,
+                    model_sample_rate=48000, frontend="swin", center=False)
+        variants = None
+        window = SEGMENT_SECONDS  # native 10 s chunk
     else:
         raise argparse.ArgumentTypeError("unknown analyzer: %s" % analyzer)
+    if analyzer == "openl3":
+        window = 1.0  # openl3's 1-second model window
 
     out = []
     for hop in hops:
@@ -141,7 +158,9 @@ def profile_grid(analyzer: str, hops, poolings, silences, variants=None) -> list
                     p = Profile(
                         **base,
                         pooling=PoolingParams(
-                            strategy=strat, hop_seconds=hop, window_seconds=1.0,
+                            strategy=strat,
+                            hop_seconds=(window if analyzer == "clap" else hop),
+                            window_seconds=window,
                             robust_trim=ROBUST_TRIM if strat == POOL_ROBUST_MEAN else 0.0,
                             silence=sil))
                     out.append(p)
@@ -672,15 +691,18 @@ def _seed_indexes(tracks, seeds):
 
 
 def _pick_methods(all_profiles, method_names):
-    """Select primary (mean-norm/hop1/nosil) profiles by name/prefix."""
+    """Select primary (mean-norm, silence-off) profiles by name/prefix."""
     primaries = [p for p in all_profiles
                  if (p.pooling.strategy == POOL_MEAN_NORM
-                     and p.pooling.hop_seconds == 1.0
                      and not p.pooling.silence.enabled)]
     picked = []
     for name in method_names:
         if name == "openl3":
             cands = [p for p in primaries if p.model == "openl3"]
+            # prefer hop 1.0 (settled openl3 baseline)
+            cands.sort(key=lambda p: abs(p.pooling.hop_seconds - 1.0))
+        elif name in ("clap", "clap-music"):
+            cands = [p for p in primaries if p.model == "clap"]
         elif name in ("discogs", "discogs-effnet", "discogs-multi",
                       "discogs-release", "discogs-effnet-multi",
                       "discogs-effnet-release"):
@@ -863,7 +885,7 @@ def main(argv=None) -> int:
                         help="deterministic stratified subset: cap albums per artist")
 
     pa = sub.add_parser("analyze", parents=[common])
-    pa.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs"])
+    pa.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs", "clap"])
     pa.add_argument("--hop", type=float, action="append", choices=[0.5, 1.0],
                     default=None)
     pa.add_argument("--pooling", action="append",
@@ -875,7 +897,7 @@ def main(argv=None) -> int:
     pa.set_defaults(func=cmd_analyze)
 
     pe = sub.add_parser("evaluate", parents=[common])
-    pe.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs"])
+    pe.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs", "clap"])
     pe.add_argument("--hop", type=float, action="append", choices=[0.5, 1.0], default=None)
     pe.add_argument("--pooling", action="append",
                     choices=[POOL_MEAN_NORM, POOL_MEAN, POOL_ROBUST_MEAN], default=None)
@@ -886,7 +908,7 @@ def main(argv=None) -> int:
     pe.set_defaults(func=cmd_evaluate)
 
     pc = sub.add_parser("cross-codec", parents=[common])
-    pc.add_argument("--analyzer", default="openl3", choices=["openl3"])
+    pc.add_argument("--analyzer", default="openl3", choices=["openl3", "clap"])
     pc.add_argument("--hop", type=float, action="append", choices=[0.5, 1.0], default=[1.0])
     pc.add_argument("--pooling", action="append",
                     choices=[POOL_MEAN_NORM, POOL_MEAN, POOL_ROBUST_MEAN], default=[POOL_MEAN_NORM])
@@ -898,7 +920,7 @@ def main(argv=None) -> int:
     pc.set_defaults(func=cmd_cross_codec)
 
     pf = sub.add_parser("efficiency", parents=[common])
-    pf.add_argument("--analyzer", default="openl3", choices=["openl3"])
+    pf.add_argument("--analyzer", default="openl3", choices=["openl3", "clap"])
     pf.add_argument("--hop", type=float, action="append", choices=[0.5, 1.0], default=[1.0])
     pf.add_argument("--pooling", action="append",
                     choices=[POOL_MEAN_NORM, POOL_MEAN, POOL_ROBUST_MEAN], default=[POOL_MEAN_NORM])
@@ -909,7 +931,7 @@ def main(argv=None) -> int:
 
     pr = sub.add_parser("float-repr", parents=[common])
     pr.add_argument("--album-sizes", type=int, nargs="+", default=[10, 20, 100])
-    pr.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs"])
+    pr.add_argument("--analyzer", default="openl3", choices=["openl3", "discogs", "clap"])
     pr.set_defaults(func=cmd_float_repr)
 
     ph = sub.add_parser("human", parents=[common])

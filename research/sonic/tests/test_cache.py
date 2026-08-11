@@ -4,7 +4,7 @@ import numpy as np
 
 from cache import MISSING, Cache
 from pooling import WindowEmbeddings
-from profile import PoolingParams, Profile, SilenceParams
+from sonic_profile import PoolingParams, Profile, SilenceParams
 
 
 def _profile(**kw) -> Profile:

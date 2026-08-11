@@ -18,7 +18,7 @@ from analyzers.essentia_discogs import (
     PATCH_WINDOW_SECONDS,
     DiscogsAnalyzer,
 )
-from profile import Profile, PoolingParams
+from sonic_profile import Profile, PoolingParams
 
 MODEL_DIR = conftest.REPO_ROOT / "research/sonic/models"
 

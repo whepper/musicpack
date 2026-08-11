@@ -1,6 +1,6 @@
 """Profile fingerprints: comparability and cache identity."""
 
-from profile import (
+from sonic_profile import (
     POOL_MEAN,
     POOL_MEAN_NORM,
     POOL_ROBUST_MEAN,

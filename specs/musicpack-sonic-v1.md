@@ -94,16 +94,17 @@ yields a different id and thus incompatible vectors. The analysis document
 carries the full parameters for auditing and reproducibility, not just the
 id.
 
-> **Pending evidence:** the concrete values below reflect the benchmark
-> recommendation (`research/sonic/reports/results.md`): OpenL3 pooling,
-> hop and silence choices were equivalent within measurement noise, so the
-> cheapest variant (hop 1.0 s, mean-norm, silence off) is the working v1
-> baseline. The profile is **not frozen**: the only similarity-trained
-> model tested (Discogs-EffNet, CC BY-NC-SA — non-commercial) is
-> quantitatively stronger **and was judged better by a blind human review**,
-> so a permissively licensed similarity-trained model must be evaluated
-> before the spec goes normative. These numbers are the working baseline,
-> not yet normative.
+> **Evidence note:** the values below are the benchmark-recommended
+> working baseline (`research/sonic/reports/results.md`). OpenL3 pooling,
+> hop and silence choices are equivalent within measurement noise, so the
+> cheapest variant (hop 1.0 s, mean-norm, silence off) is the v1 baseline.
+> The similarity-model decision gate is resolved: the only permissively
+> licensed, music-specific candidate (`laion/larger_clap_music`,
+> Apache-2.0) is measurably **worse** than OpenL3, so OpenL3 remains the
+> permissive profile. Discogs-EffNet (CC BY-NC-SA, non-commercial) is
+> stronger quantitatively and perceptually; it is documented as a quality
+> reference and may be offered per-collection by the server, never as the
+> mandatory profile. These numbers are the v1 baseline.
 
 ### Working baseline profile
 
@@ -305,7 +306,10 @@ it.
 
 The mandatory profile must be permissive and open:
 
-- **OpenL3** (code MIT, weights CC BY 4.0) is the primary candidate.
+- **OpenL3** (code MIT, weights CC BY 4.0) is the v1 profile — the best
+  permissive option tested; a similarity-trained permissive model was
+  evaluated (`laion/larger_clap_music`, Apache-2.0) and measured *worse*
+  than OpenL3, so it was rejected on quality.
 - **Discogs-EffNet / Essentia** (Essentia AGPL-3.0; MTG weights
   CC BY-NC-SA 4.0) are **not** acceptable as the mandatory foundation of an
   unrestricted open MusicPack ecosystem. They are used only as an

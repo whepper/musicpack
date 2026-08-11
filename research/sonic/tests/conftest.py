@@ -80,6 +80,21 @@ discogs = pytest.mark.skipif(
     reason="essentia-tensorflow not installed (eval-only; run bootstrap of .venv-essentia)",
 )
 
+
+def _clap_importable() -> bool:
+    try:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+clap = pytest.mark.skipif(
+    not _clap_importable(),
+    reason="torch/transformers not installed (run bootstrap_clap.sh)",
+)
+
 require_ffmpeg = pytest.mark.skipif(
     not any(
         os.access(c, os.X_OK)
