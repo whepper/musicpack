@@ -1,31 +1,41 @@
 """Research-vs-production embedding compatibility for musicpack-sonic-openl3-v1.
 
 Compares the research pipeline (openl3 0.4.0 + TensorFlow) against the
-production pipeline (numpy frontend reference + ONNX post-frontend network,
-the exact algorithm the C analyzer implements):
+production pipeline. Two production modes:
+
+  1. the numpy reference (frontend.py + ONNX post-frontend network), and
+  2. the C analyzer (build/sonic/musicpack-sonic) via its output document
+     (--c-doc FILE), the exact algorithm that ships.
+
+Pipeline:
 
   research:    decode -> resampy kaiser_best -> center+window -> kapre
                frontend (in TF) -> Keras conv stack -> mean-norm pool
-  production:  decode -> resampy kaiser_best -> center+window -> frontend.py
-               -> ONNX conv stack -> mean-norm pool
+  production:  decode -> resampy kaiser_best -> center+window -> frontend
+               (numpy reference or C) -> ONNX conv stack -> mean-norm pool
 
-Compatibility gate (see the Sonic spec / phase plan): cosine >= 0.9999,
-mean absolute difference <= 1e-4, max absolute difference <= 2e-3 — the
-differences must not be able to reorder recommendations.
+Compatibility gate (Sonic spec / phase plan): cosine >= 0.9999, mean
+absolute difference <= 1e-4, max absolute difference <= 2e-3 — differences
+must not be able to reorder recommendations.
 
 Usage (research venv):
 
     .venv/bin/python compat_measure.py <out.onnx> [audio files...]
+    .venv/bin/python compat_measure.py --c-doc DOC <out.onnx> [audio files...]
 
-With no audio files, deterministic synthetic tones are generated. Reports
-per-track and aggregate metrics. Also verifies the numpy frontend reproduces
-the kapre frontend directly (the mel-level check).
+With no audio files, deterministic synthetic tones are generated (including
+a short 2-window edge case). Reports per-track and aggregate metrics. Also
+verifies the numpy frontend reproduces the kapre frontend directly.
 
 This is model-free infrastructure: it runs only where the research stack is
 available and is never a MusicPack dependency.
 """
 
+import argparse
+import base64
+import json
 import os
+import struct
 import sys
 import tempfile
 
@@ -80,7 +90,7 @@ def metrics(a, b):
 
 
 def synthetic_corpus():
-    """Deterministic synthetic tones: chords, harmonics, noise, silence."""
+    """Deterministic synthetic tones: chords, harmonics, noise, short edge."""
     rng = np.random.RandomState(42)
     files = []
     tmp = tempfile.mkdtemp(prefix="sonic-compat-")
@@ -112,29 +122,48 @@ def synthetic_corpus():
     return files
 
 
+def load_c_doc(path):
+    """Loads a C-analyzer-produced sonic document into
+    {filename: track embedding vector}."""
+    doc = json.load(open(path))
+    out = {}
+    for i, t in enumerate(doc["tracks"]):
+        if t["embedding"] is None:
+            continue
+        vec = np.frombuffer(base64.b64decode(t["embedding"]["data"]), dtype="<f4")
+        out.setdefault(i, []).append(vec)
+    return {k: v[0] for k, v in out.items()}
+
+
 def main() -> int:
-    if len(sys.argv) < 2:
-        print(__doc__)
-        return 2
-    onnx_path = sys.argv[1]
-    files = sys.argv[2:]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("onnx")
+    ap.add_argument("audio", nargs="*")
+    ap.add_argument("--c-doc", help="C analyzer output document to compare")
+    args = ap.parse_args()
 
     import onnxruntime as ort
-    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(args.onnx, providers=["CPUExecutionProvider"])
     from openl3.models import load_audio_embedding_model
     model = load_audio_embedding_model(input_repr="mel256", content_type="music",
                                        embedding_size=512)
 
-    if not files:
-        files = synthetic_corpus()
+    files = args.audio or synthetic_corpus()
+    c_doc = load_c_doc(args.c_doc) if args.c_doc else None
 
     rows = []
-    for path in files:
+    for i, path in enumerate(files):
         pcm, sr = decode(path)
         pcm48 = resample(pcm, sr)
         a = research_embeddings(pcm48, model)
-        b = production_embeddings(pcm48, sess)
-        va, vb = pool(a), pool(b)
+        if c_doc is not None:
+            if i not in c_doc:
+                print(f"{os.path.basename(path)}: no C embedding")
+                continue
+            b = c_doc[i]
+        else:
+            b = pool(production_embeddings(pcm48, sess))
+        va, vb = pool(a), b
         if va is None or vb is None:
             print(f"{os.path.basename(path)}: no embedding (short/silent)")
             continue
@@ -163,3 +192,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
