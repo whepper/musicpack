@@ -103,7 +103,7 @@ jobs:
           for CFG in scalar autovec simd; do
             echo "# === wasm $CFG ===" >> bench/results/wasm.tsv
             for F in $FILES; do
-              node bench/wasm_bench.mjs "$(pwd)/build-wasm-$CFG/wasm/musepack.js" "$(pwd)/$F" >> bench/results/wasm.tsv
+              node bench/wasm_bench.mjs "$(pwd)/build-wasm-$CFG/wasm/musepack.js" "$F" >> bench/results/wasm.tsv
             done
           done
           cat bench/results/wasm.tsv
