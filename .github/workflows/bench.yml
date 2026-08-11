@@ -96,7 +96,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILES="/tmp/mpc-bench/corpus/uncorrelated_noise-q7.mpc /tmp/mpc-bench/corpus/stereo_sine-q5.mpc /tmp/mpc-bench/corpus/silence-q5.mpc /tmp/mpc-bench/corpus/clipping_edge-q7.mpc tests/fixtures/sine44-q5-48s.mpc"
+          C=/tmp/mpc-bench/corpus
+          FILES="$C/uncorrelated_noise_44100-q7.mpc $C/stereo_sine_44100-q5.mpc $C/silence_44100-q5.mpc $C/clipping_edge_44100-q7.mpc $C/chirp_44100-q7.mpc tests/fixtures/sine44-q5-48s.mpc"
           mkdir -p bench/results
           : > bench/results/wasm.tsv
           for CFG in scalar autovec simd; do
