@@ -6,6 +6,7 @@
 // tests can substitute a fake (mirroring the web client's ApiClient design).
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import type {
@@ -15,6 +16,7 @@ import type {
   IdentifyOptions,
   IdentifyResult,
   ReadImageResult,
+  SonicProgress,
   SonicResult,
   ValidationResult,
 } from './types';
@@ -23,6 +25,8 @@ export type InvokeFn = (
   cmd: string,
   args?: Record<string, unknown>,
 ) => Promise<unknown>;
+
+export type EventListenFn = typeof listen;
 
 export interface PluginFacade {
   pickDirectory(): Promise<string | null>;
@@ -62,6 +66,7 @@ export class AuthorApi {
       pickOutputDirectory: defaultPickOutputDirectory,
       revealInFinder: defaultRevealInFinder,
     },
+    private eventListen: EventListenFn = listen,
   ) {}
 
   async backendInfo(): Promise<BackendInfo> {
@@ -103,11 +108,24 @@ export class AuthorApi {
   }
 
   /** Runs the sonic analyzer for the draft. Progress arrives as
-   * `sonic-progress` Tauri events; the promise resolves when the run ends. */
-  async sonicAnalyze(draft: Draft): Promise<SonicResult> {
-    return (await this.invokeFn('sonic_analyze', {
-      draftJson: JSON.stringify(draft),
-    })) as SonicResult;
+   * `sonic-progress` Tauri events (forwarded to `onProgress`); the promise
+   * resolves when the run ends. */
+  async sonicAnalyze(
+    draft: Draft,
+    onProgress?: (p: SonicProgress) => void,
+  ): Promise<SonicResult> {
+    const unlisten = onProgress
+      ? await this.eventListen<SonicProgress>('sonic-progress', (event) =>
+          onProgress(event.payload),
+        )
+      : null;
+    try {
+      return (await this.invokeFn('sonic_analyze', {
+        draftJson: JSON.stringify(draft),
+      })) as SonicResult;
+    } finally {
+      unlisten?.();
+    }
   }
 
   /** Cancels a running sonic analysis. */

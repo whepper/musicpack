@@ -37,7 +37,9 @@
       <span class="chip {c.identity}">
         Identity {c.identity === 'ok' ? '✓' : c.identity === 'warn' ? '≈' : '?'}
       </span>
-      <span class="chip idle">Sonic Analysis · not analysed</span>
+      <span class="chip {c.sonic}">
+        Sonic {c.sonic === 'ok' ? '✓' : c.sonic === 'warn' ? '≈' : '· not analysed'}
+      </span>
     </div>
     <div class="actions">
       <button class="btn ghost" onclick={runValidate} disabled={$validating}>

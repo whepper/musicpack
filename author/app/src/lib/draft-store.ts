@@ -13,6 +13,7 @@ import type {
   Identity,
   Medium,
   ReleaseEdition,
+  SonicAnalysis,
   SourceInfo,
   Track,
 } from './types';
@@ -24,6 +25,7 @@ export interface ChipState {
   metadata: ChipStatus;
   artwork: ChipStatus;
   identity: ChipStatus;
+  sonic: ChipStatus;
 }
 
 export interface DraftStore {
@@ -45,6 +47,7 @@ export interface DraftStore {
   updateTrack(discIndex: number, trackIndex: number, patch: Partial<Track>): void;
   setArtwork(entries: ArtworkEntry[]): void;
   setAssets(kind: 'booklet' | 'lyrics' | 'extras', entries: AssetEntry[]): void;
+  updateSonicAnalysis(fn: (s: SonicAnalysis) => void): void;
 }
 
 function mutate(draft: Draft, fn: (d: Draft) => void): Draft {
@@ -131,6 +134,13 @@ export function createDraftStore(): DraftStore {
         d[kind] = structuredClone(entries);
       });
     },
+    updateSonicAnalysis(fn: (s: SonicAnalysis) => void) {
+      withDraft((d) => {
+        if (!d.sonicAnalysis)
+          d.sonicAnalysis = { status: 'not_analysed' };
+        fn(d.sonicAnalysis);
+      });
+    },
   };
 }
 
@@ -140,6 +150,7 @@ export function chipState(d: Draft): ChipState {
   const tracks = d.media.reduce((n, m) => n + m.tracks.length, 0);
   const metadataOk = d.album.title.trim().length > 0 && d.album.artists.length > 0;
   const conf = d.identity?.confidence;
+  const sonic = d.sonicAnalysis;
   return {
     audio: tracks > 0 ? 'ok' : 'warn',
     metadata: metadataOk ? 'ok' : 'warn',
@@ -148,6 +159,12 @@ export function chipState(d: Draft): ChipState {
       conf === 'exact' || conf === 'confirmed'
         ? 'ok'
         : conf === 'probable'
+          ? 'warn'
+          : 'idle',
+    sonic:
+      sonic?.status === 'ready' || sonic?.status === 'ready-with-warnings'
+        ? 'ok'
+        : sonic?.status === 'error'
           ? 'warn'
           : 'idle',
   };

@@ -70,12 +70,19 @@ describe('StatusBar create button', () => {
     expect(createBtn()?.hasAttribute('disabled')).toBe(true);
   });
 
-  it('shows a reserved Sonic Analysis chip without any manifest claim', () => {
+  it('shows a Sonic Analysis chip reflecting the draft state', () => {
     draftStore.setDraft(draft());
     view = render(StatusBar);
-    expect(view.target.textContent).toContain('Sonic Analysis · not analysed');
+    expect(view.target.textContent).toContain('Sonic · not analysed');
     const d = draftStore.draft.get()!;
     expect('analysis' in d).toBe(false);
     expect(d.schema).toBe('musicpack-draft');
+
+    draftStore.updateSonicAnalysis((s) => {
+      s.status = 'ready';
+      s.profile = 'musicpack-sonic-openl3-v1';
+    });
+    view = render(StatusBar);
+    expect(view.target.textContent).toContain('Sonic ✓');
   });
 });

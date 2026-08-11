@@ -10,6 +10,7 @@
   import ArtworkManager from './ArtworkManager.svelte';
   import IdentityPanel from './IdentityPanel.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
+  import SonicPanel from './SonicPanel.svelte';
   import CreateDialog from './CreateDialog.svelte';
 
   let { onReset }: { onReset: () => void } = $props();
@@ -116,6 +117,8 @@
     <h2>Identity</h2>
     <IdentityPanel onIdentified={handleIdentify} candidates={candidates} />
   </section>
+
+  <SonicPanel />
 
   <section class="section">
     <h2>Validation</h2>
