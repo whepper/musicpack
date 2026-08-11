@@ -83,7 +83,7 @@ main ( void )
         Main.M[i] = v;
         Main.S[i] = 0.2f * v;
     }
-    for ( i = 0; i < 2048; i++ )
+    for ( i = 0; i < ANABUFFER; i++ )
         x[i] = Main.L[i];
 
     // ---- kernel level ----------------------------------------------------
