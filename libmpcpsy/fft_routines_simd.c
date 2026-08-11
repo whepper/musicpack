@@ -106,7 +106,10 @@ mpc_polarspec1024_simd ( const float* x, float* erg, float* phs )
 
 void rdft4 ( const int n, float* a, int* ip, float* w );
 
-static float A4buf [4 * 2048];
+// Interleaved working buffer for the lane-parallel FFT. 16-byte aligned so
+// the (mpc_f32x4*) views (power4_split, polarspec1024_2) use aligned vector
+// loads/stores on SSE2 (GCC emits movaps for __m128* dereferences).
+static _Alignas(16) float A4buf [4 * 2048];
 
 static void
 window4 ( const float* x0, const float* x1, const float* x2, const float* x3,
@@ -122,11 +125,10 @@ window4 ( const float* x0, const float* x1, const float* x2, const float* x3,
 static void
 power4_split ( float* e0, float* e1, float* e2, float* e3, int half, int nlanes )
 {
-    mpc_f32x4* A4 = (mpc_f32x4*) A4buf;
     int i;
     for ( i = 0; i < half; i++ ) {
-        mpc_f32x4 re = A4[2 * i];
-        mpc_f32x4 im = A4[2 * i + 1];
+        mpc_f32x4 re = mpc_simd_loadu (&A4buf[4 * (2 * i)]);
+        mpc_f32x4 im = mpc_simd_loadu (&A4buf[4 * (2 * i + 1)]);
         mpc_f32x4 e  = mpc_simd_add (mpc_simd_mul (re, re), mpc_simd_mul (im, im));
         if ( nlanes > 0 ) e0[i] = mpc_simd_extract_lane (e, 0);
         if ( nlanes > 1 ) e1[i] = mpc_simd_extract_lane (e, 1);
@@ -168,13 +170,12 @@ void
 mpc_polarspec1024_2_simd ( const float* x0, const float* x1,
                            float* e0, float* e1, float* p0, float* p1 )
 {
-    mpc_f32x4* A4 = (mpc_f32x4*) A4buf;
     int i;
     window4 (x0, x1, x0, x0, Hann_1024, 1024);
     rdft4 (1024, A4buf, ip, w);
     for ( i = 0; i < 512; i++ ) {
-        mpc_f32x4 re = A4[2 * i];
-        mpc_f32x4 im = A4[2 * i + 1];
+        mpc_f32x4 re = mpc_simd_loadu (&A4buf[4 * (2 * i)]);
+        mpc_f32x4 im = mpc_simd_loadu (&A4buf[4 * (2 * i + 1)]);
         mpc_f32x4 e  = mpc_simd_add (mpc_simd_mul (re, re), mpc_simd_mul (im, im));
         e0[i] = mpc_simd_extract_lane (e, 0);
         e1[i] = mpc_simd_extract_lane (e, 1);
