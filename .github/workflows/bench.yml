@@ -43,6 +43,11 @@ jobs:
         run: |
           MPC_BENCH="$(pwd)/build/bench/decode_bench" bench/run_bench.sh /tmp/mpc-bench --iterations 5
 
+      - name: Encoder corpus + benchmark (q5/q6/q7, scalar vs SIMD)
+        run: |
+          python3 tests/generate_encoder_corpus.py /tmp/enc-corpus >/dev/null
+          bench/encode_bench.sh /tmp/enc-corpus "$(pwd)/build/mpcenc/mpcenc" 5,6,7 3
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:

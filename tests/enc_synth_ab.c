@@ -16,6 +16,9 @@
  * Exit:  0 if every frame is bit-identical, 1 otherwise.
  */
 
+#if defined(_WIN32)
+# define _USE_MATH_DEFINES /* must precede <math.h> for M_PI on MSVC */
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
