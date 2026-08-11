@@ -64,7 +64,8 @@ Album.mpack/
 ├── artwork/             # artwork objects (role-tagged)
 ├── booklet/             # booklet documents
 ├── lyrics/              # lyrics documents
-└── extras/              # anything else the author wants
+├── extras/              # anything else the author wants
+└── analysis/            # optional analysis documents (e.g. sonic.json)
 ```
 
 - The manifest is the **authority**: files it references define the package.
@@ -108,11 +109,39 @@ Field summary (see the JSON Schema for full constraints):
 | `audio`                | yes      | object: `path` (required), `sha256` (required, 64 lowercase hex), `codec` (optional) |
 | `artwork`              | no       | array of `{ role, path, sha256 }`             |
 | `booklet`,`lyrics`,`extras` | no | arrays of `{ path, sha256? }`             |
+| `analysis`             | no       | optional analysis references: array of `{ type, profile?, path, sha256 }` (see below) |
 | `loudness`             | no       | album-level `algorithm`, `albumLUFS`, `albumTruePeakDbTP` |
 | `provenance`           | no       | `tool`, `toolVersion`; timestamps omitted by default for determinism |
 
 Disc numbers are unique; track numbers are unique within a disc; object paths
 are unique across the whole package.
+
+### Analysis references
+
+Optional `analysis[]` entries reference per-object analysis documents stored
+in the package (e.g. sonic audio embeddings). The manifest only *references*
+them; it never embeds their payload:
+
+```json
+"analysis": [
+  { "type": "sonic",
+    "profile": "musicpack-sonic-openl3-v1",
+    "path": "analysis/sonic.json",
+    "sha256": "<64 lowercase hex>" }
+]
+```
+
+- `type` — required string identifying the analysis kind. `"sonic"` is the
+  v1 type (see `specs/musicpack-sonic-v1.md`). Unknown future types remain
+  forward-compatible: preserved on read/write and validated structurally
+  (path safety, checksum form) but not semantically.
+- `profile` — required when `type == "sonic"`; must equal the sonic
+  document's profile id.
+- `path` — package-relative, validated by the canonical path rules, unique
+  across all package asset paths.
+- `sha256` — lowercase hex; required when `type == "sonic"`.
+
+A package without `analysis[]` is completely valid.
 
 ### Release type
 

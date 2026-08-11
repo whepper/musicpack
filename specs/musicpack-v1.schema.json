@@ -225,6 +225,21 @@
     "booklet": { "$ref": "#/$defs/assetArray" },
     "lyrics": { "$ref": "#/$defs/assetArray" },
     "extras": { "$ref": "#/$defs/assetArray" },
+    "analysis": {
+      "description": "Optional references to analysis documents stored in the package (e.g. sonic audio embeddings). The manifest only references them; it never embeds their payload.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "path"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "profile": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
     "loudness": {
       "description": "Album (program) loudness, measured by feeding all tracks in order through one meter.",
       "type": "object",
