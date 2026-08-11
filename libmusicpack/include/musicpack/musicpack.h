@@ -51,5 +51,6 @@
 #include <musicpack/loudness.h>
 #include <musicpack/path.h>
 #include <musicpack/meta.h>
+#include <musicpack/sonic.h>
 
 #endif /* MUSICPACK_H_ */

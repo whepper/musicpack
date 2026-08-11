@@ -49,6 +49,7 @@
 #include "internal.h"
 #include <musicpack/checksum.h>
 #include <musicpack/path.h>
+#include <musicpack/sonic.h>
 
 #define MANIFEST_NAME "manifest.json"
 #define MANIFEST_MAX  (16u * 1024u * 1024u)
@@ -364,6 +365,10 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
             for (a = 0; a < m->extras_count && !referenced; a++)
                 if (strcmp(m->extras[a].path, files[i]) == 0)
                     referenced = 1;
+        if (!referenced)
+            for (a = 0; a < m->analysis_count && !referenced; a++)
+                if (strcmp(m->analysis[a].asset.path, files[i]) == 0)
+                    referenced = 1;
 
         if (!referenced) {
             char buf[512];
@@ -374,6 +379,73 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
     }
     free(files);
 #endif
+}
+
+/* Validates every referenced `sonic` analysis document: parses it, checks
+   the manifest's profile reference matches, and validates semantics against
+   the package manifest. Unknown/research-only profiles are warnings. */
+static void
+verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
+                       musicpack_report_fn fn, void *ctx, int *failed)
+{
+    const musicpack_manifest *m = pkg->manifest;
+    size_t i;
+
+    for (i = 0; i < m->analysis_count; i++) {
+        const musicpack_analysis *a = &m->analysis[i];
+        char abs[MUSICPACK_PATH_MAX + 2];
+        char buf[512];
+        char *json;
+        musicpack_status s;
+        musicpack_sonic *sonic;
+        musicpack_sonic_profile_state state;
+
+        if (strcmp(a->type, "sonic") != 0)
+            continue;
+        if (musicpack_package_resolve_path(pkg, a->asset.path, abs, sizeof abs) != MUSICPACK_OK)
+            continue; /* already reported by verify_assets */
+
+        json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &s);
+        if (json == 0)
+            continue; /* already reported by verify_assets */
+
+        sonic = musicpack_sonic_parse(json, strlen(json), &s);
+        free(json);
+        if (sonic == 0) {
+            snprintf(buf, sizeof buf, "analysis: malformed sonic document '%s'",
+                     a->asset.path);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            continue;
+        }
+        if (a->profile != 0 && strcmp(a->profile, sonic->profile_id) != 0) {
+            snprintf(buf, sizeof buf,
+                     "analysis: sonic profile mismatch (document '%s', manifest '%s')",
+                     sonic->profile_id, a->profile);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            musicpack_sonic_free(sonic);
+            continue;
+        }
+        s = musicpack_sonic_validate(sonic, m, &state);
+        if (s != MUSICPACK_OK) {
+            snprintf(buf, sizeof buf,
+                     "analysis: sonic document '%s' fails validation", a->asset.path);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+        } else if (state == MUSICPACK_SONIC_PROFILE_UNKNOWN) {
+            snprintf(buf, sizeof buf,
+                     "analysis: sonic profile '%s' is unknown; validated structurally only",
+                     sonic->profile_id);
+            report(rep, fn, ctx, buf, 0);
+        } else if (state == MUSICPACK_SONIC_PROFILE_RESERVED) {
+            snprintf(buf, sizeof buf,
+                     "analysis: sonic profile '%s' is research-only; vectors not comparable",
+                     sonic->profile_id);
+            report(rep, fn, ctx, buf, 0);
+        }
+        musicpack_sonic_free(sonic);
+    }
 }
 
 musicpack_status
@@ -416,6 +488,23 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
     verify_assets(pkg, m->booklet, m->booklet_count, "booklet", rep, fn, ctx, &failed);
     verify_assets(pkg, m->lyrics, m->lyrics_count, "lyrics", rep, fn, ctx, &failed);
     verify_assets(pkg, m->extras, m->extras_count, "extras", rep, fn, ctx, &failed);
+    {
+        /* analysis assets carry type/profile alongside the path+hash */
+        musicpack_asset *tmp = 0;
+        size_t n = 0, i;
+        if (m->analysis_count > 0) {
+            tmp = (musicpack_asset *) malloc(m->analysis_count * sizeof *tmp);
+            if (tmp != 0) {
+                for (i = 0; i < m->analysis_count; i++)
+                    tmp[i] = m->analysis[i].asset;
+                n = m->analysis_count;
+            }
+        }
+        verify_assets(pkg, tmp, n, "analysis", rep, fn, ctx, &failed);
+        free(tmp);
+    }
+
+    verify_sonic_documents(pkg, rep, fn, ctx, &failed);
 
     verify_extra_files(pkg, rep, fn, ctx);
 

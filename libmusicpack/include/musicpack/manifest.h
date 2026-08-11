@@ -110,6 +110,14 @@ typedef struct musicpack_artwork {
     musicpack_asset asset;
 } musicpack_artwork;
 
+/// A referenced analysis document (e.g. sonic embeddings). The manifest only
+/// references the document; it never embeds its payload.
+typedef struct musicpack_analysis {
+    char *type;    ///< required; "sonic" is the v1 type, others stay forward-compatible
+    char *profile; ///< required for type "sonic"; the sonic profile id
+    musicpack_asset asset; ///< package-relative path + sha256 (required for "sonic")
+} musicpack_analysis;
+
 /// The specific release/edition this package represents.
 ///
 /// Album-level fields describe the release GROUP (what album this belongs
@@ -153,6 +161,8 @@ typedef struct musicpack_manifest {
     size_t lyrics_count;
     musicpack_asset *extras;
     size_t extras_count;
+    musicpack_analysis *analysis;
+    size_t analysis_count;
     int has_album_loudness;
     musicpack_loudness album_loudness;
     char *loudness_algorithm;  ///< optional BS.1770 revision (e.g. "ITU-R BS.1770-5")

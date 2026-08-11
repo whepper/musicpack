@@ -12,6 +12,8 @@ set(MUSICPACK_SOURCES
     src/checksum.c
     src/loudness.c
     src/path.c
+    src/base64.c
+    src/sonic.c
     src/meta/tag.c
     src/meta/vorbis.c
     src/meta/flac.c

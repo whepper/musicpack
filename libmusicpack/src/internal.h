@@ -21,4 +21,9 @@ musicpack_status musicpack_manifest_write_with_original(const musicpack_manifest
 /* package.c */
 int musicpack_report_error(musicpack_report *rep);
 
+/* base64.c — strict standard-alphabet base64 (Sonic vector encoding).
+   Both return 1 on success; the output is malloc'd. */
+int musicpack_base64_decode(const char *s, size_t n, unsigned char **out, size_t *out_len);
+int musicpack_base64_encode(const unsigned char *data, size_t len, char **out);
+
 #endif /* MUSICPACK_INTERNAL_H_ */

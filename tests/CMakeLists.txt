@@ -73,6 +73,20 @@ if(WIN32)
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
 endif()
 
+# ---- Sonic container (musicpack-sonic v1) tests ----------------------------
+add_executable(mpc_sonic_tests sonic_tests.c)
+target_link_libraries(mpc_sonic_tests PRIVATE musicpack)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_sonic_tests PRIVATE m)
+endif()
+target_include_directories(mpc_sonic_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+
+add_test(NAME sonic_unit COMMAND mpc_sonic_tests)
+if(WIN32)
+  set_tests_properties(sonic_unit PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+endif()
+
 # ---- musicpack-server core unit tests (all platforms) ---------------------
 add_executable(mpc_server_tests server_tests.c)
 target_link_libraries(mpc_server_tests PRIVATE musicpack_server)

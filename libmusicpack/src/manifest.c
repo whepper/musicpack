@@ -351,7 +351,7 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
     size_t d, t, a;
 
     if (m->disc_count * 4 + m->artwork_count + m->booklet_count +
-        m->lyrics_count + m->extras_count > 4096) {
+        m->lyrics_count + m->extras_count + m->analysis_count > 4096) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
@@ -362,6 +362,7 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
     for (a = 0; a < m->booklet_count; a++) paths[count++] = m->booklet[a].path;
     for (a = 0; a < m->lyrics_count; a++) paths[count++] = m->lyrics[a].path;
     for (a = 0; a < m->extras_count; a++) paths[count++] = m->extras[a].path;
+    for (a = 0; a < m->analysis_count; a++) paths[count++] = m->analysis[a].asset.path;
 
     for (a = 0; a < count; a++) {
         size_t b;
@@ -562,6 +563,49 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
     PARSE_ASSET_ARRAY("extras", extras, extras_count);
 #undef PARSE_ASSET_ARRAY
 
+    /* analysis: optional typed references; unknown types stay forward-
+       compatible (structurally validated only). */
+    v = cJSON_GetObjectItemCaseSensitive(root, "analysis");
+    if (v != 0) {
+        cJSON *item;
+        if (!cJSON_IsArray(v))
+            return MUSICPACK_ERR_INVALID;
+        n = cJSON_GetArraySize(v);
+        m->analysis = (musicpack_analysis *) calloc((size_t) n, sizeof *m->analysis);
+        if (m->analysis == 0)
+            return MUSICPACK_ERR_NOMEM;
+        i = 0;
+        cJSON_ArrayForEach(item, v) {
+            musicpack_analysis *a = &m->analysis[i];
+            if (!cJSON_IsObject(item))
+                return MUSICPACK_ERR_INVALID;
+            if (!get_req_string(item, "type", &a->type, &status))
+                return status;
+            if (!get_opt_string(item, "profile", &a->profile, &status))
+                return status;
+            if (!get_req_string(item, "path", &a->asset.path, &status))
+                return status;
+            if (musicpack_path_validate(a->asset.path) != MUSICPACK_OK) {
+                status = MUSICPACK_ERR_PATH;
+                return status;
+            }
+            if (!get_opt_string(item, "sha256", &a->asset.sha256, &status))
+                return status;
+            if (a->asset.sha256 != 0 && !is_lower_hex(a->asset.sha256)) {
+                status = MUSICPACK_ERR_INVALID;
+                return status;
+            }
+            /* sonic references are integrity- and identity-protected */
+            if (strcmp(a->type, "sonic") == 0 &&
+                (a->asset.sha256 == 0 || a->profile == 0)) {
+                status = MUSICPACK_ERR_INVALID;
+                return status;
+            }
+            i++;
+        }
+        m->analysis_count = (size_t) i;
+    }
+
     /* album loudness */
     v = cJSON_GetObjectItemCaseSensitive(root, "loudness");
     if (v != 0) {
@@ -714,6 +758,14 @@ musicpack_manifest_clear(musicpack_manifest *m)
     FREE_ASSETS(lyrics, lyrics_count);
     FREE_ASSETS(extras, extras_count);
 #undef FREE_ASSETS
+
+    for (i = 0; i < m->analysis_count; i++) {
+        free(m->analysis[i].type);
+        free(m->analysis[i].profile);
+        free(m->analysis[i].asset.path);
+        free(m->analysis[i].asset.sha256);
+    }
+    free(m->analysis);
 
     free(m->provenance_tool);
     free(m->provenance_tool_version);
@@ -899,6 +951,20 @@ build_tree(const musicpack_manifest *m)
     ADD_ASSET_ARRAY("lyrics", lyrics, lyrics_count);
     ADD_ASSET_ARRAY("extras", extras, extras_count);
 #undef ADD_ASSET_ARRAY
+
+    if (m->analysis_count > 0) {
+        arr = cJSON_AddArrayToObject(root, "analysis");
+        for (i = 0; i < m->analysis_count; i++) {
+            cJSON *an = cJSON_CreateObject();
+            cJSON_AddStringToObject(an, "type", m->analysis[i].type);
+            if (m->analysis[i].profile != 0)
+                cJSON_AddStringToObject(an, "profile", m->analysis[i].profile);
+            cJSON_AddStringToObject(an, "path", m->analysis[i].asset.path);
+            if (m->analysis[i].asset.sha256 != 0)
+                cJSON_AddStringToObject(an, "sha256", m->analysis[i].asset.sha256);
+            cJSON_AddItemToArray(arr, an);
+        }
+    }
 
     if (m->has_album_loudness) {
         o = cJSON_AddObjectToObject(root, "loudness");
