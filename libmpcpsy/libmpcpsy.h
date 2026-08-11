@@ -145,10 +145,29 @@ void PowSpec1024   ( const float* x, float* erg );
 void PowSpec2048   ( const float* x, float* erg );
 void PolarSpec1024 ( const float* x, float* erg, float* phs );
 
+// Batch variants (lane-parallel FFT): process 4/2 independent spectra in one
+// call. Scalar default; SIMD when MPC_ENABLE_PSY_SIMD_KERNEL.
+typedef void (*mpc_powspec4_fn)  ( const float* x0, const float* x1, const float* x2, const float* x3,
+                                   float* e0, float* e1, float* e2, float* e3 );
+typedef void (*mpc_powspec2_fn)  ( const float* x0, const float* x1, float* e0, float* e1 );
+typedef void (*mpc_polar2_fn)    ( const float* x0, const float* x1,
+                                   float* e0, float* e1, float* p0, float* p1 );
+void PowSpec256_4    ( const float* x0, const float* x1, const float* x2, const float* x3,
+                       float* e0, float* e1, float* e2, float* e3 );
+void PowSpec1024_2   ( const float* x0, const float* x1, float* e0, float* e1 );
+void PowSpec2048_2   ( const float* x0, const float* x1, float* e0, float* e1 );
+void PolarSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 );
+
 #ifdef MPC_ENABLE_PSY_SIMD_KERNEL
 void mpc_powspec256_simd   ( const float* x, float* erg );
 void mpc_powspec1024_simd  ( const float* x, float* erg );
 void mpc_powspec2048_simd  ( const float* x, float* erg );
 void mpc_polarspec1024_simd ( const float* x, float* erg, float* phs );
+void mpc_powspec256_4_simd   ( const float* x0, const float* x1, const float* x2, const float* x3,
+                               float* e0, float* e1, float* e2, float* e3 );
+void mpc_powspec1024_2_simd  ( const float* x0, const float* x1, float* e0, float* e1 );
+void mpc_powspec2048_2_simd  ( const float* x0, const float* x1, float* e0, float* e1 );
+void mpc_polarspec1024_2_simd ( const float* x0, const float* x1,
+                                float* e0, float* e1, float* p0, float* p1 );
 #endif
 

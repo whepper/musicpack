@@ -100,6 +100,19 @@ mpc_simd_set1(float x)
 #endif
 }
 
+/// Build a vector from four scalars.
+static mpc_inline mpc_f32x4
+mpc_simd_set4(float a, float b, float c, float d)
+{
+#if defined(MPC_SIMD_WASM)
+    return wasm_f32x4_make(a, b, c, d);
+#elif defined(MPC_SIMD_NEON)
+    return (float32x4_t){a, b, c, d};
+#else
+    return _mm_set_ps(d, c, b, a);
+#endif
+}
+
 /// Lane-wise addition.
 static mpc_inline mpc_f32x4
 mpc_simd_add(mpc_f32x4 a, mpc_f32x4 b)

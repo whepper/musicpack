@@ -99,11 +99,41 @@ main ( void )
     for ( i = 0; i < 512; i++ )
         if ( ph_a[i] != ph_b[i] ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
 
+    // ---- batch level (lane-parallel FFT) ---------------------------------
+    {
+        static float w4a[4][128], w4b[4][128];
+        static float p2a[2][512],  p2b[2][512];
+        static float p4a[2][1024], p4b[2][1024];
+        static float poa[2][512],  pob[2][512];
+        int l;
+
+        mpc_psy_set_impl (MPC_PSY_SCALAR);
+        PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
+        PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
+        PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
+        PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
+
+        mpc_psy_set_impl (MPC_PSY_SIMD);
+        PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
+        PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
+        PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
+        PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
+
+        for ( l = 0; l < 4 && !failures; l++ )
+            for ( i = 0; i < 128 && !failures; i++ )
+                if ( w4a[l][i] != w4b[l][i] ) report_div ("PowSpec256_4", l * 128 + i, w4a[l][i], w4b[l][i]);
+        for ( i = 0; i < 512 && !failures; i++ ) {
+            if ( p2a[0][i] != p2b[0][i] ) report_div ("PowSpec1024_2", i, p2a[0][i], p2b[0][i]);
+            if ( p4a[0][i] != p4b[0][i] ) report_div ("PowSpec2048_2", i, p4a[0][i], p4b[0][i]);
+            if ( poa[0][i] != pob[0][i] ) report_div ("PolarSpec1024_2.p", i, poa[0][i], pob[0][i]);
+        }
+    }
+
     if ( failures ) {
         printf ( "psy_ab: kernel-level divergence\n" );
         return 1;
     }
-    printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs)\n" );
+    printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
     // ---- model level (evolving state) ------------------------------------
     memset ( &m, 0, sizeof m );

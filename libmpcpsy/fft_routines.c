@@ -268,11 +268,53 @@ PolarSpec1024_scalar ( const float* x, float* erg, float* phs )
 // The spectrum kernels used by the psychoacoustic model run through function
 // pointers so the scalar reference and the SIMD kernels can be selected once
 // and A/B compared (see libmpcpsy.h). Scalar is always available; the SIMD
-// kernels (fft_simd.c) are compiled in with MPC_ENABLE_PSY_SIMD_KERNEL.
+// kernels (fft_routines_simd.c) are compiled in with MPC_ENABLE_PSY_SIMD_KERNEL.
 static mpc_powspec_fn   powspec256_impl   = PowSpec256_scalar;
 static mpc_powspec_fn   powspec1024_impl  = PowSpec1024_scalar;
 static mpc_powspec_fn   powspec2048_impl  = PowSpec2048_scalar;
 static mpc_polarspec_fn polarspec1024_impl = PolarSpec1024_scalar;
+// forward decls for the scalar batch wrappers
+void PowSpec256_4_scalar    ( const float* x0, const float* x1, const float* x2, const float* x3,
+                              float* e0, float* e1, float* e2, float* e3 );
+void PowSpec1024_2_scalar   ( const float* x0, const float* x1, float* e0, float* e1 );
+void PowSpec2048_2_scalar   ( const float* x0, const float* x1, float* e0, float* e1 );
+void PolarSpec1024_2_scalar ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 );
+static mpc_powspec4_fn  powspec256_4_impl   = PowSpec256_4_scalar;
+static mpc_powspec2_fn  powspec1024_2_impl  = PowSpec1024_2_scalar;
+static mpc_powspec2_fn  powspec2048_2_impl  = PowSpec2048_2_scalar;
+static mpc_polar2_fn    polarspec1024_2_impl = PolarSpec1024_2_scalar;
+
+// scalar batch wrappers (reference)
+void
+PowSpec256_4_scalar ( const float* x0, const float* x1, const float* x2, const float* x3,
+                      float* e0, float* e1, float* e2, float* e3 )
+{
+    PowSpec256_scalar (x0, e0);
+    PowSpec256_scalar (x1, e1);
+    PowSpec256_scalar (x2, e2);
+    PowSpec256_scalar (x3, e3);
+}
+
+void
+PowSpec1024_2_scalar ( const float* x0, const float* x1, float* e0, float* e1 )
+{
+    PowSpec1024_scalar (x0, e0);
+    PowSpec1024_scalar (x1, e1);
+}
+
+void
+PowSpec2048_2_scalar ( const float* x0, const float* x1, float* e0, float* e1 )
+{
+    PowSpec2048_scalar (x0, e0);
+    PowSpec2048_scalar (x1, e1);
+}
+
+void
+PolarSpec1024_2_scalar ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 )
+{
+    PolarSpec1024_scalar (x0, e0, p0);
+    PolarSpec1024_scalar (x1, e1, p1);
+}
 
 void
 mpc_psy_set_impl ( int impl )
@@ -284,6 +326,10 @@ mpc_psy_set_impl ( int impl )
         powspec1024_impl   = mpc_powspec1024_simd;
         powspec2048_impl   = mpc_powspec2048_simd;
         polarspec1024_impl = mpc_polarspec1024_simd;
+        powspec256_4_impl  = mpc_powspec256_4_simd;
+        powspec1024_2_impl = mpc_powspec1024_2_simd;
+        powspec2048_2_impl = mpc_powspec2048_2_simd;
+        polarspec1024_2_impl = mpc_polarspec1024_2_simd;
         return;
     }
 #endif
@@ -292,6 +338,35 @@ mpc_psy_set_impl ( int impl )
     powspec1024_impl   = PowSpec1024_scalar;
     powspec2048_impl   = PowSpec2048_scalar;
     polarspec1024_impl = PolarSpec1024_scalar;
+    powspec256_4_impl  = PowSpec256_4_scalar;
+    powspec1024_2_impl = PowSpec1024_2_scalar;
+    powspec2048_2_impl = PowSpec2048_2_scalar;
+    polarspec1024_2_impl = PolarSpec1024_2_scalar;
+}
+
+void
+PowSpec256_4 ( const float* x0, const float* x1, const float* x2, const float* x3,
+               float* e0, float* e1, float* e2, float* e3 )
+{
+    powspec256_4_impl (x0, x1, x2, x3, e0, e1, e2, e3);
+}
+
+void
+PowSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1 )
+{
+    powspec1024_2_impl (x0, x1, e0, e1);
+}
+
+void
+PowSpec2048_2 ( const float* x0, const float* x1, float* e0, float* e1 )
+{
+    powspec2048_2_impl (x0, x1, e0, e1);
+}
+
+void
+PolarSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 )
+{
+    polarspec1024_2_impl (x0, x1, e0, e1, p0, p1);
 }
 
 void

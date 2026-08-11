@@ -21,7 +21,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|x64|amd64|AMD64|X86_64")
 endif()
 
 if(MPC_ENABLE_SIMD AND MPC_PSY_SIMD_SUPPORTED)
-  target_sources(mpcpsy PRIVATE fft_routines_simd.c)
+  target_sources(mpcpsy PRIVATE fft_routines_simd.c fft4g_simd.c)
   target_compile_definitions(mpcpsy PRIVATE MPC_ENABLE_PSY_SIMD_KERNEL)
 endif()
 

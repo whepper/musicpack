@@ -939,7 +939,8 @@ Psychoakustisches_Modell ( PsyModel* m,
     float  Thr_L[2*512], Thr_R[2*512];                          // masking thresholds L/R, second half for triangle swap
     float  Thr_M[2*512], Thr_S[2*512];                          // masking thresholds M/S, second half for triangle swap
     float F_256[4][128];                                        // holds energies of short FFTs (L/R only)
-    float    Xerg[1024];                                        // holds energy spectrum of very long FFT
+    float    Xerg[1024];
+    float    Xerg2[1024];                                        // holds energy spectrum of very long FFT
     float        Ls_L[PART_LONG],       Ls_R[PART_LONG];        // acoustic pressure in Partition L/R
     float        Ls_M[PART_LONG],       Ls_S[PART_LONG];        // acoustic pressure per each partition M/S
     float   PartThr_L[PART_LONG],  PartThr_R[PART_LONG];        // masking thresholds L/R (Partition)
@@ -961,17 +962,14 @@ Psychoakustisches_Modell ( PsyModel* m,
         memset ( m->state.Vocal_L, 0, sizeof m->state.Vocal_L );
         memset ( m->state.Vocal_R, 0, sizeof m->state.Vocal_R );
 
-        // left channel
-        PowSpec2048 ( &data->L[0], Xerg );
+        // left + right (batched 2-lane FFT)
+        PowSpec2048_2 ( &data->L[0], &data->R[0], Xerg, Xerg2 );
         isvoc_L = CVD2048 ( m, Xerg, m->state.Vocal_L );
-        // right channel
-        PowSpec2048 ( &data->R[0], Xerg );
-        isvoc_R = CVD2048 ( m, Xerg, m->state.Vocal_R );
+        isvoc_R = CVD2048 ( m, Xerg2, m->state.Vocal_R );
     }
 
     // calculation of the spectral energy via FFT
-    PolarSpec1024 ( &data->L[0], erg0, phs0 );  // left
-    PolarSpec1024 ( &data->R[0], erg1, phs1 );  // right
+    PolarSpec1024_2 ( &data->L[0], &data->R[0], erg0, erg1, phs0, phs1 );  // L/R
 
     // calculation of the acoustic pressures per each subband for L/R-signals
     SubbandEnergy ( MaxBand, Xi_L, Xi_R, erg0, erg1 );
@@ -1007,18 +1005,16 @@ Psychoakustisches_Modell ( PsyModel* m,
 
     // handling of transient signals
     // calculate four short FFTs (left)
-    PowSpec256 ( &data->L[  0+SHORTFFT_OFFSET], F_256[0] );
-    PowSpec256 ( &data->L[144+SHORTFFT_OFFSET], F_256[1] );
-    PowSpec256 ( &data->L[288+SHORTFFT_OFFSET], F_256[2] );
-    PowSpec256 ( &data->L[432+SHORTFFT_OFFSET], F_256[3] );
+    PowSpec256_4 ( &data->L[  0+SHORTFFT_OFFSET], &data->L[144+SHORTFFT_OFFSET],
+                   &data->L[288+SHORTFFT_OFFSET], &data->L[432+SHORTFFT_OFFSET],
+                   F_256[0], F_256[1], F_256[2], F_256[3] );
     // calculate short Threshold
 	CalcShortThreshold ( m, F_256, m->ShortThr, shortThr_L, m->state.pre_erg_L, TransientL );
 
     // calculate four short FFTs (right)
-    PowSpec256 ( &data->R[  0+SHORTFFT_OFFSET], F_256[0] );
-    PowSpec256 ( &data->R[144+SHORTFFT_OFFSET], F_256[1] );
-    PowSpec256 ( &data->R[288+SHORTFFT_OFFSET], F_256[2] );
-    PowSpec256 ( &data->R[432+SHORTFFT_OFFSET], F_256[3] );
+    PowSpec256_4 ( &data->R[  0+SHORTFFT_OFFSET], &data->R[144+SHORTFFT_OFFSET],
+                   &data->R[288+SHORTFFT_OFFSET], &data->R[432+SHORTFFT_OFFSET],
+                   F_256[0], F_256[1], F_256[2], F_256[3] );
     // calculate short Threshold
     CalcShortThreshold ( m, F_256, m->ShortThr, shortThr_R, m->state.pre_erg_R, TransientR );
 
@@ -1067,8 +1063,7 @@ Psychoakustisches_Modell ( PsyModel* m,
     /***************************************************************************************/
 	if ( m->MS_Channelmode > 0 ) {
         // calculation of the spectral energy via FFT
-        PowSpec1024 ( &data->M[0], erg0 );      // mid
-        PowSpec1024 ( &data->S[0], erg1 );      // side
+        PowSpec1024_2 ( &data->M[0], &data->S[0], erg0, erg1 );  // mid/side
 
         // calculation of the acoustic pressures per each subband for M/S-signals
         SubbandEnergy ( MaxBand, Xi_M, Xi_S, erg0, erg1 );
@@ -1103,8 +1098,7 @@ Psychoakustisches_Modell ( PsyModel* m,
     //-------- second model calculation via shifted FFT ------------------------
     //
     // calculation of the spectral power via FFT
-    PolarSpec1024 ( &data->L[576], erg0, phs0 ); // left
-    PolarSpec1024 ( &data->R[576], erg1, phs1 ); // right
+    PolarSpec1024_2 ( &data->L[576], &data->R[576], erg0, erg1, phs0, phs1 );  // L/R
 
     // calculation of the acoustic pressures per each subband for L/R-signals
     SubbandEnergy ( MaxBand, Xi_L, Xi_R, erg0, erg1 );
@@ -1140,18 +1134,16 @@ Psychoakustisches_Modell ( PsyModel* m,
 
     // Handling of transient signals
     // calculate four short FFTs (left)
-    PowSpec256 ( &data->L[ 576+SHORTFFT_OFFSET], F_256[0] );
-    PowSpec256 ( &data->L[ 720+SHORTFFT_OFFSET], F_256[1] );
-    PowSpec256 ( &data->L[ 864+SHORTFFT_OFFSET], F_256[2] );
-    PowSpec256 ( &data->L[1008+SHORTFFT_OFFSET], F_256[3] );
+    PowSpec256_4 ( &data->L[ 576+SHORTFFT_OFFSET], &data->L[ 720+SHORTFFT_OFFSET],
+                   &data->L[ 864+SHORTFFT_OFFSET], &data->L[1008+SHORTFFT_OFFSET],
+                   F_256[0], F_256[1], F_256[2], F_256[3] );
     // calculate short Threshold
 	CalcShortThreshold ( m, F_256, m->ShortThr, shortThr_L, m->state.pre_erg_L, TransientL );
 
     // calculate four short FFTs (right)
-    PowSpec256 ( &data->R[ 576+SHORTFFT_OFFSET], F_256[0] );
-    PowSpec256 ( &data->R[ 720+SHORTFFT_OFFSET], F_256[1] );
-    PowSpec256 ( &data->R[ 864+SHORTFFT_OFFSET], F_256[2] );
-    PowSpec256 ( &data->R[1008+SHORTFFT_OFFSET], F_256[3] );
+    PowSpec256_4 ( &data->R[ 576+SHORTFFT_OFFSET], &data->R[ 720+SHORTFFT_OFFSET],
+                   &data->R[ 864+SHORTFFT_OFFSET], &data->R[1008+SHORTFFT_OFFSET],
+                   F_256[0], F_256[1], F_256[2], F_256[3] );
     // calculate short Threshold
 	CalcShortThreshold ( m, F_256, m->ShortThr, shortThr_R, m->state.pre_erg_R, TransientR );
 
@@ -1200,8 +1192,7 @@ Psychoakustisches_Modell ( PsyModel* m,
     /***************************************************************************************/
 	if ( m->MS_Channelmode > 0 ) {
         // calculation of the spectral energy via FFT
-        PowSpec1024 ( &data->M[576], erg0 );    // mid
-        PowSpec1024 ( &data->S[576], erg1 );    // side
+        PowSpec1024_2 ( &data->M[576], &data->S[576], erg0, erg1 );  // mid/side
 
         // calculation of the acoustic pressure per each subband for M/S-signals
         SubbandEnergy ( MaxBand, Xi_M, Xi_S, erg0, erg1 );
