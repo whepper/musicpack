@@ -448,6 +448,174 @@ document.querySelectorAll('.reveal').forEach((b) => b.addEventListener('click', 
 """
 
 
+def write_human_triple_html(path: Path, seed_entries, methods, profile_ids,
+                            k: int = 8) -> Path:
+    """Three-way blind listening evaluation (OpenL3 / Discogs / CLAP).
+
+    Metadata-free by default: columns show Artist — Track only. No
+    similarity numbers, no same-album/artist/genre badges, no context, no
+    model identity. The A/B/C -> model mapping is randomized per seed (done
+    by the caller). The reviewer picks the best recommendation set
+    (A/B/C/None), optionally scores each method 0-3 and adds notes. Reveal
+    shows model identity + similarity/metadata for post-choice inspection.
+    """
+    import html as htmlmod
+
+    def esc(s):
+        return htmlmod.escape(str(s))
+
+    cards = []
+    for seed in seed_entries:
+        cols = []
+        for slot in ("A", "B", "C"):
+            method = seed["mapping"][slot]
+            nn = seed["nearest"].get(method, [])
+            lis = []
+            for r in nn:
+                meta = ("<span class='meta'><span class='sim'>%.3f</span>%s</span>"
+                        % (r.get("similarity", 0.0),
+                           "".join(
+                               ("<span class='badge album'>same album</span>"
+                                if r.get("same_album") else "")
+                               + ("<span class='badge artist'>same artist</span>"
+                                  if r.get("same_artist") else ""))))
+                lis.append("<li>%s %s</li>" % (esc(r["label"]), meta))
+            cols.append(
+                "<div class='col' data-slot='%s'>"
+                "<h3><span class='slotname'>Method %s</span>"
+                "<span class='realname'>%s</span></h3>"
+                "<ol>%s</ol></div>"
+                % (slot, slot,
+                   esc(profile_ids.get(method, "")),
+                   "".join(lis)))
+        cards.append(
+            "<div class='seed' data-seed='%d'>"
+            "<h2>Seed %d: %s</h2>"
+            "<div class='cols'>%s</div>"
+            "<div class='pick'>"
+            "<b>Best recommendation set:</b><br>"
+            "<label><input type='radio' name='best%d' value='A'> A</label> "
+            "<label><input type='radio' name='best%d' value='B'> B</label> "
+            "<label><input type='radio' name='best%d' value='C'> C</label> "
+            "<label><input type='radio' name='best%d' value='None'> None / all poor</label>"
+            "<br>"
+            "<span class='sc'>A: <select class='score' data-slot='A'>"
+            "<option value=''>-</option><option value='0'>0</option>"
+            "<option value='1'>1</option><option value='2'>2</option>"
+            "<option value='3'>3</option></select></span> "
+            "<span class='sc'>B: <select class='score' data-slot='B'>"
+            "<option value=''>-</option><option value='0'>0</option>"
+            "<option value='1'>1</option><option value='2'>2</option>"
+            "<option value='3'>3</option></select></span> "
+            "<span class='sc'>C: <select class='score' data-slot='C'>"
+            "<option value=''>-</option><option value='0'>0</option>"
+            "<option value='1'>1</option><option value='2'>2</option>"
+            "<option value='3'>3</option></select></span><br>"
+            "<textarea class='notes' rows='2' cols='70' "
+            "placeholder='optional notes (e.g. \"A too broad, B very "
+            "convincing, C semantically rather than sonically similar\")'></textarea>"
+            "<br><button class='save'>Save</button>"
+            "<button class='reveal'>Reveal methods + metadata</button>"
+            "</div></div>"
+            % (seed["index"], seed["index"] + 1, esc(seed["label"]),
+               "".join(cols),
+               seed["index"], seed["index"], seed["index"], seed["index"]))
+
+    page = _TRIPLE_TEMPLATE % {
+        "title": "MusicPack Sonic — blind listening evaluation (three-way)",
+        "cards": "\n".join(cards),
+        "k": k,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page)
+    return path
+
+
+_TRIPLE_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>%(title)s</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 76em;
+         margin: 2em auto; padding: 0 1em; color: #222; }}
+  .seed {{ border: 1px solid #ddd; border-radius: 10px; padding: 1em 1.5em;
+          margin: 1.5em 0; }}
+  .seed h2 {{ margin-top: .2em; }}
+  .cols {{ display: flex; gap: 1.2em; }}
+  .col {{ flex: 1; min-width: 0; }}
+  .col h3 {{ margin: .2em 0 .6em; }}
+  ol li {{ margin: .35em 0; }}
+  .meta {{ display: none; }}
+  .seed.revealed .meta {{ display: inline; }}
+  .seed.revealed .slotname {{ display: none; }}
+  .realname {{ display: none; }}
+  .seed.revealed .realname {{ display: inline; }}
+  .sim {{ color: #999; font-variant-numeric: tabular-nums; margin-right: .4em; }}
+  .badge {{ font-size: .72em; border-radius: 4px; padding: 1px 5px; }}
+  .badge.album {{ background: #e3f2fd; color: #1565c0; }}
+  .badge.artist {{ background: #f3e5f5; color: #6a1b9a; }}
+  .pick {{ margin-top: .9em; background: #f7f7f7; border-radius: 8px;
+          padding: .7em 1em; }}
+  .pick b {{ margin-right: .5em; }}
+  .sc {{ margin-right: .8em; }}
+  textarea {{ margin: .5em 0; width: 100%%; box-sizing: border-box; }}
+  button {{ margin-right: .6em; }}
+  .saved {{ color: #0a7; margin-left: .6em; font-size: .85em; }}
+</style>
+</head>
+<body>
+<h1>%(title)s</h1>
+<p>For each seed, three methods (A/B/C) each recommend %(k)d neighbour tracks.
+Compare the three lists and answer <b>which set actually sounds most
+related to the seed</b>. Metadata (album/artist/similarity) and model
+identity are hidden — click <i>Reveal</i> only after you have recorded your
+choice. Scores: <strong>0</strong> unrelated, <strong>1</strong> weak,
+<strong>2</strong> convincing, <strong>3</strong> excellent. Ratings are
+stored in your browser and downloadable as JSON.</p>
+%(cards)s
+<hr>
+<button id="dl">Download ratings JSON</button>
+<script>
+const KEYS = 'musicpack-sonic-ratings-triple';
+function load() {{ try {{ return JSON.parse(localStorage.getItem(KEYS)) || {{}}; }}
+                   catch (e) {{ return {{}}; }} }}
+function collect() {{
+  const r = load();
+  document.querySelectorAll('.seed').forEach((card) => {{
+    const s = +card.dataset.seed;
+    if (!r[s]) r[s] = {{ best: '', score: {{}}, notes: '' }};
+    const sel = card.querySelector('input[name="best' + s + '"]:checked');
+    if (sel) r[s].best = sel.value;
+    card.querySelectorAll('.score').forEach((el) => {{
+      if (el.value !== '') r[s].score[el.dataset.slot] = +el.value;
+    }});
+    const nt = card.querySelector('.notes');
+    if (nt && nt.value) r[s].notes = nt.value;
+  }});
+  return r;
+}}
+document.querySelectorAll('.save').forEach((b) => b.addEventListener('click', () => {{
+  localStorage.setItem(KEYS, JSON.stringify(collect()));
+  const ok = document.createElement('span'); ok.className='saved'; ok.textContent='saved';
+  b.parentNode.appendChild(ok); setTimeout(() => ok.remove(), 1200);
+}}));
+document.getElementById('dl').addEventListener('click', () => {{
+  const data = collect(); localStorage.setItem(KEYS, JSON.stringify(data));
+  const blob = new Blob([JSON.stringify(data, null, 1)], {{type: 'application/json'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'ratings-triple.json'; a.click();
+}});
+document.querySelectorAll('.reveal').forEach((b) => b.addEventListener('click', () => {{
+  b.closest('.seed').classList.add('revealed');
+  b.disabled = true; b.textContent = 'revealed';
+}}));
+</script>
+</body>
+</html>
+"""
+
+
 def write_efficiency_report(report_root: Path, per_track: List[Dict],
                             environment: dict) -> Path:
     out = Path(report_root) / "efficiency.md"

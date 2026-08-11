@@ -612,6 +612,8 @@ def gzip_bytes(raw: bytes) -> bytes:
 def cmd_human(args) -> int:
     if args.aggregate:
         return _aggregate_ratings(args)
+    if args.triple:
+        return _cmd_human_triple(args)
     if args.pairwise:
         return _cmd_human_pairwise(args)
 
@@ -690,7 +692,7 @@ def _seed_indexes(tracks, seeds):
     return sorted(set(found))
 
 
-def _pick_methods(all_profiles, method_names):
+def _pick_methods(all_profiles, method_names, want: int = 2):
     """Select primary (mean-norm, silence-off) profiles by name/prefix."""
     primaries = [p for p in all_profiles
                  if (p.pooling.strategy == POOL_MEAN_NORM
@@ -717,9 +719,9 @@ def _pick_methods(all_profiles, method_names):
         # prefer multi over release when both match
         cands.sort(key=lambda p: (p.model_variant != "multi",))
         picked.append(cands[0])
-    if len(picked) != 2:
-        print("pairwise comparison needs exactly 2 methods, got %d"
-              % len(picked))
+    if len(picked) != want:
+        print("this comparison needs exactly %d methods, got %d"
+              % (want, len(picked)))
         return None
     return picked
 
@@ -808,6 +810,102 @@ def _cmd_human_pairwise(args) -> int:
     return 0
 
 
+def _cmd_human_triple(args) -> int:
+    """Three-way blind listening evaluation: OpenL3 / Discogs / CLAP.
+
+    Reuses cached embeddings (no model runs). Per seed the A/B/C -> model
+    mapping is a deterministic permutation so the reviewer cannot infer
+    model identity by position or consistency.
+    """
+    import numpy as np
+
+    from metrics import _cosine_matrix, _neighbors
+
+    library = scan(args.library)
+    tracks = _prepare(args, library)
+    cache = Cache(args.cache)
+
+    all_profiles = [canonical_profile(p, args.models) for p in _profile_index(args)]
+    methods = _pick_methods(all_profiles,
+                            args.method or ["openl3", "discogs", "clap"],
+                            want=3)
+    if methods is None:
+        return 2
+
+    emb_by = {}
+    for prof in methods:
+        vecs = []
+        for tr in tracks:
+            v = cache.load_track(audio_sha256(tr.path), prof)
+            if v is not MISSING and v is not None:
+                vecs.append((tr, v))
+        if len(vecs) < 2:
+            print("too few embeddings for %s" % combo_label(prof))
+            return 2
+        emb_by[prof.fingerprint()] = vecs
+
+    seed_tracks = []
+    if args.seeds:
+        for s in args.seeds:
+            for tr in tracks:
+                if s.lower() in tr.label.lower():
+                    seed_tracks.append(tr)
+                    break
+    else:
+        seen = set()
+        for tr in tracks:
+            if len(seed_tracks) >= args.num_seeds:
+                break
+            if tr.artist not in seen:
+                seen.add(tr.artist)
+                seed_tracks.append(tr)
+    if not seed_tracks:
+        print("no seed tracks matched")
+        return 2
+
+    # deterministic, seed-scoped random permutation of the three models
+    rng = np.random.RandomState(args.triple_seed or 20260811)
+    seed_entries = []
+    for idx, tr in enumerate(seed_tracks):
+        order = rng.permutation(3)
+        mapping = {"A": methods[order[0]].fingerprint(),
+                   "B": methods[order[1]].fingerprint(),
+                   "C": methods[order[2]].fingerprint()}
+        entry = {"index": idx, "label": tr.label, "mapping": mapping,
+                 "nearest": {}}
+        for prof in methods:
+            vecs = emb_by[prof.fingerprint()]
+            query_pos = next((i for i, (t, _) in enumerate(vecs)
+                              if t.id == tr.id), None)
+            if query_pos is None:
+                continue
+            matrix = np.stack([v for _, v in vecs])
+            sim = _cosine_matrix(matrix)
+            res = []
+            for j in _neighbors(sim, args.k)[query_pos]:
+                nt = vecs[int(j)][0]
+                res.append({
+                    "rank": len(res) + 1,
+                    "label": nt.label,
+                    "similarity": float(sim[query_pos, int(j)]),
+                    "same_album": nt.album == tr.album,
+                    "same_artist": nt.artist == tr.artist,
+                })
+            entry["nearest"][prof.fingerprint()] = res
+        if len(entry["nearest"]) == 3:
+            seed_entries.append(entry)
+
+    profile_ids = {p.fingerprint(): combo_label(p) for p in methods}
+    out_dir = Path(args.report) / "human"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "human-triple-openl3-vs-discogs-vs-clap.html"
+    rep.write_human_triple_html(out, seed_entries, [p.fingerprint() for p in methods],
+                                profile_ids, k=args.k)
+    print("triple evaluation page written to %s (%d seeds x 3 methods)"
+          % (out, len(seed_entries)))
+    return 0
+
+
 def _aggregate_ratings(args) -> int:
     """Aggregate a downloaded ratings JSON into the committed report.
     Handles both the 3-method format (per-method score + A/B/tie pref) and
@@ -816,10 +914,37 @@ def _aggregate_ratings(args) -> int:
 
     ratings = json.loads(_P(args.aggregate).read_text())
     entries = [d for d in ratings.values() if isinstance(d, dict)]
-
-    pairwise = any("pick" in d for d in entries)
     scores = {}
-    if pairwise:
+
+    if any("best" in d for d in entries):
+        best = {"A": 0, "B": 0, "C": 0, "None": 0}
+        notes = []
+        for d in entries:
+            b = d.get("best")
+            if b in best:
+                best[b] += 1
+            for slot, s in (d.get("score") or {}).items():
+                scores.setdefault(slot, []).append(s)
+            if d.get("notes"):
+                notes.append(d["notes"].strip())
+        lines = ["# Human evaluation results (three-way blind listening)", "",
+                 "Ratings source: %s" % args.aggregate, "",
+                 "| best set | count |", "|---|---|"]
+        for k in ("A", "B", "C", "None"):
+            lines.append("| %s | %d |" % (k, best[k]))
+        lines.append("")
+        lines.append("| slot | mean score (0-3) | n |")
+        lines.append("|---|---|---|")
+        for slot in sorted(scores):
+            s = rep.stats(scores[slot])
+            lines.append("| %s | %.3f | %d |" % (slot, s["mean"], s["n"]))
+        if notes:
+            lines.append("")
+            lines.append("## Reviewer notes")
+            lines.extend("")
+            lines.extend("- " + n.replace("|", "\\|") for n in notes)
+        lines.append("")
+    elif any("pick" in d for d in entries):
         picks = {"A": 0, "B": 0, "tie": 0, "neither": 0}
         for d in entries:
             p = d.get("pick")
@@ -943,6 +1068,10 @@ def main(argv=None) -> int:
                     help="path to a downloaded ratings JSON to aggregate")
     ph.add_argument("--pairwise", action="store_true",
                     help="pairwise A/B comparison page (much easier to review)")
+    ph.add_argument("--triple", action="store_true",
+                    help="three-way blind listening page (A/B/C, metadata hidden)")
+    ph.add_argument("--triple-seed", type=int, default=20260811,
+                    help="deterministic seed for the per-seed A/B/C permutation")
     ph.add_argument("--method", action="append", default=[],
                     help="method name/prefix for the comparison (repeatable; "
                          "default openl3 vs discogs)")
