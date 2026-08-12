@@ -19,6 +19,7 @@
  */
 
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -72,9 +73,21 @@ check_kernel ( const char* stage, const float* x,
     }
 }
 
+static void
+segv_handler ( int sig, siginfo_t* si, void* ctx )
+{
+    fprintf ( stderr, "SEGV at address %p\n", si->si_addr );
+    _Exit (128 + sig);
+}
+
 int
 main ( void )
 {
+    struct sigaction sa;
+    memset ( &sa, 0, sizeof sa );
+    sa.sa_sigaction = segv_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction ( SIGSEGV, &sa, 0 );
     PsyModel m;
     PCMDataTyp Main;
     float F_a[1024], F_b[1024];

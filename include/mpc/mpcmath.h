@@ -21,7 +21,6 @@
 #pragma once
 
 #include <math.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <mpc/mpc_types.h>
@@ -122,19 +121,16 @@ static mpc_inline float my_atan2 ( float x, float y )
 
 	if ( (mx & 0x7FFFFFFF) < (my & 0x7FFFFFFF) ) {
 		i   = mpc_round32 (t = TABSTEP * (x / y));
-		if (i < -TABSTEP || i > TABSTEP) { fprintf (stderr, "ATAN2_IDX %d x=%g y=%g\n", i, x, y); i = i < 0 ? -TABSTEP : TABSTEP; }
 		ret = tabatan2 [1*TABSTEP+i][0] + tabatan2 [1*TABSTEP+i][1] * (t-i);
 		if ( (mpc_int32_t) my < 0 )
 			ret = (float)(ret - M_PI);
 	}
 	else if ( (mpc_int32_t) mx < 0 ) {
 		i   = mpc_round32 (t = TABSTEP * (y / x));
-		if (i < -TABSTEP || i > TABSTEP) { fprintf (stderr, "ATAN2_IDX %d x=%g y=%g\n", i, x, y); i = i < 0 ? -TABSTEP : TABSTEP; }
 		ret = - M_PI/2 - tabatan2 [1*TABSTEP+i][0] + tabatan2 [1*TABSTEP+i][1] * (i-t);
 	}
 	else if ( (mpc_int32_t) mx > 0 ) {
 		i   = mpc_round32 (t = TABSTEP * (y / x));
-		if (i < -TABSTEP || i > TABSTEP) { fprintf (stderr, "ATAN2_IDX %d x=%g y=%g\n", i, x, y); i = i < 0 ? -TABSTEP : TABSTEP; }
 		ret = + M_PI/2 - tabatan2 [1*TABSTEP+i][0] + tabatan2 [1*TABSTEP+i][1] * (i-t);
 	}
 	else {
