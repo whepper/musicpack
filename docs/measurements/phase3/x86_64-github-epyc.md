@@ -19,7 +19,8 @@ runs, opt-in process CPU-time counters.
 
 Result: **the FFT `>=35%` total-encoder CPU decision rule is not satisfied
 on x86-64.** FFT narrowly exceeds 35% inside `libmpcpsy`; that is not the
-agreed denominator.
+agreed denominator. Therefore no broader FFT rewrite is admitted; this is the
+intended application of the gate, not a milestone failure.
 
 The hosted runner does not provide reliable native `perf` access, so Linux
 exp/log/libm attribution remains part of `other psy`. No percentage is

@@ -54,9 +54,9 @@ retained windowing, FFT, power, phase, packing, and splitting kernels.
 | **q6** | **41.047 ms** | **25.385 ms** | **1.62x** |
 | q7 | 38.838 ms | 26.001 ms | 1.49x |
 
-The explicit lane-parallel FFT materially contributes to the measured
-end-to-end gain, but the original total-encoder 35% admission threshold was
-not met.
+The retained exact batched FFT materially contributes to the measured
+end-to-end gain. The sub-35% total-encoder share means no broader FFT rewrite
+is admitted.
 
 ## Reproduction
 

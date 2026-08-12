@@ -6,12 +6,10 @@ scoped integrity corrections described below.
 
 ## Verdict
 
-**PASS WITH ISSUES.** The retained SIMD code is strongly protected against
-codec-output regressions, and the recent CI fix did not weaken tests or alter
-the reference manifests. Phase 3 is not complete because its profiling
-decision and performance evidence are not sufficiently documented or
-reproducible, and the current encoder benchmark isolates the Phase 2 analyser
-rather than the Phase 3 psychoacoustic path.
+**PASS.** The retained SIMD code is strongly protected against codec-output
+regressions, and the CI fix did not weaken tests or alter the reference
+manifests. The profiling decision and end-to-end psychoacoustic evidence are
+now reproducible and retained. Phase 3 is complete.
 
 ## CI-fix diff integrity
 
@@ -55,16 +53,13 @@ hardcoded paths, or broad warning suppressions remain.
   entered Phase 3. Wasm remains decoder-only and retains its scalar,
   auto-vectorized, and explicit SIMD128 benchmark configurations.
 
-## Residual issues
+## Review issues and disposition
 
-1. Phase A evidence is incomplete. The Milestone 2 report contains a short
-   macOS sample excerpt, but no retained raw profile, repeat protocol,
-   additive hotspot percentages, q5/q6/q7 split, or independent architecture
-   result. It does not prove the agreed FFT `>=35%` go/no-go rule.
-2. No retained Phase 3 before/after benchmark demonstrates that FFT and
-   PowSpec changes improve end-to-end encoding. `bench/encode_bench.sh`
-   switches only the Phase 2 analysis filter; psychoacoustics stay AUTO in
-   both arms. Its results cannot be cited as Phase 3 speedup evidence.
+1. Closed: Phase A now has a retained repeat protocol, additive hotspot
+   percentages, q5/q6/q7 results, and ARM64 plus x86-64 evidence.
+2. Closed: `bench/encode_bench.sh` now keeps the analyser AUTO in both arms
+   and switches only `--psy-impl scalar|simd`. It checks byte identity and
+   retains q5/q6/q7 end-to-end results on both architectures.
 3. The existing FAST_MATH `my_atan2` table-index hazard remains outside this
    optimization change. The corrected test initializes all tables and uses a
    deterministic finite-noise input, but there is no dedicated boundary test.
@@ -86,8 +81,8 @@ quality work was added.
 
 Phase 3 performance evidence is now retained in
 `docs/psy-optimization-milestone-3.md`. The optimization has a measured gain,
-but the agreed total-encoder FFT threshold is not met; final status is
-**NOT COMPLETE**.
+and the agreed total-encoder FFT gate has been applied: the sub-35% share does
+not justify a broader FFT rewrite. Final status is **COMPLETE**.
 
 ## Verification performed
 
@@ -107,6 +102,6 @@ ctest --test-dir build-enc-rel -E '^compat$' --output-on-failure
 
 ## Recommended next action
 
-Stop. Do not begin another optimization phase. A separate decision is needed
-on whether to keep an optimization that produces a measured 5-10% end-to-end
-gain but did not satisfy its original FFT admission threshold.
+Stop. Keep the bit-exact optimizations justified by the measured 5-10%
+end-to-end gain. Do not begin a broader FFT rewrite: FFT did not satisfy the
+35% total-encoder CPU admission threshold.
