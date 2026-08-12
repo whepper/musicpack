@@ -95,12 +95,23 @@ job_worker(void *arg)
     if (st->kind == MP_JOB_SCAN) {
         mp_scan_result res;
         MP_LOGI("job: scan started");
-        mp_scan_library(lib, cfg->library, cfg->verify_on_scan, &res,
-                        scan_progress, st);
+        if (mp_scan_library(lib, cfg->library, cfg->verify_on_scan, &res,
+                            scan_progress, st) != MUSICPACK_OK) {
+            MP_LOGE("job: scan failed");
+            pthread_mutex_lock(&st->lock);
+            st->failed = 1;
+            pthread_mutex_unlock(&st->lock);
+        }
     } else {
         mp_verify_result res;
         MP_LOGI("job: verify started");
-        mp_verify_library(lib, cfg->library, &res, verify_progress, st);
+        if (mp_verify_library(lib, cfg->library, &res, verify_progress, st)
+            != MUSICPACK_OK) {
+            MP_LOGE("job: verify failed");
+            pthread_mutex_lock(&st->lock);
+            st->failed = 1;
+            pthread_mutex_unlock(&st->lock);
+        }
     }
     mp_library_close(lib);
 done:
@@ -129,6 +140,7 @@ mp_jobs_start(mp_job_state *st, const mp_config *cfg, int kind)
     }
     st->running = 1;
     st->kind = kind;
+    st->failed = 0;
     st->finished_at[0] = '\0';
     now_iso(st->started_at, sizeof st->started_at);
     if (kind == MP_JOB_SCAN) {

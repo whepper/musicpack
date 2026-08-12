@@ -60,6 +60,7 @@ typedef struct mp_job_state {
     int running;             ///< a job is currently running
     int kind;                ///< MP_JOB_SCAN / MP_JOB_VERIFY while running
     int last_kind;           ///< kind of the most recent completed job
+    int failed;              ///< last job returned an error
     char started_at[32];
     char finished_at[32];
     /* scan counters */

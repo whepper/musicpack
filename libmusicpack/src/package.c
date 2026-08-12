@@ -66,21 +66,16 @@ struct musicpack_package {
 /* manifest file I/O                                                   */
 /* ------------------------------------------------------------------ */
 
+#ifdef _WIN32
 static int
 is_regular_file(const char *path)
 {
-#ifdef _WIN32
     struct _stat st;
     if (_stat(path, &st) != 0)
         return 0;
     return (st.st_mode & _S_IFREG) != 0;
-#else
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return 0;
-    return S_ISREG(st.st_mode);
-#endif
 }
+#endif
 
 static FILE *
 open_regular_read(const char *path)
@@ -90,11 +85,11 @@ open_regular_read(const char *path)
         return 0;
     return fopen(path, "rb");
 #else
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
     struct stat st;
     if (fd < 0)
         return 0;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
         close(fd);
         return 0;
     }
@@ -283,16 +278,112 @@ report(musicpack_report *rep, musicpack_report_fn fn, void *ctx,
         fn(ctx, message, is_error);
 }
 
-static int
-file_exists(const char *path)
+/* ---- verification resource budgets ------------------------------------- */
+/* Bounded totals enforced during a single verification pass so an untrusted
+   package cannot drive unbounded I/O. Per-file and aggregate byte budgets
+   live in manifest.h; the inode list avoids re-hashing the same object
+   (hard links are already rejected, but an asset may be referenced twice
+   through two manifest paths). */
+
+typedef struct verify_inode {
+    unsigned long long dev, ino;
+} verify_inode;
+
+typedef struct verify_budget {
+    unsigned long long total_bytes;
+    size_t inode_count;
+    size_t inode_cap;
+    verify_inode *inodes;
+    int failed;
+} verify_budget;
+
+static long long
+checked_file_size(const char *path)
 {
-    return is_regular_file(path);
+#ifdef _WIN32
+    struct _stat st;
+    if (_stat(path, &st) != 0)
+        return -1;
+    if ((st.st_mode & _S_IFREG) == 0)
+        return -1;
+    return (long long) st.st_size;
+#else
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    struct stat st;
+    if (fd < 0)
+        return -1;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return (long long) st.st_size;
+#endif
 }
+
+static void
+verify_budget_init(verify_budget *b)
+{
+    memset(b, 0, sizeof *b);
+}
+
+static void
+verify_budget_free(verify_budget *b)
+{
+    free(b->inodes);
+    b->inodes = 0;
+}
+
+/* Returns 1 if (dev,ino) was already seen (content already hashed), else
+   records it and returns 0. Bounded by the asset cap. */
+static int
+inode_seen(verify_budget *b, unsigned long long dev, unsigned long long ino)
+{
+    size_t i;
+    for (i = 0; i < b->inode_count; i++)
+        if (b->inodes[i].dev == dev && b->inodes[i].ino == ino)
+            return 1;
+    if (b->inode_count >= b->inode_cap) {
+        size_t ncap = b->inode_cap == 0 ? 64 : b->inode_cap * 2;
+        verify_inode *ni = (verify_inode *) realloc(b->inodes, ncap * sizeof *ni);
+        if (ni == 0)
+            return 0;
+        b->inodes = ni;
+        b->inode_cap = ncap;
+    }
+    b->inodes[b->inode_count].dev = dev;
+    b->inodes[b->inode_count].ino = ino;
+    b->inode_count++;
+    return 0;
+}
+
+#ifdef _WIN32
+static void
+inode_of(const char *path, unsigned long long *dev, unsigned long long *ino)
+{
+    struct _stat st;
+    if (_stat(path, &st) == 0) {
+        *dev = 0;
+        *ino = (unsigned long long) st.st_ino;
+    }
+}
+#else
+static void
+inode_of(const char *path, unsigned long long *dev, unsigned long long *ino)
+{
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        *dev = (unsigned long long) st.st_dev;
+        *ino = (unsigned long long) st.st_ino;
+    }
+}
+#endif
 
 static void
 verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
               size_t count, const char *kind, musicpack_report *rep,
-              musicpack_report_fn fn, void *ctx, int *failed)
+              musicpack_report_fn fn, void *ctx, int *failed,
+              verify_budget *budget)
 {
     size_t i;
 
@@ -300,6 +391,7 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
         const musicpack_asset *a = &assets[i];
         char abs[MUSICPACK_PATH_MAX + 2];
         char buf[512];
+        long long size;
 
         if (musicpack_package_resolve_path(pkg, a->path, abs, sizeof abs) != MUSICPACK_OK) {
             snprintf(buf, sizeof buf, "%s: unsafe path '%s'", kind, a->path);
@@ -307,11 +399,39 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
             *failed = 1;
             continue;
         }
-        if (!file_exists(abs)) {
+        size = checked_file_size(abs);
+        if (size < 0) {
             snprintf(buf, sizeof buf, "%s: missing file '%s'", kind, a->path);
             report(rep, fn, ctx, buf, 1);
             *failed = 1;
             continue;
+        }
+        if (size > (long long) MUSICPACK_MANIFEST_MAX_FILE_SIZE) {
+            snprintf(buf, sizeof buf, "%s: '%s' exceeds %llu-byte file limit",
+                     kind, a->path,
+                     (unsigned long long) MUSICPACK_MANIFEST_MAX_FILE_SIZE);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            continue;
+        }
+        if (budget != 0) {
+            unsigned long long dev = 0, ino = 0;
+            inode_of(abs, &dev, &ino);
+            if (inode_seen(budget, dev, ino)) {
+                /* same underlying object already hashed this pass */
+                continue;
+            }
+            budget->total_bytes += (unsigned long long) size;
+            if (budget->total_bytes > MUSICPACK_MANIFEST_MAX_TOTAL_BYTES) {
+                snprintf(buf, sizeof buf,
+                         "%s: aggregate referenced bytes exceed %llu-byte limit",
+                         kind,
+                         (unsigned long long) MUSICPACK_MANIFEST_MAX_TOTAL_BYTES);
+                report(rep, fn, ctx, buf, 1);
+                *failed = 1;
+                budget->failed = 1;
+                continue;
+            }
         }
         if (a->sha256 != 0) {
             char hex[MUSICPACK_SHA256_HEX_SIZE];
@@ -508,6 +628,7 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
 {
     const musicpack_manifest *m;
     musicpack_report local = { 0, 0 };
+    verify_budget budget;
     int failed = 0;
     size_t d, t;
 
@@ -516,18 +637,18 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
     if (rep == 0)
         rep = &local;
 
+    verify_budget_init(&budget);
     m = pkg->manifest;
     for (d = 0; d < m->disc_count; d++) {
         for (t = 0; t < m->discs[d].track_count; t++) {
             musicpack_track *tr = &m->discs[d].tracks[t];
-            verify_assets(pkg, &tr->audio, 1, "track", rep, fn, ctx, &failed);
+            verify_assets(pkg, &tr->audio, 1, "track", rep, fn, ctx, &failed,
+                          &budget);
         }
     }
     {
-        /* artwork carries a role; verify_assets works on musicpack_asset* */
         musicpack_asset *tmp = 0;
         size_t n = 0, i;
-        /* flatten artwork into a temporary asset list for hashing */
         if (m->artwork_count > 0) {
             tmp = (musicpack_asset *) malloc(m->artwork_count * sizeof *tmp);
             if (tmp != 0) {
@@ -536,14 +657,16 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
                 n = m->artwork_count;
             }
         }
-        verify_assets(pkg, tmp, n, "artwork", rep, fn, ctx, &failed);
+        verify_assets(pkg, tmp, n, "artwork", rep, fn, ctx, &failed, &budget);
         free(tmp);
     }
-    verify_assets(pkg, m->booklet, m->booklet_count, "booklet", rep, fn, ctx, &failed);
-    verify_assets(pkg, m->lyrics, m->lyrics_count, "lyrics", rep, fn, ctx, &failed);
-    verify_assets(pkg, m->extras, m->extras_count, "extras", rep, fn, ctx, &failed);
+    verify_assets(pkg, m->booklet, m->booklet_count, "booklet", rep, fn, ctx,
+                  &failed, &budget);
+    verify_assets(pkg, m->lyrics, m->lyrics_count, "lyrics", rep, fn, ctx,
+                  &failed, &budget);
+    verify_assets(pkg, m->extras, m->extras_count, "extras", rep, fn, ctx,
+                  &failed, &budget);
     {
-        /* analysis assets carry type/profile alongside the path+hash */
         musicpack_asset *tmp = 0;
         size_t n = 0, i;
         if (m->analysis_count > 0) {
@@ -554,7 +677,7 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
                 n = m->analysis_count;
             }
         }
-        verify_assets(pkg, tmp, n, "analysis", rep, fn, ctx, &failed);
+        verify_assets(pkg, tmp, n, "analysis", rep, fn, ctx, &failed, &budget);
         free(tmp);
     }
 
@@ -562,6 +685,7 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
 
     verify_extra_files(pkg, rep, fn, ctx);
 
+    verify_budget_free(&budget);
     return failed ? MUSICPACK_ERR_CHECKSUM : MUSICPACK_OK;
 }
 

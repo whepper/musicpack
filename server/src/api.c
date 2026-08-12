@@ -38,6 +38,7 @@
    'unverified' and therefore produce non-servable packages (fail closed for
    untrusted ingestion). */
 #define VISIBLE "p.status IN ('valid','warning') AND p.verify_status IN ('valid','warning')"
+#define VISIBLE_ART "pp.status IN ('valid','warning') AND pp.verify_status IN ('valid','warning')"
 #define SESSION_COOKIE "musicpack_session"
 
 /* ---------- small parsing helpers -------------------------------------- */
@@ -379,8 +380,8 @@ add_content_headers(struct MHD_Response *resp, const mp_object_ref *ref, int fd)
 {
     MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
     if (!mp_mime_inline_allowed(ref->mime) || !fd_inline_safe(fd, ref->mime)) {
-        char disp[1024];
-        char name[MUSICPACK_PATH_MAX + 2];
+        char disp[512];
+        char name[256];
         content_disposition_name(ref->relative_path, name, sizeof name);
         snprintf(disp, sizeof disp, "attachment; filename=\"%s\"", name);
         MHD_add_response_header(resp, "Content-Disposition", disp);
@@ -430,7 +431,7 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
         return error_response(503, "unavailable", "source file is not a regular file");
     }
 #else
-    if (!S_ISREG(st.st_mode)) {
+    if (!S_ISREG(st.st_mode) || st.st_nlink > 1) {
         close(fd);
         *status_out = 503;
         return error_response(503, "unavailable", "source file is not a regular file");
@@ -455,6 +456,8 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
             MHD_add_response_header(resp, "Cache-Control",
                                     "private, max-age=0, must-revalidate");
             MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
+            MHD_add_response_header(resp, "Content-Security-Policy",
+                                    "sandbox; default-src 'none'; img-src 'self'");
             *status_out = 304;
             return resp;
         }
@@ -518,6 +521,9 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
         resp = MHD_create_response_from_buffer(0, 0, MHD_RESPMEM_PERSISTENT);
         MHD_add_response_header(resp, "Content-Range", cr);
         MHD_add_response_header(resp, "Accept-Ranges", "bytes");
+        MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
+        MHD_add_response_header(resp, "Content-Security-Policy",
+                                "sandbox; default-src 'none'; img-src 'self'");
         *status_out = 416;
         return resp;
     }
@@ -766,14 +772,14 @@ handle_albums(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
         "    JOIN artists a ON a.id = ga.artist_id"
         "    WHERE ga.group_id = g.id ORDER BY ga.position LIMIT 1) AS artist,"
         "  (SELECT COUNT(*) FROM releases r WHERE r.group_id = g.id AND"
-        "    EXISTS (SELECT 1 FROM packages p WHERE p.release_id = r.id AND "
+        "    EXISTS (SELECT 1 FROM packages p WHERE p.id = r.owner_package_id AND "
         "      " VISIBLE ")) AS rc,"
         "  (SELECT aa.id FROM assets aa"
         "    JOIN releases rr ON rr.id = aa.release_id"
         "    JOIN packages pp ON pp.id = rr.owner_package_id"
         "    WHERE rr.group_id = g.id AND aa.kind = 'artwork'"
         "      AND aa.role = 'front'"
-        "      AND pp.status IN ('valid','warning')"
+        "      AND " VISIBLE_ART
         "    ORDER BY rr.release_date, rr.id, aa.id LIMIT 1) AS art_id"
         " FROM release_groups g"
         " WHERE EXISTS (SELECT 1 FROM releases r"
@@ -840,7 +846,7 @@ handle_album_detail(mp_library *lib, long long id, unsigned int *st)
     sqlite3 *db = mp_library_sqlite(lib);
     sqlite3_stmt *g, *rs;
     mp_json *o = mp_json_obj();
-    int found = 0;
+    int visible_releases = 0;
 
     if (sqlite3_prepare_v2(db,
             "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid"
@@ -851,16 +857,14 @@ handle_album_detail(mp_library *lib, long long id, unsigned int *st)
         return error_response(500, "internal", "query failed");
     }
     sqlite3_bind_int64(g, 1, id);
-    if (sqlite3_step(g) == SQLITE_ROW) {
-        mp_json_add(o, "album", group_object(lib, g));
-        found = 1;
-    }
-    sqlite3_finalize(g);
-    if (!found) {
+    if (sqlite3_step(g) != SQLITE_ROW) {
+        sqlite3_finalize(g);
         mp_json_free(o);
         *st = 404;
         return error_response(404, "not_found", "Album not found");
     }
+    mp_json_add(o, "album", group_object(lib, g));
+    sqlite3_finalize(g);
     if (sqlite3_prepare_v2(db,
             "SELECT r.id, r.edition, r.release_date, r.country, r.label,"
             "  r.catalogue_number, r.barcode, r.mbid, r.identity_source,"
@@ -909,10 +913,16 @@ handle_album_detail(mp_library *lib, long long id, unsigned int *st)
                 mp_json_add(it, "artwork", art);
             }
             mp_json_add(rel, 0, it);
+            visible_releases++;
         }
         mp_json_add(o, "releases", rel);
     }
     sqlite3_finalize(rs);
+    if (visible_releases == 0) {
+        mp_json_free(o);
+        *st = 404;
+        return error_response(404, "not_found", "Album not found");
+    }
     {
         char *s = mp_json_render(o);
         struct MHD_Response *r = json_response(s, 200);
@@ -1207,6 +1217,7 @@ jobs_json(mp_server_ctx *srv)
     mp_json_int(scan, "updated", j->updated);
     mp_json_int(scan, "removed", j->removed);
     mp_json_int(scan, "invalid", j->invalid);
+    mp_json_int(scan, "failed", j->failed);
 
     mp_json_int(verify, "running", verify_running);
     mp_json_str(verify, "startedAt", j->started_at);
@@ -1215,6 +1226,7 @@ jobs_json(mp_server_ctx *srv)
     mp_json_int(verify, "passed", j->verified_passed);
     mp_json_int(verify, "warnings", j->verified_warnings);
     mp_json_int(verify, "failed", j->verified_failed);
+    mp_json_int(verify, "jobFailed", j->failed);
 
     mp_json_add(o, "scan", scan);
     mp_json_add(o, "verify", verify);

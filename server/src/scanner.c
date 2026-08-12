@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 #include <sqlite3.h>
 
@@ -27,6 +28,8 @@
 # include <dirent.h>
 # include <sys/stat.h>
 # include <unistd.h>
+# include <fcntl.h>
+# include <errno.h>
 #endif
 
 static void
@@ -40,10 +43,11 @@ mp_sleep_ms(long ms)
 }
 
 #define MANIFEST_MAX (16u * 1024u * 1024u)
-/* Iterative traversal bound: genuine directory depth is capped to prevent
-   stack exhaustion from attacker-controlled deep trees. A path that exceeds
-   this depth aborts the scan (fail closed, no sweep). */
+
 #define MAX_SCAN_DEPTH 64
+#define MAX_SCAN_OBJECTS 100000
+#define MAX_SCAN_PACKAGES 10000
+#define MAX_SCAN_PATH_BYTES (64LL * 1024 * 1024)
 
 static int
 ends_with(const char *s, const char *suffix)
@@ -55,26 +59,37 @@ ends_with(const char *s, const char *suffix)
 static int
 is_regular_path(const char *path)
 {
+#ifdef _WIN32
     struct stat st;
     if (stat(path, &st) != 0)
         return 0;
-#ifdef _WIN32
     return (st.st_mode & _S_IFREG) != 0;
 #else
-    return S_ISREG(st.st_mode);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    struct stat st;
+    if (fd < 0)
+        return 0;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+        close(fd);
+        return 0;
+    }
+    close(fd);
+    return 1;
 #endif
 }
 
 static char *
 read_file_bounded(const char *path, size_t max)
 {
+#ifdef _WIN32
     FILE *f;
     long len;
     char *buf;
-
     if (!is_regular_path(path))
         return 0;
     f = fopen(path, "rb");
+    if (f == 0)
+        return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
     len = ftell(f);
     if (len < 0 || (unsigned long) len > max) { fclose(f); return 0; }
@@ -87,6 +102,38 @@ read_file_bounded(const char *path, size_t max)
     fclose(f);
     buf[len] = '\0';
     return buf;
+#else
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    struct stat st;
+    FILE *f;
+    long len;
+    char *buf;
+    if (fd < 0)
+        return 0;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+        close(fd);
+        return 0;
+    }
+    {
+        int flags = fcntl(fd, F_GETFL);
+        if (flags >= 0)
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+    f = fdopen(fd, "rb");
+    if (f == 0) { close(fd); return 0; }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+    len = ftell(f);
+    if (len < 0 || (unsigned long) len > max) { fclose(f); return 0; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return 0; }
+    buf = (char *) malloc((size_t) len + 1);
+    if (buf == 0) { fclose(f); return 0; }
+    if (len > 0 && fread(buf, 1, (size_t) len, f) != (size_t) len) {
+        free(buf); fclose(f); return 0;
+    }
+    fclose(f);
+    buf[len] = '\0';
+    return buf;
+#endif
 }
 
 /* Resolves each referenced object and checks existence (lightweight scan
@@ -339,14 +386,21 @@ handle_move(mp_library *lib, const char *dir, const musicpack_package *pkg,
     }
     determine_status(pkg, m, verify, &status, &verify_status,
                      errbuf, sizeof errbuf);
-    if (strcmp(status, "valid") != 0)
+    if (strcmp(row.status, "conflict") == 0) {
+        /* A quarantined package stays quarantined across a move; only an
+           explicit ownership re-arbitration can change conflict state. */
+        status = "conflict";
+        verify_status = "unverified";
+        last_error = "identity conflict with active package owning this release";
+    } else if (strcmp(status, "valid") != 0) {
         last_error = errbuf;
+    }
     if (mp_library_begin(lib) != 0)
         return 0;
     if (mp_library_package_update(lib, row.id, row.release_id, dir,
                                   fingerprint, manifest_sha, status,
-                                  verify_status, last_scan, last_error) == 0) {
-        mp_library_commit(lib);
+                                  verify_status, last_scan, last_error) == 0 &&
+        mp_library_commit(lib) == 0) {
         res->moved++;
         return 1;
     }
@@ -374,10 +428,11 @@ record_invalid(mp_library *lib, const char *dir, const char *manifest_sha,
                                       reason) >= 0)
             res->invalid++;
     }
-    mp_library_commit(lib);
+    if (mp_library_commit(lib) != 0)
+        mp_library_rollback(lib);
 }
 
-static void
+static int
 process_package(mp_library *lib, const char *dir, const char *last_scan,
                 int verify, mp_scan_result *res, mp_scan_progress_fn progress,
                 void *ctx)
@@ -388,7 +443,6 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
     mp_package_row row;
     musicpack_package *pkg;
 
-
     snprintf(mpath, sizeof mpath, "%s/manifest.json", dir);
     json = read_file_bounded(mpath, MANIFEST_MAX);
     if (json == 0) {
@@ -398,28 +452,40 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
                        res);
         res->total++;
         if (progress) progress(ctx, res);
-        return;
+        return 0;
     }
     mp_identity_manifest_hash(json, strlen(json), manifest_sha,
                               sizeof manifest_sha);
 
-    /* Parse the manifest so referenced objects can be checked even on the
-       unchanged-manifest path. */
-    /* fast path for already-invalid packages: a stable manifest hash means
-       the package was recorded invalid before; refresh last_scan only and
-       avoid re-parsing (and re-reporting) it on every scan. */
     if (!verify && mp_library_package_by_path(lib, dir, &row) &&
         strcmp(row.status, "invalid") == 0 &&
         strcmp(row.manifest_sha256, manifest_sha) == 0) {
-        mp_library_begin(lib);
-        mp_library_package_update(lib, row.id, row.release_id, dir,
-                                  row.fingerprint, row.manifest_sha256,
-                                  row.status, row.verify_status, last_scan, 0);
-        mp_library_commit(lib);
+        if (mp_library_begin(lib) != 0) {
+            free(json);
+            res->total++;
+            if (progress) progress(ctx, res);
+            return -1;
+        }
+        if (mp_library_package_update(lib, row.id, row.release_id, dir,
+                                      row.fingerprint, row.manifest_sha256,
+                                      row.status, row.verify_status, last_scan, 0) != 0) {
+            mp_library_rollback(lib);
+            free(json);
+            res->total++;
+            if (progress) progress(ctx, res);
+            return -1;
+        }
+        if (mp_library_commit(lib) != 0) {
+            mp_library_rollback(lib);
+            free(json);
+            res->total++;
+            if (progress) progress(ctx, res);
+            return -1;
+        }
         free(json);
         res->total++;
         if (progress) progress(ctx, res);
-        return;
+        return 0;
     }
 
     pkg = musicpack_package_open_dir(dir, 0);
@@ -430,13 +496,9 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
         free(json);
         res->total++;
         if (progress) progress(ctx, res);
-        return;
+        return 0;
     }
 
-    /* fast path: unchanged package (same path, same manifest hash). Identical
-       manifest bytes are NOT proof that referenced objects are unchanged, so
-       object existence is re-checked and a previously-verified package is
-       downgraded to unverified when an object disappeared. */
     if (!verify && mp_library_package_by_path(lib, dir, &row) &&
         strcmp(row.manifest_sha256, manifest_sha) == 0) {
         const char *status = row.status;
@@ -446,21 +508,34 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
 
         if (missing > 0) {
             status = "warning";
-            vstat = "unverified"; /* verified state no longer holds */
+            vstat = "unverified";
             last_error = "referenced object(s) missing";
         } else if (strcmp(row.status, "unavailable") == 0) {
-            status = "valid"; /* revive a package that reappeared */
+            status = "valid";
         }
-        mp_library_begin(lib);
-        mp_library_package_update(lib, row.id, row.release_id, dir,
-                                  row.fingerprint, row.manifest_sha256,
-                                  status, vstat, last_scan, last_error);
-        mp_library_commit(lib);
+        if (mp_library_begin(lib) != 0) {
+            musicpack_package_close(pkg);
+            free(json);
+            res->total++;
+            if (progress) progress(ctx, res);
+            return -1;
+        }
+        if (mp_library_package_update(lib, row.id, row.release_id, dir,
+                                      row.fingerprint, row.manifest_sha256,
+                                      status, vstat, last_scan, last_error) != 0 ||
+            mp_library_commit(lib) != 0) {
+            mp_library_rollback(lib);
+            musicpack_package_close(pkg);
+            free(json);
+            res->total++;
+            if (progress) progress(ctx, res);
+            return -1;
+        }
         musicpack_package_close(pkg);
         free(json);
         res->total++;
         if (progress) progress(ctx, res);
-        return;
+        return 0;
     }
     if (!mp_library_package_by_path(lib, dir, &row) &&
         handle_move(lib, dir, pkg, manifest_sha, last_scan, verify, res)) {
@@ -468,23 +543,37 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
         free(json);
         res->total++;
         if (progress) progress(ctx, res);
-        return;
+        return 0;
     }
-    if (ingest_valid(lib, dir, pkg, manifest_sha, last_scan, verify, res) != 0)
+    if (ingest_valid(lib, dir, pkg, manifest_sha, last_scan, verify, res) != 0) {
         MP_LOGE("scan: failed to ingest package %s", dir);
+        musicpack_package_close(pkg);
+        free(json);
+        res->total++;
+        if (progress) progress(ctx, res);
+        return -1;
+    }
     musicpack_package_close(pkg);
     free(json);
     res->total++;
     if (progress) progress(ctx, res);
+    return 0;
 }
 
 /* Recursively visits \p abs. Returns 0 on a complete traversal, or -1 when
    the root (or any subtree) could not be opened or enumerated; a subtree
    failure also stops descending into it. A failed traversal must not trigger
    the unavailable sweep (mp_scan_library). */
+typedef struct {
+    int objects;
+    int packages;
+    long long path_bytes;
+} mp_scan_budget;
+
 static int
 walk(mp_library *lib, const char *abs, const char *last_scan, int verify,
-     mp_scan_result *res, mp_scan_progress_fn progress, void *ctx, int depth)
+     mp_scan_result *res, mp_scan_progress_fn progress, void *ctx, int depth,
+     mp_scan_budget *budget)
 {
     DIR *d = opendir(abs);
     struct dirent *e;
@@ -512,15 +601,23 @@ walk(mp_library *lib, const char *abs, const char *last_scan, int verify,
             failed = 1;
             continue;
         }
+        budget->objects++;
+        budget->path_bytes += (long long) strlen(next);
+        if (budget->objects > MAX_SCAN_OBJECTS ||
+            budget->path_bytes > MAX_SCAN_PATH_BYTES) {
+            MP_LOGE("scan: resource budget exceeded (%d objects, %lld path bytes)",
+                    budget->objects, budget->path_bytes);
+            closedir(d);
+            return -1;
+        }
 #ifdef _WIN32
         {
-            /* Reject reparse points (junctions, symlinks, mount points) so
-               discovery cannot escape the configured library root or loop.
-               GetFileAttributesA reports the reparse attribute without
-               following the link. */
             DWORD attrs = GetFileAttributesA(next);
-            if (attrs == INVALID_FILE_ATTRIBUTES)
+            if (attrs == INVALID_FILE_ATTRIBUTES) {
+                MP_LOGW("scan: cannot get attributes for %s", next);
+                failed = 1;
                 continue;
+            }
             if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
                 MP_LOGD("skipping reparse point %s", next);
                 continue;
@@ -531,8 +628,11 @@ walk(mp_library *lib, const char *abs, const char *last_scan, int verify,
 #else
         {
             struct stat st;
-            if (lstat(next, &st) != 0)
+            if (lstat(next, &st) != 0) {
+                MP_LOGW("scan: cannot stat %s", next);
+                failed = 1;
                 continue;
+            }
             if (S_ISLNK(st.st_mode)) {
                 MP_LOGD("skipping symlink %s", next);
                 continue;
@@ -543,13 +643,33 @@ walk(mp_library *lib, const char *abs, const char *last_scan, int verify,
 #endif
         if (!is_dir)
             continue;
-        if (ends_with(e->d_name, ".mpack"))
-            process_package(lib, next, last_scan, verify, res, progress, ctx);
-        else
-            failed |= walk(lib, next, last_scan, verify, res, progress, ctx,
-                           depth + 1);
+        if (ends_with(e->d_name, ".mpack")) {
+            budget->packages++;
+            if (budget->packages > MAX_SCAN_PACKAGES) {
+                MP_LOGE("scan: package count budget exceeded (%d)",
+                        budget->packages);
+                closedir(d);
+                return -1;
+            }
+            if (process_package(lib, next, last_scan, verify, res, progress,
+                                ctx) != 0)
+                failed = 1;
+        } else {
+            if (walk(lib, next, last_scan, verify, res, progress, ctx,
+                     depth + 1, budget) != 0)
+                failed = 1;
+        }
     }
-    closedir(d);
+    {
+        int err = 0;
+        errno = 0;
+        closedir(d);
+        err = errno;
+        if (err != 0) {
+            MP_LOGE("scan: closedir failed for %s (errno=%d)", abs, err);
+            failed = 1;
+        }
+    }
     return failed ? -1 : 0;
 }
 
@@ -560,23 +680,25 @@ mp_scan_library(mp_library *lib, const char *root, int verify,
     static unsigned counter;
     char last_scan[64];
     int ok;
+    mp_scan_budget budget = { 0, 0, 0 };
 
     if (res != 0)
         memset(res, 0, sizeof *res);
     snprintf(last_scan, sizeof last_scan, "s%ld.%u", (long) time(0),
              counter++);
     MP_LOGI("scan start (root=%s, verify=%s)", root, verify ? "yes" : "no");
-    ok = walk(lib, root, last_scan, verify, res, progress, ctx, 0);
+    ok = walk(lib, root, last_scan, verify, res, progress, ctx, 0, &budget);
     if (ok != 0) {
-        /* Do not treat a failed traversal as an authoritative scan: preserve
-           the previous library state instead of sweeping packages to
-           unavailable because they were not reached. */
         MP_LOGE("scan aborted: library root traversal incomplete (root=%s)",
                 root);
         return MUSICPACK_ERR_IO;
     }
     if (res != 0) {
         int removed = mp_library_package_sweep(lib, last_scan);
+        if (removed < 0) {
+            MP_LOGE("scan: database sweep failed");
+            return MUSICPACK_ERR_IO;
+        }
         res->removed += removed;
         if (removed != 0) {
             MP_LOGW("scan sweep: %d package(s) marked unavailable", removed);
@@ -600,16 +722,13 @@ pkg_set_verify(mp_library *lib, long long id, const char *status,
     sqlite3 *db = mp_library_sqlite(lib);
     int i;
 
-    /* WAL allows one writer at a time; the serving connection occasionally
-       writes (session/token last-used stamping). Retry bounded lock
-       contention so a failed write cannot silently leave a package
-       unverified while the scan reports success. */
     for (i = 0; i < 100; i++) {
         sqlite3_stmt *st;
         int rc;
         if (sqlite3_prepare_v2(db,
                 "UPDATE packages SET status=?2, verify_status=?3,"
-                " updated_at=datetime('now') WHERE id=?1", -1, &st, 0)
+                " updated_at=datetime('now') WHERE id=?1"
+                " AND status != 'conflict'", -1, &st, 0)
             != SQLITE_OK)
             return -1;
         sqlite3_bind_int64(st, 1, id);
@@ -645,7 +764,8 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
         return MUSICPACK_ERR_IO;
     if (sqlite3_prepare_v2(db,
             "SELECT id, path FROM packages"
-            " WHERE status NOT IN ('unavailable','invalid') ORDER BY id",
+            " WHERE status NOT IN ('unavailable','invalid','conflict')"
+            " ORDER BY id",
             -1, &st, 0) != SQLITE_OK) {
         mp_library_rollback(lib);
         return MUSICPACK_ERR_IO;
@@ -660,7 +780,12 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
         if (pkg == 0) {
             status = "warning";
             vstat = "unverified";
-            pkg_set_verify(lib, id, status, vstat);
+            if (pkg_set_verify(lib, id, status, vstat) != 0) {
+                sqlite3_finalize(st);
+                mp_library_rollback(lib);
+                MP_LOGE("verify: persistence failed for package %lld", id);
+                return MUSICPACK_ERR_IO;
+            }
             res->failed++;
         } else {
             musicpack_report rep = { 0, 0 };
@@ -675,7 +800,13 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
             } else {
                 res->passed++;
             }
-            pkg_set_verify(lib, id, status, vstat);
+            if (pkg_set_verify(lib, id, status, vstat) != 0) {
+                sqlite3_finalize(st);
+                musicpack_package_close(pkg);
+                mp_library_rollback(lib);
+                MP_LOGE("verify: persistence failed for package %lld", id);
+                return MUSICPACK_ERR_IO;
+            }
             musicpack_package_close(pkg);
         }
         if (progress)

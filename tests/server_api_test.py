@@ -325,6 +325,47 @@ def run(base, libdir, demo_dir, t):
                    {"If-None-Match": f'"{track["audio"]["sha256"]}"'})
     t.ok(st == 304, "If-None-Match -> 304")
 
+    # ---- package-object response security headers ----------------------
+    # body-bearing audio responses carry nosniff + sandbox CSP
+    st, h, _ = get(base, API + f"/tracks/{tid}/audio")
+    t.ok(h.get("X-Content-Type-Options") == "nosniff",
+         "200 audio nosniff")
+    t.ok("sandbox" in h.get("Content-Security-Policy", ""),
+         "200 audio sandbox CSP")
+    st, h, _ = get(base, API + f"/tracks/{tid}/audio", {"Range": "bytes=0-0"})
+    t.ok(h.get("X-Content-Type-Options") == "nosniff",
+         "206 audio nosniff")
+    t.ok("sandbox" in h.get("Content-Security-Policy", ""),
+         "206 audio sandbox CSP")
+    # bodyless responses carry the same security headers (documented as
+    # consistent across 200/206/304/416)
+    st, h, _ = get(base, API + f"/tracks/{tid}/audio",
+                   {"If-None-Match": f'"{track["audio"]["sha256"]}"'})
+    t.ok(st == 304 and h.get("X-Content-Type-Options") == "nosniff",
+         "304 nosniff")
+    t.ok(st == 304 and "sandbox" in h.get("Content-Security-Policy", ""),
+         "304 sandbox CSP")
+    st, h, _ = get(base, API + f"/tracks/{tid}/audio", {"Range": "bytes=999999-"})
+    t.ok(st == 416 and h.get("X-Content-Type-Options") == "nosniff",
+         "416 nosniff")
+    t.ok(st == 416 and "sandbox" in h.get("Content-Security-Policy", ""),
+         "416 sandbox CSP")
+    # a non-inline type (booklet/lyrics text) is forced to attachment with a
+    # sanitized filename; fetch a lyrics/booklet asset from the release detail
+    st, _, body = get(base, API + f"/releases/{release_id}")
+    rdetail = json.loads(body)
+    non_inline = [a for a in rdetail.get("assets", [])
+                  if not a.get("mimeType", "").startswith(("image/", "audio/"))]
+    if non_inline:
+        st, h, abody = get(base, non_inline[0]["url"])
+        t.ok(st == 200 and h.get("X-Content-Type-Options") == "nosniff",
+             "attachment asset nosniff")
+        cd = h.get("Content-Disposition", "")
+        t.ok("attachment" in cd and '"' in cd,
+             "non-inline asset forced to attachment with quoted filename")
+        t.ok("sandbox" in h.get("Content-Security-Policy", ""),
+             "attachment asset sandbox CSP")
+
     # ---- live scan / status / verify
     # add a bulk of identical packages so a scan takes long enough to observe
     bulk = os.path.join(libdir, "bulk")

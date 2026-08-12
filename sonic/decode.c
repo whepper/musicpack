@@ -206,27 +206,78 @@ static int
 decode_wav(const char *path, sonic_pcm *out)
 {
     FILE *f = fopen(path, "rb");
-    unsigned char hdr[44];
-    uint32_t data_len = 0, sample_rate = 0, byte_rate = 0, block_align = 0;
-    uint16_t fmt_tag = 0, ch = 0, bits = 0;
+    unsigned char hdr[12];
+    unsigned char chunkhdr[8];
+    int have_fmt = 0, have_data = 0;
+    uint16_t fmt_tag = 0, ch = 0, bits = 0, block_align = 0;
+    uint32_t sample_rate = 0, byte_rate = 0, data_len = 0;
+    long data_offset = -1;
     float *buf;
     size_t len = 0, frame_size, max_frames;
 
     if (f == 0)
         return 0;
-    if (fread(hdr, 1, 44, f) != 44 || memcmp(hdr, "RIFF", 4) != 0 ||
-        memcmp(hdr + 8, "WAVE", 4) != 0) {
+    if (fread(hdr, 1, 12, f) != 12 ||
+        memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
         fclose(f);
         return 0;
     }
-    fmt_tag = (uint16_t) (hdr[20] | (hdr[21] << 8));
-    ch = (uint16_t) (hdr[22] | (hdr[23] << 8));
-    sample_rate = (uint32_t) (hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24));
-    byte_rate = (uint32_t) (hdr[28] | (hdr[29] << 8) | (hdr[30] << 16) | (hdr[31] << 24));
-    block_align = (uint16_t) (hdr[32] | (hdr[33] << 8));
-    bits = (uint16_t) (hdr[34] | (hdr[35] << 8));
-    data_len = (uint32_t) (hdr[40] | (hdr[41] << 8) | (hdr[42] << 16) | (hdr[43] << 24));
-
+    while (!have_fmt || !have_data) {
+        char id[4];
+        uint32_t csz;
+        if (fread(chunkhdr, 1, 8, f) != 8) {
+            fclose(f);
+            return 0;
+        }
+        memcpy(id, chunkhdr, 4);
+        csz = (uint32_t) chunkhdr[4] | ((uint32_t) chunkhdr[5] << 8) |
+              ((uint32_t) chunkhdr[6] << 16) | ((uint32_t) chunkhdr[7] << 24);
+        if (csz > 0xFFFFFFFEu) {
+            fclose(f);
+            return 0;
+        }
+        if (memcmp(id, "fmt ", 4) == 0) {
+            unsigned char fmt[16];
+            size_t rd = csz < 16 ? csz : 16;
+            if (rd < 16 || fread(fmt, 1, rd, f) != rd) {
+                fclose(f);
+                return 0;
+            }
+            if (csz > rd)
+                fseek(f, (long) (csz - rd), SEEK_CUR);
+            if (csz & 1)
+                fseek(f, 1, SEEK_CUR);
+            fmt_tag = (uint16_t) fmt[0] | ((uint16_t) fmt[1] << 8);
+            ch = (uint16_t) fmt[2] | ((uint16_t) fmt[3] << 8);
+            sample_rate = (uint32_t) fmt[4] | ((uint32_t) fmt[5] << 8) |
+                          ((uint32_t) fmt[6] << 16) | ((uint32_t) fmt[7] << 24);
+            byte_rate = (uint32_t) fmt[8] | ((uint32_t) fmt[9] << 8) |
+                        ((uint32_t) fmt[10] << 16) | ((uint32_t) fmt[11] << 24);
+            block_align = (uint16_t) fmt[12] | ((uint16_t) fmt[13] << 8);
+            bits = (uint16_t) fmt[14] | ((uint16_t) fmt[15] << 8);
+            have_fmt = 1;
+        } else if (memcmp(id, "data", 4) == 0) {
+            data_len = csz;
+            data_offset = ftell(f);
+            if (data_offset < 0) {
+                fclose(f);
+                return 0;
+            }
+            have_data = 1;
+            if (!have_fmt)
+                fseek(f, (long) (csz + (csz & 1)), SEEK_CUR);
+        } else {
+            long skip = (long) csz + (long) (csz & 1);
+            if (fseek(f, skip, SEEK_CUR) != 0) {
+                fclose(f);
+                return 0;
+            }
+        }
+    }
+    if (!have_fmt || !have_data) {
+        fclose(f);
+        return 0;
+    }
     if (ch < 1 || ch > 2 || sample_rate == 0 || bits == 0 || block_align == 0) {
         fclose(f);
         return 0;
@@ -245,7 +296,14 @@ decode_wav(const char *path, sonic_pcm *out)
         fclose(f);
         return 0;
     }
-    frame_size = ch * (size_t) (bits / 8);
+    {
+        size_t bytes_per_sample = bits / 8;
+        if (bytes_per_sample == 0) {
+            fclose(f);
+            return 0;
+        }
+        frame_size = ch * bytes_per_sample;
+    }
     if (frame_size == 0 || block_align != (uint16_t) frame_size) {
         fclose(f);
         return 0;
@@ -260,6 +318,10 @@ decode_wav(const char *path, sonic_pcm *out)
     }
     max_frames = data_len / frame_size;
     if (max_frames == 0 || max_frames > 100000000) {
+        fclose(f);
+        return 0;
+    }
+    if (fseek(f, data_offset, SEEK_SET) != 0) {
         fclose(f);
         return 0;
     }
@@ -306,8 +368,14 @@ decode_wav(const char *path, sonic_pcm *out)
                     memcpy(&s, fbuf + c * 2, 2);
                     v = (double) s / 32768.0;
                 } else if (bits == 24) {
-                    int32_t s = (int8_t) fbuf[c * 3] | (fbuf[c * 3 + 1] << 8) |
-                                (fbuf[c * 3 + 2] << 16);
+                    uint32_t u = (uint32_t) fbuf[c * 3] |
+                                 ((uint32_t) fbuf[c * 3 + 1] << 8) |
+                                 ((uint32_t) fbuf[c * 3 + 2] << 16);
+                    int32_t s;
+                    if (u & 0x800000u)
+                        s = (int32_t) (u | 0xFF000000u);
+                    else
+                        s = (int32_t) u;
                     v = (double) s / 8388608.0;
                 } else {
                     v = ((double) fbuf[c] - 128.0) / 128.0;

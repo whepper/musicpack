@@ -195,7 +195,7 @@ mp_library_package_owner_present(mp_library *lib, long long package_id)
 {
     sqlite3_stmt *st = stmt_prepare(lib,
         "SELECT 1 FROM packages WHERE id = ?1"
-        " AND status NOT IN ('unavailable','invalid')");
+        " AND status NOT IN ('unavailable','invalid','conflict')");
     int rc = 0;
     if (st == 0)
         return 0;
@@ -274,13 +274,18 @@ mp_library_package_sweep(mp_library *lib, const char *last_scan)
     sqlite3_stmt *st = stmt_prepare(lib,
         "UPDATE packages SET status='unavailable', last_error='package "
         "directory not found', updated_at=datetime('now')"
-        " WHERE last_scan != ?1 AND status != 'unavailable'");
+        " WHERE last_scan != ?1 AND status != 'unavailable'"
+        " AND status != 'conflict'");
     int changed = 0;
     if (st == 0)
-        return 0;
+        return -1;
     sqlite3_bind_text(st, 1, last_scan, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(st) == SQLITE_DONE)
         changed = sqlite3_changes(mp_db_sqlite(lib->db));
+    else {
+        sqlite3_finalize(st);
+        return -1;
+    }
     sqlite3_finalize(st);
     return changed;
 }

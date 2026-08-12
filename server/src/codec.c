@@ -11,23 +11,35 @@
 
 #ifdef _WIN32
 # include <sys/stat.h>
+# include <io.h>
+# include <fcntl.h>
 #else
 # include <sys/stat.h>
+# include <fcntl.h>
+# include <unistd.h>
 #endif
 
 #include <musepack/musepack.h>
 
-/* ---- FLAC STREAMINFO: first metadata block after the "fLaC" magic. ---- */
 static int
 is_regular_path(const char *path)
 {
+#ifdef _WIN32
     struct stat st;
     if (stat(path, &st) != 0)
         return 0;
-#ifdef _WIN32
     return (st.st_mode & _S_IFREG) != 0;
 #else
-    return S_ISREG(st.st_mode);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    struct stat st;
+    if (fd < 0)
+        return 0;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+        close(fd);
+        return 0;
+    }
+    close(fd);
+    return 1;
 #endif
 }
 
@@ -40,21 +52,33 @@ flac_probe(const char *path, mp_codec_info *out)
 
     if (!is_regular_path(path))
         return MUSICPACK_ERR_IO;
+#ifdef _WIN32
     f = fopen(path, "rb");
+    if (f == 0)
+        return MUSICPACK_ERR_IO;
+#else
+    {
+        int fd = open(path, O_RDONLY | O_NOFOLLOW);
+        if (fd < 0)
+            return MUSICPACK_ERR_IO;
+        f = fdopen(fd, "rb");
+        if (f == 0) { close(fd); return MUSICPACK_ERR_IO; }
+    }
+#endif
     if (fread(h, 1, sizeof h, f) != sizeof h ||
         memcmp(h, "fLaC", 4) != 0) {
         fclose(f);
         return MUSICPACK_ERR_INVALID;
     }
-    /* metadata block header: 1 byte (flag+type) + 3 bytes length */
-    if ((h[4] & 0x7f) != 0) { /* 0 == STREAMINFO */
+    if ((h[4] & 0x7f) != 0) {
         fclose(f);
         return MUSICPACK_ERR_INVALID;
     }
     {
-        const unsigned char *si = h + 8; /* STREAMINFO starts at offset 8 */
-        rate = (si[10] << 12) | (si[11] << 4) | (si[12] >> 4);
-        ch = ((si[12] & 0x0e) >> 1) + 1;
+        const unsigned char *si = h + 8;
+        rate = ((unsigned int) si[10] << 12) | ((unsigned int) si[11] << 4) |
+               ((unsigned int) si[12] >> 4);
+        ch = (int) (((si[12] & 0x0e) >> 1) + 1);
     }
     fclose(f);
     snprintf(out->codec, sizeof out->codec, "flac");

@@ -179,7 +179,10 @@ run_serve(const mp_config *cfg)
     if (!cfg->no_scan) {
         mp_scan_result res;
         MP_LOGI("startup scan");
-        mp_scan_library(lib, cfg->library, cfg->verify_on_scan, &res, 0, 0);
+        if (mp_scan_library(lib, cfg->library, cfg->verify_on_scan, &res, 0, 0)
+            != MUSICPACK_OK) {
+            MP_LOGE("startup scan failed; serving with previous library state");
+        }
     }
     if (mp_http_serve(lib, cfg, &jobs, err, sizeof err) != 0) {
         fprintf(stderr, "musicpack-server: %s\n", err);

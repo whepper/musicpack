@@ -864,6 +864,274 @@ test_ownership_conflict(void)
     mp_library_close(lib_h);
 }
 
+/* Conflict quarantine is durable: verification must never clear a conflict
+   status. A quarantined package must stay conflict through verify, rescan,
+   owner verification, and re-add cycles. */
+static void
+test_conflict_survives_verify(void)
+{
+    char lib[4096], dbpath[4096];
+    char victim[4096], hostile[4096];
+    mp_library *lib_h;
+    mp_scan_result sres;
+    mp_verify_result vres;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/cvlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/cv.db", g_tmpdir);
+    make_dir(lib);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "open cv db");
+    db = mp_library_sqlite(lib_h);
+
+    /* victim owns the release */
+    snprintf(victim, sizeof victim, "%s/Victim.mpack", lib);
+    copy_tree(g_ref_flac, victim);
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(sres.added == 1, "victim added");
+
+    /* hostile claims same identity with different content */
+    snprintf(hostile, sizeof hostile, "%s/Hostile.mpack", lib);
+    copy_tree(g_ref_flac, hostile);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", hostile);
+        replace_in_file(mpath, "\"title\": \"Classical Piece No 1\"",
+                        "\"title\": \"HIJACKED\"");
+    }
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "hostile quarantined as conflict");
+
+    /* verify must not clear conflict */
+    mp_verify_library(lib_h, lib, &vres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflict survives verification");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "owner stays valid after verify");
+
+    /* rescan must not clear conflict */
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflict survives rescan");
+
+    /* verify the owner - hostile must still be conflict */
+    mp_verify_library(lib_h, lib, &vres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflict survives owner verify");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "owner still valid");
+
+    /* a full verification scan (verify=1) must not clear conflict either */
+    mp_scan_library(lib_h, lib, 1, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflict survives verify scan");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "owner stays the only valid package after verify scan");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM tracks WHERE title='HIJACKED'", -1) == 0,
+        "hostile content never attached");
+
+    /* remove hostile, re-add - must remain quarantined (conflict is durable
+       and is not cleared by a directory removal; the sweep skips conflict) */
+    {
+        char cmd[8192];
+#ifndef _WIN32
+        snprintf(cmd, sizeof cmd, "rm -rf '%s'", hostile);
+#else
+        snprintf(cmd, sizeof cmd, "rmdir /s /q \"%s\"", hostile);
+#endif
+        if (system(cmd) != 0) { }
+    }
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflict survives directory removal (sweep skips conflict)");
+    {
+        char cmd[8192];
+#ifndef _WIN32
+        snprintf(cmd, sizeof cmd, "cp -R '%s' '%s'", victim, hostile);
+#else
+        snprintf(cmd, sizeof cmd, "xcopy /e /i \"%s\" \"%s\"", victim, hostile);
+#endif
+        if (system(cmd) != 0) { }
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", hostile);
+        replace_in_file(mpath, "\"title\": \"Classical Piece No 1\"",
+                        "\"title\": \"HIJACKED2\"");
+    }
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "re-added hostile re-quarantined");
+
+    /* remove and re-add with the SAME conflicting content: conflict must
+       persist (a re-added identical conflict is still quarantined) */
+    {
+        char cmd[8192];
+#ifndef _WIN32
+        snprintf(cmd, sizeof cmd, "rm -rf '%s'", hostile);
+#else
+        snprintf(cmd, sizeof cmd, "rmdir /s /q \"%s\"", hostile);
+#endif
+        if (system(cmd) != 0) { }
+    }
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    {
+        char cmd[8192];
+#ifndef _WIN32
+        snprintf(cmd, sizeof cmd, "cp -R '%s' '%s'", victim, hostile);
+#else
+        snprintf(cmd, sizeof cmd, "xcopy /e /i \"%s\" \"%s\"", victim, hostile);
+#endif
+        if (system(cmd) != 0) { }
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", hostile);
+        replace_in_file(mpath, "\"title\": \"Classical Piece No 1\"",
+                        "\"title\": \"HIJACKED\"");
+    }
+    mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "same-content re-add stays quarantined");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "owner untouched after same-content re-add");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM tracks WHERE title='HIJACKED'", -1) == 0,
+        "hostile content never attached after re-add");
+
+    mp_library_close(lib_h);
+}
+
+/* Scan fail-closed: a directory tree exceeding the scan depth limit must
+   cause the scan to return an error, not silently skip subtrees. */
+static void
+test_scan_fail_closed(void)
+{
+    char lib[4096], dbpath[4096];
+    char deep[4096];
+    mp_library *lib_h;
+    mp_scan_result sres;
+    musicpack_status rc;
+    int i;
+
+    snprintf(lib, sizeof lib, "%s/deeplib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/deep.db", g_tmpdir);
+    make_dir(lib);
+    /* Create a directory tree deeper than MAX_SCAN_DEPTH (64). */
+    snprintf(deep, sizeof deep, "%s", lib);
+    for (i = 0; i < 70; i++) {
+        char next[4200];
+        snprintf(next, sizeof next, "%s/d%d", deep, i);
+        make_dir(next);
+        snprintf(deep, sizeof deep, "%s", next);
+    }
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "open deep db");
+    rc = mp_scan_library(lib_h, lib, 0, &sres, 0, 0);
+    CHECK(rc == MUSICPACK_ERR_IO, "deep tree fails scan (fail-closed)");
+    CHECK(sres.total == 0, "no packages processed in failed scan");
+    mp_library_close(lib_h);
+}
+
+/* Scan DB-mutation fail-closed: a scan whose database writes fail must
+   return an error, never report a successful incomplete publication. */
+static void
+test_scan_db_fail_closed(void)
+{
+    char lib[4096], dbpath[4096];
+    char pkg[4096];
+    mp_library *lib_h;
+    mp_scan_result sres;
+    char err[256];
+
+    snprintf(lib, sizeof lib, "%s/sdblib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/sdb.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/Good.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+
+    lib_h = mp_library_open(dbpath, 0, err, sizeof err);
+    CHECK(lib_h == 0, "read-only scan open of absent db fails");
+    if (lib_h != 0)
+        mp_library_close(lib_h);
+
+    /* Open read-only after a writable first scan: writes must fail. */
+    {
+        mp_library *w = mp_library_open(dbpath, 1, err, sizeof err);
+        CHECK(w != 0, "writable open");
+        if (w != 0) {
+            CHECK(mp_scan_library(w, lib, 0, &sres, 0, 0) == MUSICPACK_OK,
+                  "writable scan succeeds");
+            mp_library_close(w);
+        }
+    }
+    lib_h = mp_library_open(dbpath, 0, err, sizeof err);
+    if (lib_h != 0) {
+        mp_scan_result r2;
+        musicpack_status rc = mp_scan_library(lib_h, lib, 0, &r2, 0, 0);
+        CHECK(rc == MUSICPACK_ERR_IO,
+              "scan fails closed on database write failure");
+        mp_library_close(lib_h);
+    } else {
+        CHECK(0, "open read-only after writable scan");
+    }
+}
+
+/* Verification persistence fail-closed: if the database cannot persist the
+   verification result, verification must report failure rather than success
+   (and must not leave the package marked valid). A read-only database forces
+   the UPDATE to fail. */
+static void
+test_verify_fail_closed(void)
+{
+    char lib[4096], dbpath[4096];
+    char pkg[4096];
+    mp_library *lib_h;
+    mp_scan_result sres;
+    sqlite3 *ro;
+
+    snprintf(lib, sizeof lib, "%s/fclib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/fc.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/Good.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "open fc db");
+    CHECK(mp_scan_library(lib_h, lib, 0, &sres, 0, 0) == MUSICPACK_OK,
+          "fc scan one package");
+
+    /* Re-open read-only and point the same scanner at it: writes must fail. */
+    mp_library_close(lib_h);
+    ro = 0;
+    CHECK(sqlite3_open_v2(dbpath, &ro, SQLITE_OPEN_READONLY, 0) == SQLITE_OK,
+          "reopen read-only");
+    if (ro != 0) {
+        char err[256];
+        mp_library *ro_lib = mp_library_open(dbpath, 0, err, sizeof err);
+        if (ro_lib != 0) {
+            mp_verify_result rv;
+            musicpack_status vrc = mp_verify_library(ro_lib, lib, &rv, 0, 0);
+            CHECK(vrc == MUSICPACK_ERR_IO,
+                  "verify fails closed when verification state cannot persist");
+            mp_library_close(ro_lib);
+        } else {
+            CHECK(0, "open read-only lib");
+        }
+        sqlite3_close(ro);
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -895,6 +1163,10 @@ main(int argc, char **argv)
     test_verify();
     test_scanner();
     test_ownership_conflict();
+    test_conflict_survives_verify();
+    test_scan_fail_closed();
+    test_scan_db_fail_closed();
+    test_verify_fail_closed();
 
     if (failures == 0) {
         printf("server_tests: all passed\n");

@@ -70,4 +70,41 @@ if command -v mkfifo >/dev/null 2>&1; then
 fi
 
 echo "hostile: $PASS passed, $FAIL failed"
+
+# 5. Hard-link rejection: a hard-linked referenced asset must be rejected
+# (link count > 1 is treated as an outside alias for untrusted ingestion).
+# Uses the real sha256 so the ONLY reason verification fails is the link.
+if [ "$(uname)" != "MINGW"* ] 2>/dev/null && command -v ln >/dev/null 2>&1; then
+    D="$TMP/hardlink.mpack"
+    mkdir -p "$D/audio"
+    printf 'real content' > "$D/audio/01.mpc"
+    SHA="$(shasum -a 256 "$D/audio/01.mpc" | cut -d' ' -f1 2>/dev/null || sha256sum "$D/audio/01.mpc" | cut -d' ' -f1)"
+    printf '{"format":"musicpack","version":1,"album":{"title":"T","artists":[{"name":"A"}]},"media":[{"disc":1,"tracks":[{"track":1,"title":"T","audio":{"path":"audio/01.mpc","sha256":"%s"}}]}]}' \
+        "$SHA" > "$D/manifest.json"
+    ln "$D/audio/01.mpc" "$TMP/hlink_alias.mpc" 2>/dev/null
+    if "$MP" verify "$D" >/dev/null 2>&1; then
+        bad "hard-linked asset should be rejected"
+    else
+        ok "hard-linked asset rejected (nlink>1)"
+    fi
+    rm -f "$TMP/hlink_alias.mpc"
+fi
+
+# 6. Per-file size limit: a referenced file over the 8 GiB limit must be
+# rejected before hashing (a sparse file of 9 GiB costs no disk blocks).
+if command -v truncate >/dev/null 2>&1; then
+    D="$TMP/bigfile.mpack"
+    mkdir -p "$D/audio"
+    truncate -s 9G "$D/audio/01.mpc"
+    printf '{"format":"musicpack","version":1,"album":{"title":"T","artists":[{"name":"A"}]},"media":[{"disc":1,"tracks":[{"track":1,"title":"T","audio":{"path":"audio/01.mpc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}]}' \
+        > "$D/manifest.json"
+    OUT="$("$MP" verify "$D" 2>&1)"
+    if echo "$OUT" | grep -q "exceeds"; then
+        ok "oversized file rejected by size limit"
+    else
+        bad "oversized file rejected by size limit"
+    fi
+fi
+
+echo "hostile: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

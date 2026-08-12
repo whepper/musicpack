@@ -40,8 +40,12 @@
 
 #if defined(_WIN32)
 # include <sys/stat.h>
+# include <io.h>
+# include <fcntl.h>
 #else
 # include <sys/stat.h>
+# include <fcntl.h>
+# include <unistd.h>
 #endif
 
 #include <musicpack/checksum.h>
@@ -207,34 +211,57 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
     unsigned char digest[32];
     unsigned char buf[65536];
     static const char hexc[] = "0123456789abcdef";
-    FILE *f;
     size_t n, i;
 
     if (path == 0 || hex == 0 || cap < MUSICPACK_SHA256_HEX_SIZE)
         return MUSICPACK_ERR_INVALID;
     {
-        struct stat st;
-        if (stat(path, &st) != 0)
-            return MUSICPACK_ERR_IO;
 #ifdef _WIN32
-        if ((st.st_mode & _S_IFREG) == 0)
+        int fd = _open(path, _O_RDONLY | _O_BINARY);
+        struct _stat st;
+        if (fd < 0)
             return MUSICPACK_ERR_IO;
+        if (_fstat(fd, &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
+            _close(fd);
+            return MUSICPACK_ERR_IO;
+        }
+        {
+            FILE *f = _fdopen(fd, "rb");
 #else
-        if (!S_ISREG(st.st_mode))
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+        struct stat st;
+        if (fd < 0)
             return MUSICPACK_ERR_IO;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+            close(fd);
+            return MUSICPACK_ERR_IO;
+        }
+        {
+            int flags = fcntl(fd, F_GETFL);
+            if (flags >= 0)
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+        {
+            FILE *f = fdopen(fd, "rb");
 #endif
+            if (f == 0) {
+#ifdef _WIN32
+                _close(fd);
+#else
+                close(fd);
+#endif
+                return MUSICPACK_ERR_IO;
+            }
+            sha256_init(&c);
+            while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+                sha256_update(&c, buf, n);
+            if (ferror(f)) {
+                fclose(f);
+                return MUSICPACK_ERR_IO;
+            }
+            fclose(f);
+        }
     }
-    f = fopen(path, "rb");
-    if (f == 0)
-        return MUSICPACK_ERR_IO;
-    sha256_init(&c);
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        sha256_update(&c, buf, n);
-    if (ferror(f)) {
-        fclose(f);
-        return MUSICPACK_ERR_IO;
-    }
-    fclose(f);
     sha256_final(&c, digest);
     for (i = 0; i < 32; i++) {
         hex[i * 2] = hexc[digest[i] >> 4];

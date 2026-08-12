@@ -9,6 +9,11 @@ remediation milestone. MusicPack supports two modes:
   controlled. Ingestion fails closed: nothing becomes visible or servable until a
   full SHA-256 verification succeeds.
 
+The claimed status is **`safe with documented operational restrictions`**, not
+`safe for untrusted packages`. The operational restrictions are listed in
+[Remaining limitations](#remaining-limitations); they must hold for the claims
+below to apply.
+
 ## Threat model
 
 For an untrusted package, the attacker controls:
@@ -40,6 +45,29 @@ however, is owned by exactly one package per release: `releases.owner_package_id
 - Streaming and API content enumeration resolve through `owner_package_id`, never
   through an arbitrary visible package on the same release.
 
+### Durable conflict quarantine
+
+**Verification can never clear a `conflict` status.** Specifically:
+
+- `musicpack-server verify` / `mp_verify_library()` excludes packages already in
+  the `conflict` state from its query entirely.
+- The per-package verification-state write is additionally guarded with
+  `WHERE status != 'conflict'`, so even a package that reaches the write path
+  cannot have its `status` overwritten.
+- A lightweight or full verification scan re-arbitrates ownership the same way
+  ingestion does: a package that still collides with an active owner is
+  re-quarantined, never promoted.
+- A `conflict` package that moves (same content fingerprint, new path) stays
+  `conflict`.
+
+A quarantined package can only leave the `conflict` state through an explicit
+ownership re-arbitration: the active owner becomes unavailable/invalid, or the
+conflicting content changes to match the owner's fingerprint (making it a mirror
+duplicate). Ordinary verification does not do this. The unavailable sweep also
+skips `conflict` packages, so removing and re-adding a conflicting package's
+directory does not clear its quarantine; if it reappears (identical or changed
+content) it remains `conflict` and cannot mutate the owner.
+
 ## Verified-content model
 
 Only fully verified packages are servable. The visibility gate requires both:
@@ -53,11 +81,28 @@ external packages are not visible or servable until `musicpack-server verify`
 referenced-object existence on every scan; a disappeared object downgrades the
 package to `unverified` so it stops serving.
 
-A strong ETag is emitted only for servable (verified) content. In-place mutation
-of a package file after verification is a documented residual limitation: bytes
-are not re-hashed at serve time and packages are not copied into immutable
-server-owned storage in this milestone. Rescan + verify re-establishes the
-verified state.
+### Verification persistence is fail-closed
+
+If the database cannot persist a verification result, verification **fails**:
+
+- every per-package `pkg_set_verify()` write is checked;
+- a failed write aborts the whole verification run (transaction rolled back) and
+  `mp_verify_library()` returns `MUSICPACK_ERR_IO`;
+- the job layer records the failure, and the CLI returns a non-zero exit;
+- no package is reported verified (or made servable) unless its state was
+  durably written.
+
+### Verified-byte limitation
+
+A strong ETag is emitted only for servable (verified) content. **Verified bytes
+are not copied into immutable server-owned storage**: serving reopens the package
+pathname and does not re-hash at serve time, so a post-verification in-place
+mutation is served until the next rescan/verify detects it (a lightweight rescan
+re-checks object existence; a full `verify` re-hashes). Therefore, untrusted
+packages must reside in non-mutable, server-controlled storage after
+verification. In-place mutation after verification is detected only by the next
+rescan/verify; there is no claim that served bytes always equal the historically
+verified bytes.
 
 ## Filesystem containment
 
@@ -65,37 +110,56 @@ Manifest paths are validated lexically (absolute paths, `..`, `.`, backslashes,
 colons, controls, empty segments rejected) and the existing-ancestor symlink
 canonicalization check remains. Additional enforcement:
 
-- **Regular-file requirement**: every referenced object must be a regular file.
-  FIFOs, sockets, devices, directories, and unsupported reparse objects are
-  rejected before hashing, probing, parsing, or serving. POSIX opens use
-  `O_NONBLOCK` and an immediate `fstat`; Windows checks file attributes before
-  opening.
+- **Opened-object regular-file requirement**: every referenced object must be a
+  regular file, and the type check is bound to the object that is actually read
+  or hashed. POSIX paths open first with `O_RDONLY | O_NONBLOCK | O_NOFOLLOW`,
+  then `fstat` on that descriptor requires `S_ISREG`; the same descriptor is
+  used for hashing (via `fdopen`). Windows uses attribute checks before open.
+  This removes the `stat()`-then-`fopen()` race for a regular file being swapped
+  for a FIFO between check and open in the hashing/reading paths.
 - **Scanner discovery**: POSIX skips symlinked directories via `lstat`; Windows
   rejects all directory reparse points via `GetFileAttributesA` so junctions and
   mount points cannot escape the configured library root or cause cycles.
 - **Traversal bounds**: discovery is depth-capped (64) and a failed or incomplete
   root traversal aborts the scan without sweeping the library.
-- Residual limitation: containment validation and the later `open()` are separate
-  operations (pathname-based, not descriptor-relative), so a concurrently mutable
-  package directory remains an open research item. Hard links can also alias an
-  outside inode. These are documented operational restrictions for the fully
-  untrusted directory mode.
+- **Hard-link policy**: on POSIX, referenced files with `st_nlink > 1` are
+  rejected (a hard link can alias an outside inode). Windows does not reliably
+  expose link counts, so the rejection is POSIX-only; Windows containment relies
+  on the reparse-point and attribute checks. See
+  [Hard-link policy](#hard-link-policy).
+- Residual limitation: intermediate pathname components are not opened
+  descriptor-relative (`openat`-style), so a concurrently mutable package
+  directory can still race directory components. The operational restriction is
+  that untrusted package trees must not be writable by the attacker during
+  scan/serve.
 
 ## Asset-serving policy
 
 Package-controlled assets cannot become active same-origin web content:
 
-- Inline serving is allowed only for byte-verified raster images (JPEG, PNG, GIF,
-  WebP, BMP) and audio streams.
+- Inline serving is allowed only for raster images whose leading bytes match
+  their declared type (JPEG, PNG, GIF, WebP, BMP) and audio streams.
 - SVG, HTML, JavaScript, XML, text, PDF, and unknown content are forced to
   `Content-Disposition: attachment`.
-- Every package-object response sends `X-Content-Type-Options: nosniff` and a
-  restrictive `Content-Security-Policy: sandbox; default-src 'none'; img-src
-  'self'`.
 - Content-Disposition filenames are sanitized (no quotes, backslashes, controls,
-  or CRLF).
+  or CRLF) and the header buffer is sized so the quoted name always terminates.
 - The frontend meta-CSP is not relied upon for separately navigated asset
   responses.
+
+### Exact HTTP header coverage
+
+Every package-object response carries these security headers **consistently**:
+
+| Status | `X-Content-Type-Options: nosniff` | sandbox `Content-Security-Policy` | `Content-Disposition` (when not inline) |
+|--------|-----------------------------------|------------------------------------|------------------------------------------|
+| 200    | yes | yes | yes (non-inline types) |
+| 206    | yes | yes | yes (non-inline types) |
+| 304    | yes | yes | no body (not applicable) |
+| 416    | yes | yes | no body (not applicable) |
+
+`HEAD` responses use the same code path as their `GET` equivalent and therefore
+carry the same headers. The previously undocumented 304/416 responses now send
+`nosniff` + sandbox CSP so the documented guarantee matches reality.
 
 ## Package state machine
 
@@ -111,27 +175,59 @@ Package-controlled assets cannot become active same-origin web content:
 
 ## Scanner failure behavior
 
-- If the configured library root (or any subtree) cannot be opened or enumerated,
-  the scan returns an error and the unavailable sweep is **not** run, preserving
-  previous library state.
-- Scans are not scoped to a persisted root identity in this milestone; a single
-  database should be used with one library root.
-- Explicit verification always re-hashes referenced objects; the unchanged
-  manifest fast path never bypasses a `verify` scan.
+An authoritative scan succeeds **only if** the complete intended traversal and
+database publication succeed. Concretely:
+
+- Any `opendir()` failure, depth overflow, overlong path, or directory
+  enumeration error (`readdir`/`closedir`) marks the traversal incomplete.
+- Any `lstat`/`GetFileAttributesA` metadata failure for a discovered entry marks
+  the traversal incomplete (previously it was silently skipped).
+- Any package-ingestion failure (manifest read, parse, or database write) is
+  propagated, not logged-and-ignored.
+- Any failed database mutation (package upsert, `record_invalid`, move handling,
+  fast-path refresh) aborts the scan with an error.
+- The final unavailable sweep is a database write: if it fails, the scan returns
+  an error rather than reporting success.
+- A failed/incomplete traversal or failed sweep means the scan returns
+  `MUSICPACK_ERR_IO`; the unavailable sweep is **not** run after an incomplete
+  traversal, so prior library state is preserved.
+- The job layer and CLI surface the failure (job `failed` flag / non-zero exit).
 
 ## Resource budgets
 
-The manifest parser enforces per-array limits before typed allocation:
+### Scanner (per scan)
+
+| Budget | Limit | Notes |
+|--------|-------|-------|
+| Filesystem objects visited | 100,000 | directories + packages, across the whole traversal |
+| Packages ingested | 10,000 | `.mpack` directories processed |
+| Total path bytes | 64 MiB | sum of discovered path lengths |
+| Directory depth | 64 | aborts the scan (fail closed) |
+
+### Package verification (per package)
+
+| Budget | Limit | Notes |
+|--------|-------|-------|
+| Single referenced file | 8 GiB | enforced from `fstat` size before hashing |
+| Aggregate referenced bytes | 64 GiB | enforced before hashing when exceeded |
+| Referenced assets | 4,096 | existing manifest cap |
+
+Verification tracks a per-pass inode set so the same underlying object is never
+hashed twice in one pass (defense in depth: hard links are rejected, and the
+manifest validator rejects duplicate asset paths).
+
+### Parser (per manifest / sonic document)
 
 - 32 discs, 512 tracks per disc
 - 64 artists per credit, 64 genres
 - 32 artwork, 32 booklet, 512 lyrics, 256 extras, 32 analysis
-- 4,096 total referenced assets (existing)
+- 4,096 total referenced assets
+- manifest.json and sonic documents capped at 16 MiB
+- 1,048,576 sonic dimensions, 4,096 sonic tracks
 
-Regular-file and size checks prevent FIFO/device blocking. Total hashing work is
-bounded by the asset cap; per-file and aggregate byte budgets are not yet
-enforced. Sonic documents are capped at 16 MiB, 1,048,576 dimensions, and 4,096
-tracks.
+Boundary tests cover: a 9 GiB sparse referenced file (rejected by the per-file
+limit before hashing) and the scanner depth/object limits (deep-tree scan fails
+closed).
 
 ## Identity conflict behavior
 
@@ -139,45 +235,100 @@ External MusicBrainz IDs are treated as claims, not authority to mutate existing
 content. A release-group/release ID is used as a key only when it is a canonical
 UUID; malformed values fall back to the hashed identity. The fallback identity
 serialization is canonical and length-prefixed (tag + 4-byte length + bytes), so
-no two distinct field sets can collide. Conflicting claims are quarantined.
+no two distinct field sets can collide. Conflicting claims are quarantined as
+described in [Durable conflict quarantine](#durable-conflict-quarantine).
+
+## WAV parsing guarantees (Sonic)
+
+The Sonic WAV reader walks the RIFF/WAVE chunk structure rather than assuming a
+fixed 44-byte header:
+
+- parses the `fmt ` and `data` chunks in any order;
+- safely skips unknown chunks, honoring odd-size padding;
+- validates chunk lengths before access and rejects arithmetic overflow;
+- validates channels (1-2), sample format (PCM 8/16/24, IEEE float 32),
+  sample rate, block alignment (must equal channels × bytes/sample), byte rate,
+  and data size/frame count;
+- rejects compressed/unsupported format tags;
+- uses unsigned arithmetic for all byte assembly (no signed-shift UB).
+
+Musepack integration rejects stream channel counts outside 1-2 before decoding.
+ASan/UBSan fixtures cover truncated/oversized chunks, malformed `fmt`, missing
+`data`, odd-sized padded chunks, and unsupported formats.
 
 ## Platform differences
 
-- POSIX: `O_NONBLOCK` + `fstat`, `lstat`-based discovery, `O_NOFOLLOW` on the
-  final serve component.
+- POSIX: `O_NONBLOCK` + `O_NOFOLLOW` + `fstat` opened-object checks, `lstat`-based
+  discovery, hard-link (`nlink > 1`) rejection, `O_NOFOLLOW` on the final serve
+  component.
 - Windows: reparse points rejected from discovery; regular-file checks via file
-  attributes; the HTTP executable is not built on Windows (core library only).
-  Windows containment is not descriptor-relative.
+  attributes; hard links are not detected (no reliable link count); the HTTP
+  executable is not built on Windows (core library only). Windows containment is
+  not descriptor-relative.
+
+## Hard-link policy
+
+Chosen policy: **reject** referenced regular files whose POSIX link count
+exceeds one (`st_nlink > 1`) in every verification, hashing, and serving path.
+This prevents a hard link from aliasing an inode outside the package tree. The
+rejection is enforced on POSIX only; on Windows link counts are not reliably
+available, so Windows relies on the reparse/attribute checks and the
+operational restriction that the tree is server-controlled and not externally
+hard-linked. A POSIX regression test (`mpack_hostile`) creates a real hard link
+and asserts verification rejects the package.
 
 ## Remaining limitations
 
-- No immutable server-owned verified-content store; in-place mutation after
-  verification is detected only by the next rescan/verify.
-- Containment is pathname-based; descriptor-relative traversal (`openat`-style)
-  is future work.
-- Hard links are not rejected; a hard link can alias an outside inode.
-- Scans are not scoped to a canonical library-root id; one database, one root.
-- No per-file or aggregate byte budgets yet.
-- No hosted sanitizer job; sanitizer evidence is local.
+The following are genuine, documented operational restrictions. **`safe for
+untrusted packages` is not claimed** unless all of them hold:
+
+- **Mutable package trees**: verified bytes are not copied into immutable
+  server-owned storage; in-place mutation after verification is detected only by
+  the next rescan/verify. Untrusted packages must reside in non-mutable,
+  server-controlled storage after verification.
+- **Pathname-based containment**: intermediate directory components are not
+  opened descriptor-relative (`openat`-style). The attacker must not be able to
+  race directory components during scan/serve.
+- **Hard links**: rejected on POSIX; Windows cannot detect hard links (see
+  [Hard-link policy](#hard-link-policy)).
+- **Library root identity**: scans are not scoped to a persisted root id; one
+  database should be used with one library root.
+- **No hosted sanitizer job**: sanitizer evidence is local.
 
 ## Tests
 
-- `mpack_hostile`: FIFO/directory/symlink-escape objects fail quickly.
-- `server_unit::test_ownership_conflict`: conflicting identity is quarantined
-  and the owner's content/metadata are untouched.
+- `mpack_hostile`: FIFO/directory/symlink-escape objects fail quickly; hard-linked
+  assets rejected; oversized (9 GiB sparse) referenced files rejected by the
+  per-file budget.
+- `server_unit::test_ownership_conflict`: conflicting identity is quarantined and
+  the owner's content/metadata are untouched.
+- `server_unit::test_conflict_survives_verify`: quarantine survives
+  `mp_verify_library`, rescans, a full verification scan, owner verification, and
+  a remove/re-add cycle.
+- `server_unit::test_scan_fail_closed`: a directory tree deeper than the scan
+  limit fails the scan (fail closed, no sweep).
+- `server_unit::test_scan_db_fail_closed`: a scan whose database writes fail
+  returns an error, never a successful incomplete publication.
+- `server_unit::test_verify_fail_closed`: verification against a read-only
+  database returns `MUSICPACK_ERR_IO` (persistence failures fail closed).
 - `server_integration`: unverified packages are not servable; verification makes
-  them visible; checksum-failed and symlink-escape packages are hidden.
+  them visible; checksum-failed and symlink-escape packages are hidden; 200/206/
+  304/416 package-object responses carry `nosniff` + sandbox CSP; non-inline
+  assets are forced to attachment with a sanitized filename.
+- Sonic `test_wav_robustness`: RIFF chunk-walk rejection of truncated/oversized
+  chunks, malformed `fmt`, missing/oversized `data`, bad block alignment,
+  unsupported formats, and odd-padded chunks.
 - v1 conformance corpus: 3 valid, 42 invalid manifests, 8 invalid asset cases.
 
 ## Validation evidence
 
 - Local full suite (excluding the optimization-dependent local `compat`
-  manifest fallback): 24/24 passed, 1 expected SIMD skip.
-- Local ASan/UBSan package/server/fuzz suite: 9/9 passed.
-- Hosted CI run
-  [31638274948](https://github.com/whepper/musicpack/actions/runs/31638274948):
-  Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off, Wasm,
-  web-client (Playwright), and research all passed.
+  manifest fallback): all CTest suites pass.
+- Local ASan/UBSan package/server/fuzz suite: passed (see the validation section
+  of the remediation report for the exact set and run IDs).
+- Hosted CI: Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off,
+  Wasm, web-client (Playwright), and research jobs pass; see the remediation
+  report for the run ID.
 
 Commits:
 

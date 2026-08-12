@@ -321,6 +321,141 @@ test_decode_wav(void)
     remove_dir_tree(dir);
 }
 
+/* Writes \p bytes to \p path and asserts sonic_decode rejects it. */
+static void
+expect_wav_rejected(const char *path, const unsigned char *bytes, size_t n,
+                    const char *msg)
+{
+    FILE *f = fopen(path, "wb");
+    sonic_pcm pcm;
+    if (f != 0) {
+        fwrite(bytes, 1, n, f);
+        fclose(f);
+    }
+    if (sonic_decode(path, &pcm)) {
+        CHECK(0, msg);
+        sonic_pcm_free(&pcm);
+    } else {
+        CHECK(1, msg);
+    }
+}
+
+static void
+test_wav_robustness(void)
+{
+    char dir[512];
+    char path[512];
+    /* well-formed 16-bit stereo header prefix for reuse */
+    static const unsigned char goodfmt[44] = {
+        'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E',
+        'f', 'm', 't', ' ', 16, 0, 0, 0,
+        1, 0, 2, 0,
+        0x44, 0xac, 0, 0,
+        0x10, 0xb1, 0x02, 0,
+        4, 0, 16, 0,
+        'd', 'a', 't', 'a', 16, 0, 0, 0
+    };
+    unsigned char w[512];
+
+    if (make_temp_dir(dir, sizeof dir) != 0)
+        return;
+    snprintf(path, sizeof path, "%s/bad.wav", dir);
+
+    /* not RIFF/WAVE at all */
+    memset(w, 0, sizeof w);
+    expect_wav_rejected(path, w, 44, "not RIFF rejected");
+
+    /* truncated header (short read) */
+    expect_wav_rejected(path, goodfmt, 12, "truncated header rejected");
+
+    /* fmt chunk size larger than declared -> oversized chunk */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[16] = 0xff; w[17] = 0xff; w[18] = 0xff; w[19] = 0x7f;
+    expect_wav_rejected(path, w, sizeof goodfmt, "oversized fmt rejected");
+
+    /* zero channels */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[22] = 0; w[23] = 0;
+    expect_wav_rejected(path, w, sizeof goodfmt, "zero channels rejected");
+
+    /* zero sample rate */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[24] = 0; w[25] = 0; w[26] = 0; w[27] = 0;
+    expect_wav_rejected(path, w, sizeof goodfmt, "zero sample rate rejected");
+
+    /* block align inconsistent with channels * bytes-per-sample */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[32] = 8; w[33] = 0;
+    expect_wav_rejected(path, w, sizeof goodfmt, "bad block align rejected");
+
+    /* unsupported format tag (compressed/float codec) */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[20] = 6; w[21] = 0;
+    expect_wav_rejected(path, w, sizeof goodfmt, "unsupported format rejected");
+
+    /* missing data chunk (data size 0) */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[40] = 0; w[41] = 0; w[42] = 0; w[43] = 0;
+    expect_wav_rejected(path, w, sizeof goodfmt, "empty data rejected");
+
+    /* oversized data length that would overflow frame count */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, sizeof goodfmt);
+    w[40] = 0x00; w[41] = 0x00; w[42] = 0x00; w[43] = 0xff;
+    expect_wav_rejected(path, w, sizeof goodfmt, "oversized data rejected");
+
+    /* odd-sized chunk with padding: insert an unknown chunk with odd size
+       between fmt and data, with its pad byte */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, 36);
+    w[36] = 'L'; w[37] = 'I'; w[38] = 'S'; w[39] = 'T';
+    w[40] = 3; w[41] = 0; w[42] = 0; w[43] = 0;
+    w[44] = 'x'; w[45] = 'y'; w[46] = 'z'; w[47] = 0; /* payload + pad */
+    w[48] = 'd'; w[49] = 'a'; w[50] = 't'; w[51] = 'a';
+    w[52] = 16; w[53] = 0; w[54] = 0; w[55] = 0;
+    w[56] = 1; w[57] = 0; w[58] = 0; w[59] = 0;
+    expect_wav_rejected(path, w, 44, "chunk walk odd-pad path rejected/decoded");
+    /* The above is missing 12 bytes of data payload, so it must be rejected
+       (short data read). Assert explicitly with a well-formed padded case. */
+
+    /* well-formed odd-padded unknown chunk must still decode */
+    memset(w, 0, sizeof w);
+    memcpy(w, goodfmt, 36);
+    w[36] = 'L'; w[37] = 'I'; w[38] = 'S'; w[39] = 'T';
+    w[40] = 3; w[41] = 0; w[42] = 0; w[43] = 0;
+    w[44] = 'x'; w[45] = 'y'; w[46] = 'z'; w[47] = 0;
+    w[48] = 'd'; w[49] = 'a'; w[50] = 't'; w[51] = 'a';
+    w[52] = 16; w[53] = 0; w[54] = 0; w[55] = 0;
+    {
+        int16_t frames[8] = { -32768, -32768, 0, 0, 32767, 32767, 16384, 16384 };
+        FILE *f = fopen(path, "wb");
+        sonic_pcm pcm;
+        if (f != 0) {
+            fwrite(w, 1, 56, f);
+            fwrite(frames, 2, 8, f);
+            fclose(f);
+        }
+        if (!sonic_decode(path, &pcm)) {
+            CHECK(0, "odd-padded chunk decodes");
+        } else {
+            CHECK(1, "odd-padded chunk decodes");
+            CHECK(pcm.sample_rate == 44100 && pcm.count == 4,
+                  "odd-padded chunk rate + length");
+            sonic_pcm_free(&pcm);
+        }
+    }
+
+    snprintf(path, sizeof path, "%s/bad.wav", dir);
+    remove(path);
+    remove_dir_tree(dir);
+}
+
 static void
 test_profile(void)
 {
@@ -342,6 +477,7 @@ main(void)
     test_album();
     test_cache();
     test_decode_wav();
+    test_wav_robustness();
 
     if (failures == 0) {
         printf("all sonic analyzer core tests passed\n");

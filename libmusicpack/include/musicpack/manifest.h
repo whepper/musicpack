@@ -174,6 +174,11 @@ typedef struct musicpack_manifest {
 /// Maximum total number of referenced assets across all manifest arrays.
 #define MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS 4096
 
+/// Maximum size of a single referenced file (8 GiB).
+#define MUSICPACK_MANIFEST_MAX_FILE_SIZE (8ULL * 1024 * 1024 * 1024)
+/// Maximum total referenced bytes per package (64 GiB).
+#define MUSICPACK_MANIFEST_MAX_TOTAL_BYTES (64ULL * 1024 * 1024 * 1024)
+
 /* Per-array resource budgets, enforced during parsing before typed
    allocations so a hostile manifest cannot cause unbounded allocation
    amplification that the 4096-asset total alone would permit. */
