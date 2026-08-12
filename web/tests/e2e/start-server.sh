@@ -48,6 +48,22 @@ m["media"][0]["tracks"][0]["duration"] = 48
 json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
 PY
 
+# A third, valid edition of the Compilation album. The fixture's "Escape
+# Edition" package deliberately contains a symlinked audio object and is
+# correctly hidden by verified-only visibility, so the e2e edition-grouping
+# test needs a real third edition that verifies.
+"$PY" - "$ROOT/tests/reference/test-musicpack-album.mpack" "$LIB/Compilation-2001.mpack" <<'PY'
+import json, shutil, sys
+ref, dst = sys.argv[1], sys.argv[2]
+shutil.copytree(ref, dst)
+mpath = os.path.join(dst, "manifest.json")
+m = json.load(open(mpath, encoding="utf-8"))
+m["release"]["edition"] = "2001 Reissue"
+m["release"]["releaseDate"] = "2001-09-14"
+m["release"]["country"] = "GB"
+json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
+PY
+
 "$SERVER_BIN" verify --library "$LIB" --database "$DB" >/dev/null 2>&1
 
 cat > "$E2E/.server-env.json" <<JSON
