@@ -168,3 +168,21 @@ no two distinct field sets can collide. Conflicting claims are quarantined.
 - `server_integration`: unverified packages are not servable; verification makes
   them visible; checksum-failed and symlink-escape packages are hidden.
 - v1 conformance corpus: 3 valid, 42 invalid manifests, 8 invalid asset cases.
+
+## Validation evidence
+
+- Local full suite (excluding the optimization-dependent local `compat`
+  manifest fallback): 24/24 passed, 1 expected SIMD skip.
+- Local ASan/UBSan package/server/fuzz suite: 9/9 passed.
+- Hosted CI run
+  [31638274948](https://github.com/whepper/musicpack/actions/runs/31638274948):
+  Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off, Wasm,
+  web-client (Playwright), and research all passed.
+
+Commits:
+
+- `51d47df` server: harden untrusted package ingestion
+- `8e2a68b` web: verify e2e library before serving (fail-closed visibility)
+- `545ea4b` web: add valid third edition for verified-only e2e
+- `35cd020` web: fix e2e third-edition script import
+- `feafcea` ci: drop flaky google-chrome apt source on Linux runners
