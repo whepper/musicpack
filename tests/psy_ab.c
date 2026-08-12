@@ -26,6 +26,12 @@
 #include <mpc/datatypes.h>
 
 #include "libmpcpsy.h"
+extern float a[4096];
+extern float Hann_256[256], Hann_1024[1024];
+extern float tabatan2[][2], tabcos[][2];
+#define a_tab a
+#define Hann_1024_tab Hann_1024
+#define Hann_256_tab Hann_256
 
 // White-box declarations (libmpcpsy internals; mpcenc.h declares them too).
 void Init_Psychoakustik ( PsyModel* );
@@ -88,6 +94,8 @@ main ( void )
     sa.sa_sigaction = segv_handler;
     sa.sa_flags = SA_SIGINFO;
     sigaction ( SIGSEGV, &sa, 0 );
+    fprintf ( stderr, "tables: a=%p tabatan2=%p tabcos=%p Hann_1024=%p Hann_256=%p\n",
+              (void*) a_tab, (void*) tabatan2, (void*) tabcos, (void*) Hann_1024_tab, (void*) Hann_256_tab );
     PsyModel m;
     PCMDataTyp Main;
     float F_a[1024], F_b[1024];
