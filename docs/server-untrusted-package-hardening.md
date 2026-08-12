@@ -289,8 +289,8 @@ untrusted packages` is not claimed** unless all of them hold:
 - **Pathname-based containment**: intermediate directory components are not
   opened descriptor-relative (`openat`-style). The attacker must not be able to
   race directory components during scan/serve.
-- **Hard links**: rejected on POSIX; Windows cannot detect hard links (see
-  [Hard-link policy](#hard-link-policy)).
+- **Windows hard links**: hard-link rejection is POSIX-only (Windows cannot
+  reliably detect link counts); see [Hard-link policy](#hard-link-policy).
 - **Library root identity**: scans are not scoped to a persisted root id; one
   database should be used with one library root.
 - **No hosted sanitizer job**: sanitizer evidence is local.
@@ -323,12 +323,13 @@ untrusted packages` is not claimed** unless all of them hold:
 ## Validation evidence
 
 - Local full suite (excluding the optimization-dependent local `compat`
-  manifest fallback): all CTest suites pass.
-- Local ASan/UBSan package/server/fuzz suite: passed (see the validation section
-  of the remediation report for the exact set and run IDs).
-- Hosted CI: Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off,
-  Wasm, web-client (Playwright), and research jobs pass; see the remediation
-  report for the run ID.
+  manifest fallback): all CTest suites pass (24/24 + the expected SIMD gate
+  skip).
+- Local ASan/UBSan package/server/fuzz suite: 13/13 pass.
+- Hosted CI run
+  [31643041119](https://github.com/whepper/musicpack/actions/runs/31643041119):
+  Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off, Wasm,
+  web-client (Playwright), and research all pass.
 
 Commits:
 
@@ -337,3 +338,6 @@ Commits:
 - `545ea4b` web: add valid third edition for verified-only e2e
 - `35cd020` web: fix e2e third-edition script import
 - `feafcea` ci: drop flaky google-chrome apt source on Linux runners
+- `97d044f` server: close untrusted-ingestion remediation gaps
+- `b6bef99` package: disable inode-dedup on Windows (unreliable st_ino)
+- `86a38b1` tests: deep-tree scan test must stay under Windows MAX_PATH
