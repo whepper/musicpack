@@ -327,7 +327,7 @@ untrusted packages` is not claimed** unless all of them hold:
   skip).
 - Local ASan/UBSan package/server/fuzz suite: 13/13 pass.
 - Hosted CI run
-  [31643041119](https://github.com/whepper/musicpack/actions/runs/31643041119):
+  [31643457000](https://github.com/whepper/musicpack/actions/runs/31643457000):
   Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, Linux SIMD-off, Wasm,
   web-client (Playwright), and research all pass.
 
