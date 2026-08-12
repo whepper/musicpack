@@ -37,6 +37,16 @@ SMRTyp Psychoakustisches_Modell ( PsyModel*, const int, const PCMDataTyp*,
 
 static int failures = 0;
 
+// Exact bit-pattern comparison (NaN == NaN when the bits match).
+static int
+same_bits ( float a, float b )
+{
+    unsigned int ba, bb;
+    memcpy ( &ba, &a, 4 );
+    memcpy ( &bb, &b, 4 );
+    return ba == bb;
+}
+
 static void
 report_div ( const char* stage, int idx, float a, float b )
 {
@@ -58,7 +68,7 @@ check_kernel ( const char* stage, const float* x,
     mpc_psy_set_impl (MPC_PSY_SCALAR); run_scalar (x, out_a);
     mpc_psy_set_impl (MPC_PSY_SIMD);   run_simd   (x, out_b);
     for ( int i = 0; i < n; i++ ) {
-        if ( out_a[i] != out_b[i] ) { report_div (stage, i, out_a[i], out_b[i]); break; }
+        if ( !same_bits (out_a[i], out_b[i]) ) { report_div (stage, i, out_a[i], out_b[i]); break; }
     }
 }
 
@@ -74,36 +84,37 @@ main ( void )
     int trans_a[PART_SHORT], trans_b[PART_SHORT];
     int f, i;
 
-    // deterministic input
-    for ( i = 0; i < ANABUFFER; i++ ) {
-        float v = 0.35f * sinf (0.01745f * i) + 0.2f * sinf (0.06283f * i)
-                + 0.05f * sinf (0.31f * i);
-        Main.L[i] = v;
-        Main.R[i] = 0.8f * v;
-        Main.M[i] = v;
-        Main.S[i] = 0.2f * v;
+    // Deterministic input. NOTE: a pure sine-mix can produce FFT bins whose
+    // real part is ~0, making fastmath my_atan2's table index go out of
+    // range (a pre-existing latent UB in the reference encoder); white noise
+    // keeps every bin well inside the table on all platforms.
+    {
+        unsigned s = 12345u;
+        for ( i = 0; i < ANABUFFER; i++ ) {
+            s = s * 1664525u + 1013904223u;
+            float v = ((float)(s >> 8) / 16777216.0f) * 2.0f - 1.0f;
+            Main.L[i] = 0.5f * v;
+            Main.R[i] = 0.4f * v;
+            Main.M[i] = 0.5f * v;
+            Main.S[i] = 0.1f * v;
+        }
     }
     for ( i = 0; i < ANABUFFER; i++ )
         x[i] = Main.L[i];
 
     // ---- kernel level ----------------------------------------------------
-    fprintf (stderr, "[psy_ab] stage: PowSpec256\n");
     mpc_psy_set_impl (MPC_PSY_SCALAR);
     check_kernel ("PowSpec256",   x, PowSpec256,  PowSpec256,  F_a, F_b, 128);
-    fprintf (stderr, "[psy_ab] stage: PowSpec1024\n");
     check_kernel ("PowSpec1024",  x, PowSpec1024, PowSpec1024, F_a, F_b, 512);
-    fprintf (stderr, "[psy_ab] stage: PowSpec2048\n");
     check_kernel ("PowSpec2048",  x, PowSpec2048, PowSpec2048, F_a, F_b, 1024);
-    fprintf (stderr, "[psy_ab] stage: PolarSpec1024\n");
     // PolarSpec1024 (3-arg): compare erg and phs separately.
     mpc_psy_set_impl (MPC_PSY_SCALAR); PolarSpec1024 (x, F_a, ph_a);
     mpc_psy_set_impl (MPC_PSY_SIMD);   PolarSpec1024 (x, F_b, ph_b);
     for ( i = 0; i < 512; i++ )
-        if ( F_a[i] != F_b[i] ) { report_div ("PolarSpec1024.erg", i, F_a[i], F_b[i]); break; }
+        if ( !same_bits (F_a[i], F_b[i]) ) { report_div ("PolarSpec1024.erg", i, F_a[i], F_b[i]); break; }
     for ( i = 0; i < 512; i++ )
-        if ( ph_a[i] != ph_b[i] ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
+        if ( !same_bits (ph_a[i], ph_b[i]) ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
 
-    fprintf (stderr, "[psy_ab] stage: batches\n");
     // ---- batch level (lane-parallel FFT) ---------------------------------
     {
         static float w4a[4][128], w4b[4][128];
@@ -113,33 +124,23 @@ main ( void )
         int l;
 
         mpc_psy_set_impl (MPC_PSY_SCALAR);
-        fprintf (stderr, "[psy_ab] batch scalar\n");
-        PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
-        fprintf (stderr, "[psy_ab] batch scalar 1024\n");
-        PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
-        fprintf (stderr, "[psy_ab] batch scalar 2048\n");
-        PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
-        fprintf (stderr, "[psy_ab] batch scalar polar\n");
-        PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
-        fprintf (stderr, "[psy_ab] batch scalar polar done\n");
-        mpc_psy_set_impl (MPC_PSY_SIMD);
-        fprintf (stderr, "[psy_ab] batch set simd done\n");
-        fprintf (stderr, "[psy_ab] batch simd 256\n");
-        PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
-        fprintf (stderr, "[psy_ab] batch simd 1024\n");
-        PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
-        fprintf (stderr, "[psy_ab] batch simd 2048\n");
-        PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
-        fprintf (stderr, "[psy_ab] batch simd polar\n");
-        PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
+            PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
+            PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
+            PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
+            PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
+            mpc_psy_set_impl (MPC_PSY_SIMD);
+                PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
+            PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
+            PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
+            PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
 
         for ( l = 0; l < 4 && !failures; l++ )
             for ( i = 0; i < 128 && !failures; i++ )
-                if ( w4a[l][i] != w4b[l][i] ) report_div ("PowSpec256_4", l * 128 + i, w4a[l][i], w4b[l][i]);
+                if ( !same_bits (w4a[l][i], w4b[l][i]) ) report_div ("PowSpec256_4", l * 128 + i, w4a[l][i], w4b[l][i]);
         for ( i = 0; i < 512 && !failures; i++ ) {
-            if ( p2a[0][i] != p2b[0][i] ) report_div ("PowSpec1024_2", i, p2a[0][i], p2b[0][i]);
-            if ( p4a[0][i] != p4b[0][i] ) report_div ("PowSpec2048_2", i, p4a[0][i], p4b[0][i]);
-            if ( poa[0][i] != pob[0][i] ) report_div ("PolarSpec1024_2.p", i, poa[0][i], pob[0][i]);
+            if ( !same_bits (p2a[0][i], p2b[0][i]) ) report_div ("PowSpec1024_2", i, p2a[0][i], p2b[0][i]);
+            if ( !same_bits (p4a[0][i], p4b[0][i]) ) report_div ("PowSpec2048_2", i, p4a[0][i], p4b[0][i]);
+            if ( !same_bits (poa[0][i], pob[0][i]) ) report_div ("PolarSpec1024_2.p", i, poa[0][i], pob[0][i]);
         }
     }
 
@@ -149,7 +150,6 @@ main ( void )
     }
     printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
-    fprintf (stderr, "[psy_ab] stage: model\n");
     // ---- model level (evolving state) ------------------------------------
     memset ( &m, 0, sizeof m );
     SetQualityParams (&m, 6.0f);        // q6 profile
@@ -175,8 +175,8 @@ main ( void )
 
     for ( f = 0; f < FRAMES && !failures; f++ ) {
         for ( i = 0; i < 32; i++ ) {
-            if ( Sm_a[f].L[i] != Sm_b[f].L[i] ) { report_div ("SMR.L", f*32+i, Sm_a[f].L[i], Sm_b[f].L[i]); break; }
-            if ( Sm_a[f].R[i] != Sm_b[f].R[i] ) { report_div ("SMR.R", f*32+i, Sm_a[f].R[i], Sm_b[f].R[i]); break; }
+            if ( !same_bits (Sm_a[f].L[i], Sm_b[f].L[i]) ) { report_div ("SMR.L", f*32+i, Sm_a[f].L[i], Sm_b[f].L[i]); break; }
+            if ( !same_bits (Sm_a[f].R[i], Sm_b[f].R[i]) ) { report_div ("SMR.R", f*32+i, Sm_a[f].R[i], Sm_b[f].R[i]); break; }
         }
         if ( trans_a[0] != trans_b[0] ) { report_div ("Transient", f, (float)trans_a[0], (float)trans_b[0]); break; }
     }
