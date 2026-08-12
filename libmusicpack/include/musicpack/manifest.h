@@ -174,6 +174,19 @@ typedef struct musicpack_manifest {
 /// Maximum total number of referenced assets across all manifest arrays.
 #define MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS 4096
 
+/* Per-array resource budgets, enforced during parsing before typed
+   allocations so a hostile manifest cannot cause unbounded allocation
+   amplification that the 4096-asset total alone would permit. */
+#define MUSICPACK_MANIFEST_MAX_DISCS 32
+#define MUSICPACK_MANIFEST_MAX_TRACKS_PER_DISC 512
+#define MUSICPACK_MANIFEST_MAX_ARTISTS_PER_CREDIT 64
+#define MUSICPACK_MANIFEST_MAX_GENRES 64
+#define MUSICPACK_MANIFEST_MAX_ARTWORK 32
+#define MUSICPACK_MANIFEST_MAX_BOOKLET 32
+#define MUSICPACK_MANIFEST_MAX_LYRICS 512
+#define MUSICPACK_MANIFEST_MAX_EXTRAS 256
+#define MUSICPACK_MANIFEST_MAX_ANALYSIS 32
+
 /// Parses manifest JSON text into a typed model (validation is structural:
 /// format, version, required fields, path rules, numbering, loudness ranges,
 /// hashes, closed enums, and the 4096 referenced-asset limit).

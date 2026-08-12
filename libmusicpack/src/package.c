@@ -40,8 +40,10 @@
 
 #if defined(_WIN32)
 # include <windows.h>
+# include <sys/stat.h>
 #else
 # include <dirent.h>
+# include <fcntl.h>
 # include <sys/stat.h>
 # include <unistd.h>
 #endif
@@ -64,6 +66,52 @@ struct musicpack_package {
 /* manifest file I/O                                                   */
 /* ------------------------------------------------------------------ */
 
+static int
+is_regular_file(const char *path)
+{
+#ifdef _WIN32
+    struct _stat st;
+    if (_stat(path, &st) != 0)
+        return 0;
+    return (st.st_mode & _S_IFREG) != 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return 0;
+    return S_ISREG(st.st_mode);
+#endif
+}
+
+static FILE *
+open_regular_read(const char *path)
+{
+#ifdef _WIN32
+    if (!is_regular_file(path))
+        return 0;
+    return fopen(path, "rb");
+#else
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    struct stat st;
+    if (fd < 0)
+        return 0;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return 0;
+    }
+    {
+        int flags = fcntl(fd, F_GETFL);
+        if (flags >= 0)
+            fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+    {
+        FILE *f = fdopen(fd, "rb");
+        if (f == 0)
+            close(fd);
+        return f;
+    }
+#endif
+}
+
 static char *
 read_file(const char *path, size_t max, size_t *len_out, musicpack_status *status)
 {
@@ -71,7 +119,7 @@ read_file(const char *path, size_t max, size_t *len_out, musicpack_status *statu
     long len;
     char *buf;
 
-    f = fopen(path, "rb");
+    f = open_regular_read(path);
     if (f == 0) {
         *status = MUSICPACK_ERR_IO;
         return 0;
@@ -238,11 +286,7 @@ report(musicpack_report *rep, musicpack_report_fn fn, void *ctx,
 static int
 file_exists(const char *path)
 {
-    FILE *f = fopen(path, "rb");
-    if (f == 0)
-        return 0;
-    fclose(f);
-    return 1;
+    return is_regular_file(path);
 }
 
 static void

@@ -125,7 +125,7 @@ def sha(data):
 
 
 def wait_status(base, key, done_field="running"):
-    for _ in range(300):
+    for _ in range(600):
         st, _, body = get(base, API + "/library/status")
         d = json.loads(body)[key]
         if d[done_field] == 0:
@@ -257,7 +257,8 @@ def run(base, libdir, demo_dir, t):
     detail = json.loads(body)
     editions = sorted(r.get("edition", "") for r in detail["releases"])
     t.ok("1987 Original CD" in editions and "2016 Digital Remaster" in editions
-         and "Escape Edition" in editions, "editions not collapsed")
+         and "Escape Edition" not in editions,
+         "only verified editions visible; escape edition hidden")
 
     release_id = next(r["id"] for r in detail["releases"]
                       if r.get("edition") == "2016 Digital Remaster")
@@ -345,7 +346,8 @@ def run(base, libdir, demo_dir, t):
     scan = wait_status(base, "scan")
     t.ok(scan["packagesScanned"] >= BULK_COPIES, "scan counted bulk packages")
 
-    # a new package appears after commit without restart
+    # a new package is fail-closed until verified: a lightweight scan alone
+    # must not make it visible/servable
     newpkg = os.path.join(libdir, "Fresh.mpack")
     shutil.copytree(os.path.join(libdir, "Classical.mpack"), newpkg)
     with open(os.path.join(newpkg, "manifest.json"), encoding="utf-8") as f:
@@ -357,7 +359,22 @@ def run(base, libdir, demo_dir, t):
     scan = wait_status(base, "scan")
     st, _, body = get(base, API + "/albums")
     total = json.loads(body)["total"]
-    t.ok(total == 4, f"new album visible after scan (total={total})")
+    t.ok(total == 3, "new package not visible until verified (fail closed)")
+
+    # full verification makes it visible (tolerate verify-job commit visibility
+    # lag under slow/sanitized builds)
+    st, _, body = get(base, API + "/library/verify", method="POST")
+    t.ok(st == 202, "verify after scan")
+    wait_status(base, "verify")
+    deadline = time.time() + 5
+    total = 0
+    while time.time() < deadline:
+        st, _, body = get(base, API + "/albums")
+        total = json.loads(body)["total"]
+        if total == 4:
+            break
+        time.sleep(0.1)
+    t.ok(total == 4, "new album visible after verify")
 
     # removed package becomes unavailable
     shutil.rmtree(os.path.join(libdir, "Fresh.mpack"))

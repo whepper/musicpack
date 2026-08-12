@@ -237,8 +237,18 @@ measure_loudness(const char *path, int *has, double *lufs, double *peak,
         memset(&info, 0, sizeof info);
         info.size = sizeof info;
         musepack_decoder_get_stream_info(dec, &info);
-        ch = info.channels > 2 ? 2 : info.channels;
+        if (info.channels < 1 || info.channels > 2) {
+            musepack_decoder_close(dec);
+            mpc_reader_exit_stdio(&reader);
+            return 1;
+        }
+        ch = info.channels;
         rate = info.sample_rate;
+        if (rate == 0) {
+            musepack_decoder_close(dec);
+            mpc_reader_exit_stdio(&reader);
+            return 1;
+        }
         if (duration != 0)
             *duration = (double) musepack_decoder_length_samples(dec) / (double) rate;
         meter = musicpack_meter_new(ch, rate, 0);

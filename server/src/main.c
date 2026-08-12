@@ -32,6 +32,8 @@
 
 #include <getopt.h>
 
+#include <sqlite3.h>
+
 static void
 usage(void)
 {
@@ -168,6 +170,11 @@ run_serve(const mp_config *cfg)
         fprintf(stderr, "musicpack-server: cannot open database: %s\n", err);
         return 1;
     }
+    /* The serving connection only needs reads for API responses; its writes
+       are best-effort session/token last-used stamps. Make those fail fast
+       instead of blocking, so background scan/verify jobs (the real writers)
+       never contend with the HTTP layer. */
+    sqlite3_busy_timeout(mp_library_sqlite(lib), 0);
     mp_jobs_init(&jobs);
     if (!cfg->no_scan) {
         mp_scan_result res;

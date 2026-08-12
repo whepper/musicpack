@@ -43,8 +43,13 @@ decode_mpc(const char *path, sonic_pcm *out)
     memset(&info, 0, sizeof info);
     info.size = sizeof info;
     musepack_decoder_get_stream_info(dec, &info);
-    ch = info.channels > 2 ? 2 : info.channels;
-    if (ch == 0 || info.sample_rate == 0) {
+    if (info.channels < 1 || info.channels > 2) {
+        musepack_decoder_close(dec);
+        mpc_reader_exit_stdio(&reader);
+        return 0;
+    }
+    ch = info.channels;
+    if (info.sample_rate == 0) {
         musepack_decoder_close(dec);
         mpc_reader_exit_stdio(&reader);
         return 0;
@@ -205,8 +210,7 @@ decode_wav(const char *path, sonic_pcm *out)
     uint32_t data_len = 0, sample_rate = 0, byte_rate = 0, block_align = 0;
     uint16_t fmt_tag = 0, ch = 0, bits = 0;
     float *buf;
-    size_t len = 0;
-    int rc = 0;
+    size_t len = 0, frame_size, max_frames;
 
     if (f == 0)
         return 0;
@@ -222,66 +226,106 @@ decode_wav(const char *path, sonic_pcm *out)
     block_align = (uint16_t) (hdr[32] | (hdr[33] << 8));
     bits = (uint16_t) (hdr[34] | (hdr[35] << 8));
     data_len = (uint32_t) (hdr[40] | (hdr[41] << 8) | (hdr[42] << 16) | (hdr[43] << 24));
-    if (ch == 0 || sample_rate == 0 || bits == 0 || block_align == 0) {
+
+    if (ch < 1 || ch > 2 || sample_rate == 0 || bits == 0 || block_align == 0) {
         fclose(f);
         return 0;
     }
-    buf = (float *) malloc(data_len / (ch * (bits / 8)) * sizeof(float) + 1);
+    if (fmt_tag == 1) {
+        if (bits != 8 && bits != 16 && bits != 24) {
+            fclose(f);
+            return 0;
+        }
+    } else if (fmt_tag == 3) {
+        if (bits != 32) {
+            fclose(f);
+            return 0;
+        }
+    } else {
+        fclose(f);
+        return 0;
+    }
+    frame_size = ch * (size_t) (bits / 8);
+    if (frame_size == 0 || block_align != (uint16_t) frame_size) {
+        fclose(f);
+        return 0;
+    }
+    if (byte_rate != sample_rate * frame_size) {
+        fclose(f);
+        return 0;
+    }
+    if (data_len == 0 || data_len > 4000000000u) {
+        fclose(f);
+        return 0;
+    }
+    max_frames = data_len / frame_size;
+    if (max_frames == 0 || max_frames > 100000000) {
+        fclose(f);
+        return 0;
+    }
+    buf = (float *) malloc(max_frames * sizeof(float));
     if (buf == 0) {
         fclose(f);
         return 0;
     }
 
-    if (fmt_tag == 3) { /* IEEE float */
-        size_t n = data_len / (ch * (bits / 8));
+    if (fmt_tag == 3) {
+        unsigned char *fbuf = (unsigned char *) malloc(frame_size);
         size_t i;
-        for (i = 0; i < n && fread(hdr, 1, ch * (bits / 8), f) == ch * (bits / 8); i++) {
+        if (fbuf == 0) {
+            free(buf);
+            fclose(f);
+            return 0;
+        }
+        for (i = 0; i < max_frames && fread(fbuf, 1, frame_size, f) == frame_size; i++) {
             double acc = 0.0;
             uint16_t c;
             for (c = 0; c < ch; c++) {
                 float v;
-                memcpy(&v, hdr + c * (bits / 8), sizeof(float));
+                memcpy(&v, fbuf + c * 4, sizeof(float));
                 acc += (double) v;
             }
             buf[len++] = (float) (acc / (double) ch);
         }
-    } else if (fmt_tag == 1) { /* PCM */
+        free(fbuf);
+    } else {
+        unsigned char *fbuf = (unsigned char *) malloc(frame_size);
         size_t i;
-        size_t n = data_len / (ch * (bits / 8));
-        for (i = 0; i < n && fread(hdr, 1, ch * (bits / 8), f) == ch * (bits / 8); i++) {
+        if (fbuf == 0) {
+            free(buf);
+            fclose(f);
+            return 0;
+        }
+        for (i = 0; i < max_frames && fread(fbuf, 1, frame_size, f) == frame_size; i++) {
             double acc = 0.0;
             uint16_t c;
             for (c = 0; c < ch; c++) {
                 double v;
                 if (bits == 16) {
                     int16_t s;
-                    memcpy(&s, hdr + c * 2, 2);
+                    memcpy(&s, fbuf + c * 2, 2);
                     v = (double) s / 32768.0;
                 } else if (bits == 24) {
-                    int32_t s = (int8_t) hdr[c * 3] | (hdr[c * 3 + 1] << 8) |
-                                (hdr[c * 3 + 2] << 16);
+                    int32_t s = (int8_t) fbuf[c * 3] | (fbuf[c * 3 + 1] << 8) |
+                                (fbuf[c * 3 + 2] << 16);
                     v = (double) s / 8388608.0;
-                } else if (bits == 8) {
-                    v = ((double) hdr[c] - 128.0) / 128.0;
                 } else {
-                    v = 0.0;
+                    v = ((double) fbuf[c] - 128.0) / 128.0;
                 }
                 acc += v;
             }
             buf[len++] = (float) (acc / (double) ch);
         }
+        free(fbuf);
     }
     fclose(f);
     if (len == 0) {
         free(buf);
         return 0;
     }
-    (void) byte_rate;
-    (void) block_align;
     out->samples = buf;
     out->count = len;
     out->sample_rate = (int) sample_rate;
-    (void) rc;
     return 1;
 }
 

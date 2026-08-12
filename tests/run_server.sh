@@ -29,9 +29,10 @@ trap cleanup EXIT
     "$TMP" || { echo "FAIL setup"; exit 1; }
 LIB="$(cat "$TMP/libdir")"
 
-# 2. scan
-"$SERVER" scan --library "$LIB" --database "$TMP/lib.db" >/dev/null 2>&1 || {
-    echo "FAIL scan"; exit 1; }
+# 2. scan with full verification (only fully verified packages are servable;
+#    a lightweight scan would leave packages 'unverified' and non-servable).
+"$SERVER" verify --library "$LIB" --database "$TMP/lib.db" >/dev/null 2>&1 || {
+    echo "FAIL verify"; exit 1; }
 
 # 2b. create an API token for the test client
 TOKEN="$("$SERVER" token create --name "CI" --database "$TMP/lib.db" 2>/dev/null \

@@ -18,6 +18,10 @@
 #include <string.h>
 #include <strings.h>
 
+#ifndef _WIN32
+# include <unistd.h>
+#endif
+
 #include <sys/stat.h>
 #include <sqlite3.h>
 #include <microhttpd.h>
@@ -29,7 +33,11 @@
 #endif
 
 #define API_VERSION "v1"
-#define VISIBLE "p.status IN ('valid','warning')"
+/* Servable packages must be fully verified (status valid/warning AND
+   verify_status valid/warning). Lightweight scans leave verify_status
+   'unverified' and therefore produce non-servable packages (fail closed for
+   untrusted ingestion). */
+#define VISIBLE "p.status IN ('valid','warning') AND p.verify_status IN ('valid','warning')"
 #define SESSION_COOKIE "musicpack_session"
 
 /* ---------- small parsing helpers -------------------------------------- */
@@ -306,6 +314,81 @@ add_validators(struct MHD_Response *resp, const mp_object_ref *ref)
                             "private, max-age=0, must-revalidate");
 }
 
+/* Safe basename for Content-Disposition: strips directories and rejects
+   characters that could confuse or inject header values. Returns the
+   sanitized name in out. */
+static void
+content_disposition_name(const char *rel, char *out, size_t cap)
+{
+    const char *base = strrchr(rel, '/');
+    const char *p = base != 0 ? base + 1 : rel;
+    size_t i = 0;
+    if (p == 0)
+        p = "file";
+    while (*p != '\0' && i + 1 < cap) {
+        unsigned char c = (unsigned char) *p;
+        if (c >= 0x20 && c != 0x7f && c != '"' && c != '\\' && c != ';')
+            out[i++] = (char) c;
+        else
+            out[i++] = '_';
+        p++;
+    }
+    out[i] = '\0';
+}
+
+/* Magic-byte check for inline raster images: a package may name a file
+   `front.jpg` but place HTML inside it, so inline serving is allowed only
+   when the leading bytes match the declared image type. Audio is exempt
+   from byte checking (media cannot execute active content). */
+static int
+fd_inline_safe(int fd, const char *mime)
+{
+    unsigned char h[16];
+    ssize_t n;
+
+    if (mime == 0)
+        return 0;
+    if (strcmp(mime, "image/jpeg") != 0 &&
+        strcmp(mime, "image/png") != 0 &&
+        strcmp(mime, "image/gif") != 0 &&
+        strcmp(mime, "image/webp") != 0 &&
+        strcmp(mime, "image/bmp") != 0)
+        return 1; /* audio or non-image: no active-content magic check */
+    n = pread(fd, h, sizeof h, 0);
+    if (n <= 0)
+        return 0;
+    if (strcmp(mime, "image/jpeg") == 0)
+        return n >= 3 && h[0] == 0xFF && h[1] == 0xD8 && h[2] == 0xFF;
+    if (strcmp(mime, "image/png") == 0)
+        return n >= 8 && memcmp(h, "\x89PNG\r\n\x1a\n", 8) == 0;
+    if (strcmp(mime, "image/gif") == 0)
+        return n >= 6 && (memcmp(h, "GIF87a", 6) == 0 || memcmp(h, "GIF89a", 6) == 0);
+    if (strcmp(mime, "image/webp") == 0)
+        return n >= 12 && memcmp(h, "RIFF", 4) == 0 && memcmp(h + 8, "WEBP", 4) == 0;
+    if (strcmp(mime, "image/bmp") == 0)
+        return n >= 2 && h[0] == 'B' && h[1] == 'M';
+    return 0;
+}
+
+/* Security headers for package-controlled object responses: force
+   non-image content (or mislabeled images) to attachment, always send
+   nosniff, and sandbox the response so package HTML/SVG cannot execute or
+   reach the origin. */
+static void
+add_content_headers(struct MHD_Response *resp, const mp_object_ref *ref, int fd)
+{
+    MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
+    if (!mp_mime_inline_allowed(ref->mime) || !fd_inline_safe(fd, ref->mime)) {
+        char disp[1024];
+        char name[MUSICPACK_PATH_MAX + 2];
+        content_disposition_name(ref->relative_path, name, sizeof name);
+        snprintf(disp, sizeof disp, "attachment; filename=\"%s\"", name);
+        MHD_add_response_header(resp, "Content-Disposition", disp);
+    }
+    MHD_add_response_header(resp, "Content-Security-Policy",
+                            "sandbox; default-src 'none'; img-src 'self'");
+}
+
 static struct MHD_Response *
 serve_object(mp_library *lib, const mp_object_ref *ref,
              struct MHD_Connection *c, unsigned int *status_out)
@@ -340,6 +423,19 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
         *status_out = 500;
         return error_response(500, "internal", "cannot stat source file");
     }
+#ifdef _WIN32
+    if ((st.st_mode & _S_IFREG) == 0) {
+        close(fd);
+        *status_out = 503;
+        return error_response(503, "unavailable", "source file is not a regular file");
+    }
+#else
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        *status_out = 503;
+        return error_response(503, "unavailable", "source file is not a regular file");
+    }
+#endif
     if (st.st_size < 0) {
         close(fd);
         *status_out = 500;
@@ -358,12 +454,26 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
             MHD_add_response_header(resp, "ETag", etag);
             MHD_add_response_header(resp, "Cache-Control",
                                     "private, max-age=0, must-revalidate");
+            MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
             *status_out = 304;
             return resp;
         }
     }
 
     range = MHD_lookup_connection_value(c, MHD_HEADER_KIND, "Range");
+    if (range != 0) {
+        /* If-Range: only honor a Range whose validator matches the current
+           bytes; otherwise serve the full representation (RFC 9110 §13.1.5)
+           so a stale partial resume cannot corrupt the cached object. */
+        const char *ir = MHD_lookup_connection_value(c, MHD_HEADER_KIND,
+                                                     "If-Range");
+        if (ir != 0 && ref->sha256[0] != '\0') {
+            char etag[MUSICPACK_SHA256_HEX_SIZE + 3];
+            snprintf(etag, sizeof etag, "\"%s\"", ref->sha256);
+            if (strcmp(ir, etag) != 0)
+                range = 0;
+        }
+    }
     if (range == 0) {
         resp = MHD_create_response_from_fd64((uint64_t) st.st_size, fd);
         if (resp == 0) {
@@ -374,6 +484,7 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
         MHD_add_response_header(resp, "Content-Type", ref->mime);
         MHD_add_response_header(resp, "Accept-Ranges", "bytes");
         add_validators(resp, ref);
+        add_content_headers(resp, ref, fd);
         *status_out = 200;
         return resp;
     }
@@ -394,6 +505,7 @@ serve_object(mp_library *lib, const mp_object_ref *ref,
         MHD_add_response_header(resp, "Accept-Ranges", "bytes");
         MHD_add_response_header(resp, "Content-Range", cr);
         add_validators(resp, ref);
+        add_content_headers(resp, ref, fd);
         *status_out = 206;
         return resp;
     }
@@ -463,7 +575,7 @@ handle_artists(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
         "SELECT COUNT(*) FROM artists a WHERE EXISTS ("
         "  SELECT 1 FROM group_artists ga"
         "  JOIN releases r ON r.group_id = ga.group_id"
-        "  JOIN packages p ON p.release_id = r.id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
         "  WHERE ga.artist_id = a.id AND " VISIBLE ")");
     if (q_s != 0)
         n += snprintf(sql + n, sizeof sql - (size_t) n,
@@ -485,7 +597,7 @@ handle_artists(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
         " JOIN group_artists ga ON ga.artist_id = a.id"
         " JOIN release_groups g ON g.id = ga.group_id"
         " JOIN releases r ON r.group_id = g.id"
-        " JOIN packages p ON p.release_id = r.id"
+        " JOIN packages p ON p.id = r.owner_package_id"
         " WHERE " VISIBLE);
     if (q_s != 0)
         n += snprintf(sql + n, sizeof sql - (size_t) n,
@@ -560,7 +672,7 @@ handle_artist_detail(mp_library *lib, long long id, unsigned int *st)
             " FROM release_groups g"
             " JOIN group_artists ga ON ga.group_id = g.id"
             " JOIN releases r ON r.group_id = g.id"
-            " JOIN packages p ON p.release_id = r.id"
+            " JOIN packages p ON p.id = r.owner_package_id"
             " WHERE ga.artist_id = ?1 AND " VISIBLE
             " GROUP BY g.id ORDER BY g.title COLLATE NOCASE", -1, &g, 0)
         != SQLITE_OK) {
@@ -626,7 +738,7 @@ handle_albums(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
 
     n = snprintf(sql, sizeof sql,
         "SELECT COUNT(*) FROM release_groups g WHERE EXISTS ("
-        "  SELECT 1 FROM releases r JOIN packages p ON p.release_id = r.id"
+        "  SELECT 1 FROM releases r JOIN packages p ON p.id = r.owner_package_id"
         "  WHERE r.group_id = g.id AND " VISIBLE ")");
     if (q_s != 0)
         n += snprintf(sql + n, sizeof sql - (size_t) n,
@@ -658,14 +770,14 @@ handle_albums(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
         "      " VISIBLE ")) AS rc,"
         "  (SELECT aa.id FROM assets aa"
         "    JOIN releases rr ON rr.id = aa.release_id"
-        "    JOIN packages pp ON pp.release_id = rr.id"
+        "    JOIN packages pp ON pp.id = rr.owner_package_id"
         "    WHERE rr.group_id = g.id AND aa.kind = 'artwork'"
         "      AND aa.role = 'front'"
-        "      AND pp.status NOT IN ('invalid','unavailable')"
+        "      AND pp.status IN ('valid','warning')"
         "    ORDER BY rr.release_date, rr.id, aa.id LIMIT 1) AS art_id"
         " FROM release_groups g"
         " WHERE EXISTS (SELECT 1 FROM releases r"
-        "   JOIN packages p ON p.release_id = r.id"
+        "   JOIN packages p ON p.id = r.owner_package_id"
         "   WHERE r.group_id = g.id AND " VISIBLE ")");
     if (q_s != 0)
         n += snprintf(sql + n, sizeof sql - (size_t) n,
@@ -760,7 +872,7 @@ handle_album_detail(mp_library *lib, long long id, unsigned int *st)
             "    AND aa.kind = 'artwork' AND aa.role = 'front'"
             "    ORDER BY aa.id LIMIT 1) AS art_id"
             " FROM releases r"
-            " JOIN packages p ON p.release_id = r.id"
+            " JOIN packages p ON p.id = r.owner_package_id"
             " WHERE r.group_id = ?1 AND " VISIBLE
             " ORDER BY r.release_date, r.id", -1, &rs, 0) != SQLITE_OK) {
         mp_json_free(o);
@@ -875,7 +987,7 @@ handle_tracks(mp_library *lib, long long id, unsigned int *st)
             " JOIN releases r ON r.id = me.release_id"
             " JOIN release_groups g ON g.id = r.group_id"
             " JOIN audio_objects a ON a.track_id = t.id"
-            " JOIN packages p ON p.release_id = r.id"
+            " JOIN packages p ON p.id = r.owner_package_id"
             " WHERE t.id = ?1 AND " VISIBLE
             " LIMIT 1", -1, &t, 0) != SQLITE_OK) {
         *st = 500;
@@ -924,7 +1036,7 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
             "  r.loudness_algorithm"
             " FROM releases r"
             " JOIN release_groups g ON g.id = r.group_id"
-            " JOIN packages p ON p.release_id = r.id"
+            " JOIN packages p ON p.id = r.owner_package_id"
             " WHERE r.id = ?1 AND " VISIBLE
             " LIMIT 1", -1, &r, 0) != SQLITE_OK) {
         mp_json_free(o);
@@ -1076,12 +1188,16 @@ handle_stream(mp_library *lib, struct MHD_Connection *c, long long id,
 static mp_json *
 jobs_json(mp_server_ctx *srv)
 {
-    mp_job_state *j = srv->jobs;
+    mp_job_state snap;
+    mp_job_state *j = &snap;
     mp_json *o = mp_json_obj();
     mp_json *scan = mp_json_obj();
     mp_json *verify = mp_json_obj();
-    int scan_running = j->running && j->kind == MP_JOB_SCAN;
-    int verify_running = j->running && j->kind == MP_JOB_VERIFY;
+    int scan_running, verify_running;
+
+    mp_jobs_snapshot(srv->jobs, &snap);
+    scan_running = j->running && j->kind == MP_JOB_SCAN;
+    verify_running = j->running && j->kind == MP_JOB_VERIFY;
 
     mp_json_int(scan, "running", scan_running);
     mp_json_str(scan, "startedAt", j->started_at);

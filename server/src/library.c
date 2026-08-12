@@ -168,6 +168,43 @@ mp_library_release_has_package(mp_library *lib, long long release_id)
     return rc;
 }
 
+int
+mp_library_package_fingerprint(mp_library *lib, long long id,
+                               char *fp, size_t cap)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT fingerprint FROM packages WHERE id = ?1");
+    int rc = 0;
+    if (st == 0 || fp == 0 || cap == 0)
+        return 0;
+    fp[0] = '\0';
+    sqlite3_bind_int64(st, 1, id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const char *v = (const char *) sqlite3_column_text(st, 0);
+        if (v != 0) {
+            snprintf(fp, cap, "%s", v);
+            rc = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int
+mp_library_package_owner_present(mp_library *lib, long long package_id)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT 1 FROM packages WHERE id = ?1"
+        " AND status NOT IN ('unavailable','invalid')");
+    int rc = 0;
+    if (st == 0)
+        return 0;
+    sqlite3_bind_int64(st, 1, package_id);
+    rc = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return rc;
+}
+
 long long
 mp_library_package_insert(mp_library *lib, const char *path,
                           long long release_id, const char *fingerprint,
@@ -182,7 +219,7 @@ mp_library_package_insert(mp_library *lib, const char *path,
     if (st == 0)
         return -1;
     sqlite3_bind_text(st, 1, path, -1, SQLITE_TRANSIENT);
-    if (release_id < 0)
+    if (release_id <= 0)
         sqlite3_bind_null(st, 2);
     else
         sqlite3_bind_int64(st, 2, release_id);
@@ -215,7 +252,7 @@ mp_library_package_update(mp_library *lib, long long id, long long release_id,
     if (st == 0)
         return -1;
     sqlite3_bind_int64(st, 1, id);
-    if (release_id < 0)
+    if (release_id <= 0)
         sqlite3_bind_null(st, 2);
     else
         sqlite3_bind_int64(st, 2, release_id);
@@ -313,9 +350,57 @@ replace_group_artists(mp_library *lib, long long group_id,
     return 0;
 }
 
+int
+mp_library_release_lookup(mp_library *lib, const char *group_key,
+                          const char *release_key, long long *group_id,
+                          long long *release_id, long long *owner_id)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT g.id, r.id, COALESCE(r.owner_package_id, 0)"
+        "  FROM release_groups g"
+        "  JOIN releases r ON r.group_id = g.id"
+        " WHERE g.group_key = ?1 AND r.release_key = ?2 LIMIT 1");
+    int found = 0;
+    if (st == 0)
+        return 0;
+    sqlite3_bind_text(st, 1, group_key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, release_key, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        found = 1;
+        if (group_id != 0)
+            *group_id = sqlite3_column_int64(st, 0);
+        if (release_id != 0)
+            *release_id = sqlite3_column_int64(st, 1);
+        if (owner_id != 0)
+            *owner_id = sqlite3_column_int64(st, 2);
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+int
+mp_library_release_set_owner(mp_library *lib, long long release_id,
+                             long long package_id)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "UPDATE releases SET owner_package_id = ?2,"
+        " updated_at = datetime('now') WHERE id = ?1");
+    int rc;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    if (package_id < 0)
+        sqlite3_bind_null(st, 2);
+    else
+        sqlite3_bind_int64(st, 2, package_id);
+    rc = sqlite3_step(st) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(st);
+    return rc;
+}
+
 long long
 mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
-                        const char *group_key)
+                        const char *group_key, int update_metadata)
 {
     sqlite3_stmt *st = stmt_prepare(lib,
         "SELECT id FROM release_groups WHERE group_key = ?1");
@@ -346,7 +431,7 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
         }
         sqlite3_finalize(st);
         id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
-    } else {
+    } else if (update_metadata) {
         st = stmt_prepare(lib,
             "UPDATE release_groups SET title=?1, release_type=?2,"
             " original_release_date=?3, mbid=?4, updated_at=datetime('now')"
@@ -362,13 +447,15 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
         sqlite3_step(st);
         sqlite3_finalize(st);
     }
-    replace_group_artists(lib, id, m);
+    if (update_metadata)
+        replace_group_artists(lib, id, m);
     return id;
 }
 
 long long
 mp_library_upsert_release(mp_library *lib, const musicpack_manifest *m,
-                          long long group_id, const char *release_key)
+                          long long group_id, const char *release_key,
+                          int update_metadata)
 {
     sqlite3_stmt *st = stmt_prepare(lib,
         "SELECT id FROM releases WHERE group_id = ?1 AND release_key = ?2");
@@ -422,7 +509,7 @@ mp_library_upsert_release(mp_library *lib, const musicpack_manifest *m,
         }
         sqlite3_finalize(st);
         id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
-    } else {
+    } else if (update_metadata) {
         st = stmt_prepare(lib,
             "UPDATE releases SET edition=?2, release_date=?3, country=?4,"
             " label=?5, catalogue_number=?6, notes=?7, barcode=?8, mbid=?9,"
@@ -703,10 +790,9 @@ mp_library_track_audio(mp_library *lib, long long track_id, mp_object_ref *ref)
         "  FROM tracks t"
         "  JOIN media me ON me.id = t.media_id"
         "  JOIN releases r ON r.id = me.release_id"
-        "  JOIN packages p ON p.release_id = r.id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
         "  JOIN audio_objects a ON a.track_id = t.id"
-         " WHERE t.id = ?1 AND p.status IN ('valid','warning')"
-         " ORDER BY p.id"
+         " WHERE t.id = ?1 AND p.status IN ('valid','warning') AND p.verify_status IN ('valid','warning')"
         " LIMIT 1");
     int rc = 0;
     if (st == 0)
@@ -728,10 +814,10 @@ mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref)
         "       a.file_size, p.status, 0, 0, 0, a.sha256"
         "  FROM assets a"
         "  JOIN releases r ON r.id = a.release_id"
-        "  JOIN packages p ON p.release_id = r.id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
          " WHERE a.id = ?1 AND a.kind IN ('artwork','booklet','lyrics')"
          "   AND p.status IN ('valid','warning')"
-         " ORDER BY p.id"
+         "   AND p.verify_status IN ('valid','warning')"
         " LIMIT 1");
     int rc = 0;
     if (st == 0)

@@ -300,10 +300,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 3, "schema version 3");
+    CHECK(db != 0 && mp_db_schema_version(db) == 4, "schema version 4");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 3, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 4, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -806,6 +806,64 @@ test_verify(void)
 
 /* ---------- main ----------------------------------------------------------- */
 
+/* Package-owned content + identity-conflict quarantine: a package claiming an
+   already-owned release identity with different content must be quarantined
+   and must not mutate the owner's content or metadata. */
+static void
+test_ownership_conflict(void)
+{
+    char lib[4096], dbpath[4096];
+    char victim[4096], hostile[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/ownlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/own.db", g_tmpdir);
+    make_dir(lib);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "open ownership db");
+    db = mp_library_sqlite(lib_h);
+
+    /* victim is scanned first and owns the release */
+    snprintf(victim, sizeof victim, "%s/Victim.mpack", lib);
+    copy_tree(g_ref_flac, victim);
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 1, "victim added");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "victim is the only valid package");
+
+    /* hostile copies the victim and changes a track (different content
+       fingerprint, same release identity) */
+    snprintf(hostile, sizeof hostile, "%s/Hostile.mpack", lib);
+    copy_tree(g_ref_flac, hostile);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", hostile);
+        replace_in_file(mpath, "\"title\": \"Classical Piece No 1\"",
+                        "\"title\": \"HIJACKED TRACK\"");
+    }
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 1, "hostile added");
+
+    /* hostile is quarantined as conflict, not served, and does not mutate */
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='conflict'", -1) == 1,
+        "conflicting package quarantined");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM packages WHERE status='valid'", -1) == 1,
+        "owner stays the only valid package");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM tracks WHERE title='HIJACKED TRACK'", -1) == 0,
+        "hostile content not attached");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM tracks WHERE title='Classical Piece No 1'", -1) == 1,
+        "owner content preserved");
+
+    mp_library_close(lib_h);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -836,6 +894,7 @@ main(int argc, char **argv)
     test_sessions();
     test_verify();
     test_scanner();
+    test_ownership_conflict();
 
     if (failures == 0) {
         printf("server_tests: all passed\n");

@@ -50,6 +50,10 @@ const char *mp_mime_for_path(const char *path);
 /// Extension-level codec name ("musepack", "flac", "wav", "vorbis", ...).
 const char *mp_codec_for_path(const char *path);
 
+/// Returns 1 if \p mime may be served inline on the web origin, 0 if it must
+/// be forced to attachment. Only byte-level safe raster images are inline.
+int mp_mime_inline_allowed(const char *mime);
+
 #ifdef __cplusplus
 }
 #endif

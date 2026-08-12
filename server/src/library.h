@@ -86,7 +86,13 @@ int mp_library_package_by_path(mp_library *lib, const char *path,
 /// Finds a package by content fingerprint. Returns 1 and fills \p row, else 0.
 int mp_library_package_by_fingerprint(mp_library *lib, const char *fp,
                                        mp_package_row *row);
+/// Returns the fingerprint of a package by id ("" if not found).
+int mp_library_package_fingerprint(mp_library *lib, long long id,
+                                   char *fp, size_t cap);
 int mp_library_release_has_package(mp_library *lib, long long release_id);
+/// Returns 1 if the package row exists and is an active owner (status not
+/// unavailable/invalid).
+int mp_library_package_owner_present(mp_library *lib, long long package_id);
 
 /// Inserts a package row; returns its id (or -1 on failure).
 long long mp_library_package_insert(mp_library *lib, const char *path,
@@ -114,16 +120,30 @@ int mp_library_package_sweep(mp_library *lib, const char *last_scan);
 /// Resolves an artist name to its id, inserting when absent.
 long long mp_library_upsert_artist(mp_library *lib, const char *name);
 
-/// Upserts the release group (album) for \p m; returns its id.
+/// Looks up a release by identity keys without mutating metadata.
+/// Returns 1 and fills \p group_id/\p release_id/\p owner_id (0 if unowned).
+int mp_library_release_lookup(mp_library *lib, const char *group_key,
+                              const char *release_key, long long *group_id,
+                              long long *release_id, long long *owner_id);
+
+/// Records which package owns a release's servable content graph.
+int mp_library_release_set_owner(mp_library *lib, long long release_id,
+                                 long long package_id);
+
+/// Upserts the release group (album) for \p m; returns its id. When
+/// \p update_metadata is 0 the group is only created if absent; an existing
+/// row's metadata and artists are left untouched.
 long long mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
-                                  const char *group_key);
+                                  const char *group_key, int update_metadata);
 
 /// Upserts the specific release/edition for \p m under \p group_id;
-/// returns its id.
+/// returns its id. When \p update_metadata is 0 the release is only created
+/// if absent; an existing row is left untouched.
 long long mp_library_upsert_release(mp_library *lib,
                                     const musicpack_manifest *m,
                                     long long group_id,
-                                    const char *release_key);
+                                    const char *release_key,
+                                    int update_metadata);
 
 typedef struct mp_track_ingest {
     char abs_path[MUSICPACK_PATH_MAX + 2]; ///< resolved audio object path

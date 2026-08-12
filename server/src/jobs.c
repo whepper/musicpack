@@ -35,31 +35,45 @@ mp_jobs_init(mp_job_state *st)
     if (st == 0)
         return;
     memset(st, 0, sizeof *st);
+    pthread_mutex_init(&st->lock, 0);
 }
 
-/* progress callbacks run on the worker thread; only mutate shared counters
-   (int writes are atomic enough for snapshot reads, and we also serialize
-   the MHD reader through the status handler's own copy). */
+void
+mp_jobs_snapshot(mp_job_state *st, mp_job_state *out)
+{
+    if (st == 0 || out == 0)
+        return;
+    pthread_mutex_lock(&st->lock);
+    *out = *st;
+    pthread_mutex_unlock(&st->lock);
+}
+
+/* progress callbacks run on the worker thread; every field update is guarded
+   by the state mutex so the HTTP status handler reads a consistent snapshot. */
 
 static void
 scan_progress(void *ctx, const mp_scan_result *r)
 {
     mp_job_state *st = (mp_job_state *) ctx;
+    pthread_mutex_lock(&st->lock);
     st->packages_scanned = r->total;
     st->added = r->added;
     st->updated = r->updated;
     st->removed = r->removed;
     st->invalid = r->invalid;
+    pthread_mutex_unlock(&st->lock);
 }
 
 static void
 verify_progress(void *ctx, const mp_verify_result *r)
 {
     mp_job_state *st = (mp_job_state *) ctx;
+    pthread_mutex_lock(&st->lock);
     st->verified_total = r->total;
     st->verified_passed = r->passed;
     st->verified_warnings = r->warnings;
     st->verified_failed = r->failed;
+    pthread_mutex_unlock(&st->lock);
 }
 
 static void *
@@ -90,10 +104,12 @@ job_worker(void *arg)
     }
     mp_library_close(lib);
 done:
+    pthread_mutex_lock(&st->lock);
     st->running = 0;
     st->last_kind = st->kind;
     st->kind = MP_JOB_NONE;
     now_iso(st->finished_at, sizeof st->finished_at);
+    pthread_mutex_unlock(&st->lock);
     return 0;
 }
 
@@ -106,8 +122,11 @@ mp_jobs_start(mp_job_state *st, const mp_config *cfg, int kind)
     if (st == 0 || cfg == 0 ||
         (kind != MP_JOB_SCAN && kind != MP_JOB_VERIFY))
         return -1;
-    if (st->running)
+    pthread_mutex_lock(&st->lock);
+    if (st->running) {
+        pthread_mutex_unlock(&st->lock);
         return -1;
+    }
     st->running = 1;
     st->kind = kind;
     st->finished_at[0] = '\0';
@@ -119,18 +138,23 @@ mp_jobs_start(mp_job_state *st, const mp_config *cfg, int kind)
         st->verified_total = st->verified_passed = st->verified_warnings =
             st->verified_failed = 0;
     }
+    pthread_mutex_unlock(&st->lock);
     p = (struct job_arg *) malloc(sizeof *p);
     if (p == 0) {
+        pthread_mutex_lock(&st->lock);
         st->running = 0;
         st->kind = MP_JOB_NONE;
+        pthread_mutex_unlock(&st->lock);
         return -1;
     }
     p->st = st;
     p->cfg = cfg;
     if (pthread_create(&t, 0, job_worker, p) != 0) {
         free(p);
+        pthread_mutex_lock(&st->lock);
         st->running = 0;
         st->kind = MP_JOB_NONE;
+        pthread_mutex_unlock(&st->lock);
         return -1;
     }
     pthread_detach(t);
@@ -142,8 +166,14 @@ mp_jobs_wait(mp_job_state *st)
 {
     if (st == 0)
         return;
-    /* spinning wait is fine: jobs are bounded and this is only used at
-       shutdown; the worker writes `running` last. */
-    while (st->running)
+    for (;;) {
+        pthread_mutex_lock(&st->lock);
+        {
+            int running = st->running;
+            pthread_mutex_unlock(&st->lock);
+            if (!running)
+                return;
+        }
         sleep(1);
+    }
 }

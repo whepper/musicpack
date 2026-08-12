@@ -173,7 +173,16 @@ static const char *const mp_migrations[] = {
 "  last_used_at TEXT,"
 "  expires_at TEXT,"
 "  revoked_at TEXT);"
-"CREATE INDEX sessions_token_idx ON sessions(token_hash);"
+"CREATE INDEX sessions_token_idx ON sessions(token_hash);",
+
+/* 3 -> 4: package-owned servable content. Logical release identity remains
+   shared for metadata deduplication, but a release now names the package
+   that owns its servable content graph. Only that owning package may replace
+   content; a package claiming the same identity with different content is
+   quarantined as `conflict` and cannot mutate the owner's graph or metadata.
+   Streaming resolves through the owning package, so no arbitrary visible
+   package can supply bytes for content it does not own. */
+"ALTER TABLE releases ADD COLUMN owner_package_id INTEGER; CREATE INDEX releases_owner_idx ON releases(owner_package_id);"
 };
 
 const char *const *

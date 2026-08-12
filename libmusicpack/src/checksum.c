@@ -38,6 +38,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+# include <sys/stat.h>
+#else
+# include <sys/stat.h>
+#endif
+
 #include <musicpack/checksum.h>
 
 /* ------------------------------------------------------------------ */
@@ -206,6 +212,18 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
 
     if (path == 0 || hex == 0 || cap < MUSICPACK_SHA256_HEX_SIZE)
         return MUSICPACK_ERR_INVALID;
+    {
+        struct stat st;
+        if (stat(path, &st) != 0)
+            return MUSICPACK_ERR_IO;
+#ifdef _WIN32
+        if ((st.st_mode & _S_IFREG) == 0)
+            return MUSICPACK_ERR_IO;
+#else
+        if (!S_ISREG(st.st_mode))
+            return MUSICPACK_ERR_IO;
+#endif
+    }
     f = fopen(path, "rb");
     if (f == 0)
         return MUSICPACK_ERR_IO;

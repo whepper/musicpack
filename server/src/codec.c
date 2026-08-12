@@ -9,18 +9,38 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+# include <sys/stat.h>
+#else
+# include <sys/stat.h>
+#endif
+
 #include <musepack/musepack.h>
 
 /* ---- FLAC STREAMINFO: first metadata block after the "fLaC" magic. ---- */
 static int
+is_regular_path(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return 0;
+#ifdef _WIN32
+    return (st.st_mode & _S_IFREG) != 0;
+#else
+    return S_ISREG(st.st_mode);
+#endif
+}
+
+static int
 flac_probe(const char *path, mp_codec_info *out)
 {
     unsigned char h[42];
-    FILE *f = fopen(path, "rb");
+    FILE *f;
     int rate = 0, ch = 0;
 
-    if (f == 0)
+    if (!is_regular_path(path))
         return MUSICPACK_ERR_IO;
+    f = fopen(path, "rb");
     if (fread(h, 1, sizeof h, f) != sizeof h ||
         memcmp(h, "fLaC", 4) != 0) {
         fclose(f);
@@ -48,6 +68,8 @@ musicpack_status
 mp_codec_probe(const char *abs_path, const char *rel_path, mp_codec_info *out)
 {
     memset(out, 0, sizeof *out);
+    if (!is_regular_path(abs_path))
+        return MUSICPACK_ERR_IO;
     if (strcmp(mp_codec_for_path(rel_path), "musepack") == 0) {
         mpc_reader reader;
         musepack_decoder *dec;

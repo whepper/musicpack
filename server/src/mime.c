@@ -55,3 +55,25 @@ mp_codec_for_path(const char *path)
     if (strcmp(e, ".ogg") == 0)  return "vorbis";
     return "unknown";
 }
+
+int
+mp_mime_inline_allowed(const char *mime)
+{
+    /* Byte-level safe raster images and audio streams may render/play inline.
+       Everything that can carry active content (SVG, HTML, JS, XML, text,
+       PDF, fonts, WASM) is forced to attachment so package-controlled bytes
+       cannot become active same-origin web content. */
+    if (mime == 0)
+        return 0;
+    if (strcmp(mime, "image/jpeg") == 0 ||
+        strcmp(mime, "image/png") == 0 ||
+        strcmp(mime, "image/gif") == 0 ||
+        strcmp(mime, "image/webp") == 0 ||
+        strcmp(mime, "image/bmp") == 0 ||
+        strcmp(mime, "audio/musepack") == 0 ||
+        strcmp(mime, "audio/flac") == 0 ||
+        strcmp(mime, "audio/wav") == 0 ||
+        strcmp(mime, "audio/ogg") == 0)
+        return 1;
+    return 0;
+}

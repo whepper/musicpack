@@ -208,6 +208,10 @@ parse_artists(cJSON *arr, musicpack_artist **out, size_t *count, musicpack_statu
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
+    if (cJSON_GetArraySize(arr) > MUSICPACK_MANIFEST_MAX_ARTISTS_PER_CREDIT) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
     *out = (musicpack_artist *) calloc((size_t) cJSON_GetArraySize(arr), sizeof **out);
     if (*out == 0) {
         *status = MUSICPACK_ERR_NOMEM;
@@ -355,6 +359,10 @@ parse_disc(cJSON *o, musicpack_disc *d, musicpack_status *status)
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
+    if (cJSON_GetArraySize(tracks) > MUSICPACK_MANIFEST_MAX_TRACKS_PER_DISC) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
     d->tracks = (musicpack_track *) calloc((size_t) cJSON_GetArraySize(tracks), sizeof *d->tracks);
     if (d->tracks == 0) {
         *status = MUSICPACK_ERR_NOMEM;
@@ -489,6 +497,8 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
             if (!cJSON_IsArray(genres))
                 return MUSICPACK_ERR_INVALID;
             n = cJSON_GetArraySize(genres);
+            if (n > MUSICPACK_MANIFEST_MAX_GENRES)
+                return MUSICPACK_ERR_INVALID;
             if (n > 0) {
                 m->genres = (char **) calloc((size_t) n, sizeof *m->genres);
                 if (m->genres == 0)
@@ -574,6 +584,8 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
     if (!cJSON_IsArray(v) || cJSON_GetArraySize(v) == 0)
         return MUSICPACK_ERR_INVALID;
     n = cJSON_GetArraySize(v);
+    if (n > MUSICPACK_MANIFEST_MAX_DISCS)
+        return MUSICPACK_ERR_INVALID;
     m->discs = (musicpack_disc *) calloc((size_t) n, sizeof *m->discs);
     if (m->discs == 0)
         return MUSICPACK_ERR_NOMEM;
@@ -604,6 +616,8 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
         if (!cJSON_IsArray(v))
             return MUSICPACK_ERR_INVALID;
         n = cJSON_GetArraySize(v);
+        if (n > MUSICPACK_MANIFEST_MAX_ARTWORK)
+            return MUSICPACK_ERR_INVALID;
         m->artwork = (musicpack_artwork *) calloc((size_t) n, sizeof *m->artwork);
         if (m->artwork == 0)
             return MUSICPACK_ERR_NOMEM;
@@ -619,12 +633,14 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
         }
         m->artwork_count = (size_t) i;
     }
-#define PARSE_ASSET_ARRAY(key, field, countfield)                              \
+#define PARSE_ASSET_ARRAY(key, field, countfield, maxfield)                      \
     v = cJSON_GetObjectItemCaseSensitive(root, key);                           \
     if (v != 0) {                                                              \
         if (!cJSON_IsArray(v))                                                 \
             return MUSICPACK_ERR_INVALID;                                      \
         n = cJSON_GetArraySize(v);                                             \
+        if (n > maxfield)                                                      \
+            return MUSICPACK_ERR_INVALID;                                      \
         m->field = (musicpack_asset *) calloc((size_t) n, sizeof *m->field);   \
         if (m->field == 0)                                                     \
             return MUSICPACK_ERR_NOMEM;                                        \
@@ -636,9 +652,9 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
         }                                                                      \
         m->countfield = (size_t) i;                                            \
     }
-    PARSE_ASSET_ARRAY("booklet", booklet, booklet_count);
-    PARSE_ASSET_ARRAY("lyrics", lyrics, lyrics_count);
-    PARSE_ASSET_ARRAY("extras", extras, extras_count);
+    PARSE_ASSET_ARRAY("booklet", booklet, booklet_count, MUSICPACK_MANIFEST_MAX_BOOKLET);
+    PARSE_ASSET_ARRAY("lyrics", lyrics, lyrics_count, MUSICPACK_MANIFEST_MAX_LYRICS);
+    PARSE_ASSET_ARRAY("extras", extras, extras_count, MUSICPACK_MANIFEST_MAX_EXTRAS);
 #undef PARSE_ASSET_ARRAY
 
     /* analysis: optional typed references; unknown types stay forward-
@@ -649,6 +665,8 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
         if (!cJSON_IsArray(v))
             return MUSICPACK_ERR_INVALID;
         n = cJSON_GetArraySize(v);
+        if (n > MUSICPACK_MANIFEST_MAX_ANALYSIS)
+            return MUSICPACK_ERR_INVALID;
         m->analysis = (musicpack_analysis *) calloc((size_t) n, sizeof *m->analysis);
         if (m->analysis == 0)
             return MUSICPACK_ERR_NOMEM;

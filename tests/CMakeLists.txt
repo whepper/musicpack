@@ -228,6 +228,14 @@ if(UNIX)
                      $<TARGET_FILE:musicpack_cmd>
                      ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-musicpack-album.mpack)
 
+    # .mpack hostile-object regression: special filesystem objects (FIFO,
+    # directory, symlink escape) must fail quickly instead of blocking.
+    add_test(NAME mpack_hostile
+             COMMAND ${CMAKE_COMMAND} -E env
+                     ${CMAKE_CURRENT_SOURCE_DIR}/run_mpack_hostile.sh
+                     $<TARGET_FILE:musicpack_cmd>)
+    set_tests_properties(mpack_hostile PROPERTIES TIMEOUT 60)
+
     # Phase 3A meta fuzz-lite: truncated/flipped FLAC metadata files parsed
     # through the libmusicpack tag readers (no crash = pass).
     add_test(NAME meta_fuzz

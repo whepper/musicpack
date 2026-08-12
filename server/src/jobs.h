@@ -43,6 +43,8 @@
 
 #include "config.h"
 
+#include <pthread.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,6 +56,7 @@ enum {
 };
 
 typedef struct mp_job_state {
+    pthread_mutex_t lock;        ///< guards all fields below
     int running;             ///< a job is currently running
     int kind;                ///< MP_JOB_SCAN / MP_JOB_VERIFY while running
     int last_kind;           ///< kind of the most recent completed job
@@ -68,6 +71,9 @@ typedef struct mp_job_state {
 
 /// Initializes the job state.
 void mp_jobs_init(mp_job_state *st);
+
+/// Returns a consistent copy of the job state (mutex-protected snapshot).
+void mp_jobs_snapshot(mp_job_state *st, mp_job_state *out);
 
 /// Starts a scan or verify job on a background thread. Returns 0 on success,
 /// -1 if another job is already running (HTTP 409).

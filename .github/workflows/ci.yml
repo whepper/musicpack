@@ -95,7 +95,7 @@ jobs:
           python3 scripts/ci_ctest.py --build build --config Release
           api sonic_unit sonic_analyzer synth_simd_unavailable fixtures integration fuzz
           mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz
-          server_integration
+          mpack_hostile server_integration
 
       # Build the pristine reference encoder (05d97a5) and verify the built
       # encoder is byte-identical to it. Runs on all platforms: the live
@@ -170,7 +170,7 @@ jobs:
         run: >
           python3 scripts/ci_ctest.py --build build-nosimd
           unit api mpack sonic_unit sonic_analyzer server_unit fixtures fuzz
-          mpack_conformance mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz
+          mpack_conformance mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz mpack_hostile
       - name: Verify forced SIMD rejects scalar-only build
         run: python3 scripts/ci_ctest.py --build build-nosimd synth_simd_unavailable
 
