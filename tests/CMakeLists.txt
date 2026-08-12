@@ -197,6 +197,15 @@ if(UNIX)
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_author.sh
                      $<TARGET_FILE:musicpack_cmd>)
 
+    # MusicPack Author encode stage: encode-draft turns a tagged FLAC album
+    # into staged Musepack SV8 and build-draft assembles a valid .mpack.
+    # Skipped when ffmpeg is unavailable.
+    add_test(NAME author_encode
+             COMMAND ${CMAKE_COMMAND} -E env
+                     MPCENC=$<TARGET_FILE:mpcenc>
+                     ${CMAKE_CURRENT_SOURCE_DIR}/run_encode.sh
+                     $<TARGET_FILE:musicpack_cmd>)
+
     # Standalone .app packaging audit (skips when the app is not built; the
     # authoritative gate runs inside scripts/build-author-macos.sh).
     add_test(NAME author_app_audit
