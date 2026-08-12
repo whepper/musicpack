@@ -95,7 +95,11 @@ the spec requires. The draft crosses the CLI boundary as JSON only.
 Progress is streamed as JSON events (`encode-progress`): per-track
 `stage`/`track` lines and a final `done`/`error`/`cancelled` event. The GUI
 shows current track, overall progress, current stage and errors, and allows
-cancellation (SIGTERM → exit 130, staging removed).
+cancellation (SIGTERM → bounded hard-kill fallback, staging removed).
+
+Source, encode staging, and final package paths must be disjoint. The backend
+canonicalizes them before work begins and rejects any overlap, independently of
+the GUI. Sources are read-only throughout the pipeline.
 
 ## 4. Metadata mapping
 
@@ -140,9 +144,11 @@ treated as canonical; stale source ReplayGain/R128 values are excluded from
 passthrough so they cannot conflict with measured values.
 
 **Artwork.** External cover files (`cover.jpg`, `folder.jpg`, …) are kept as
-the `front` role; embedded FLAC PICTURE blocks are extracted at build time
-into `artwork/` with their MIME-based extension. `musicpack create`/`import`
-and `build-draft` all preserve artwork; the encode stage re-stages it.
+the `front` role; embedded FLAC PICTURE blocks are copied into owned memory,
+signature-checked as JPEG or PNG, and extracted into `artwork/`. Invalid
+embedded artwork fails authoring rather than creating a hash-valid corrupt
+asset. `musicpack create`/`import` and `build-draft` all preserve artwork; the
+encode stage re-stages it.
 
 **FLAC-specific structure** (stream info, MD5, block layout) has no APEv2
 representation and is not transferred — this is inherent to the tag systems,
@@ -168,8 +174,8 @@ only applies an MB release when the match is evidence-backed
 ## 6. Encoding integration
 
 Musepack encoding uses the **maintained Musepack toolchain** — the repo's own
-`mpcenc` (quality scale, default **q6**). No encoder is embedded in Author and
-no encoder behavior is changed.
+`mpcenc` (quality scale, default **q6**). The macOS app bundles this static
+sidecar; encoder behavior is unchanged.
 
 Per track, the backend (`encode-draft`) runs:
 
@@ -191,18 +197,25 @@ Notes:
   encode stage (`UNSUPPORTED_SOURCE`) rather than half-encoded.
 - **Binary discovery.** The bundled `.app` carries `mpcenc` as a static
   sidecar next to `musicpack`. Development uses `MUSICPACK_MPCENC` → the CMake
-  build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg is an external tool
-  (`MUSICPACK_FFMPEG` → PATH), like `/usr/bin/curl` for MusicBrainz.
-- **Cancellation and cleanup.** SIGTERM kills the active encode and removes
-  the partial staging directory; a cancelled run never leaves a partial
-  bundle. On success the staging directory is kept only long enough for
-  `build-draft`, then removed by the GUI (`cleanup_staging`). Source files are
-  **never modified** — all authoring work happens in staging/output locations.
+  build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg is external because the
+  available Homebrew build is non-redistributable and has a large dylib
+  closure. Packaged macOS apps use `MUSICPACK_FFMPEG` or deterministic common
+  locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`), never
+  Finder's inherited PATH.
+- **Cancellation and cleanup.** Author sends the CLI SIGTERM, waits up to two
+  seconds, then hard-kills only as a fallback. The CLI terminates its active
+  ffmpeg/mpcenc child and removes staging; the app removes staging on every
+  spawn, protocol, crash, failure, and cancellation path. Source files are
+  **never modified** — all authoring work happens in disjoint staging/output
+  locations.
 
 ## 7. `.mpack` generation
 
-`build-draft` (unchanged semantics) assembles the v1 directory bundle from the
-(possibly encoded) draft:
+`build-draft` assembles the v1 directory bundle from the (possibly encoded)
+draft in a fresh sibling staging directory. It writes and fully verifies the
+package there, then atomically renames it into the requested destination. An
+existing destination is rejected without modification; failures remove staging
+and never leave a partial final package:
 
 ```text
 Album.mpack/
@@ -231,11 +244,14 @@ Validation is mandatory and never assumed:
    authoritative gate: a synthesized manifest is parsed through
    `musicpack_manifest_parse()`, so the real `.mpack` v1 rules apply.
 2. `build-draft` **refuses to assemble a draft that fails validation**, and
-   after writing `manifest.json` runs `musicpack_package_verify()` on the
-   result — a package is never reported successful if verification fails.
+   after writing `manifest.json` runs `musicpack_package_verify()` in its
+   transaction staging directory — a package is never finalized or reported
+   successful if verification fails.
 3. The GUI's Create dialog re-verifies on demand and shows `MusicPack valid`
    or the actionable error list (missing files, checksum mismatch, malformed
-   manifest, duplicate/invalid numbering, enumeration violations).
+   manifest, duplicate/invalid numbering, enumeration violations). Audio
+   `sha256` is mandatory for every v1 track and verification detects missing,
+   malformed, or mismatched hashes.
 
 ## 9. Sonic analysis
 
@@ -259,7 +275,10 @@ Backend (CTest):
   committed 2-disc fixture: staged `.mpc` naming, transformed draft, APEv2
   tag assertions via ffprobe (projected + passthrough), multi-disc build +
   `verify`, unsupported sample rate, mixed-source refusal, missing-tool
-  pre-flight, SIGTERM cancel + staging cleanup. Skips without ffmpeg.
+  pre-flight, transactional destination protection, source-overlap refusal,
+  embedded JPEG/PNG signature and hash checks, source immutability, and
+  SIGTERM cancel + staging cleanup. It requires ffmpeg/mpcenc rather than
+  silently skipping the core path.
 - `author_app_audit` — packaging gate for the standalone `.app`.
 
 Rust (`cargo test` in `author/src-tauri`) — backend resolution (bundled/
@@ -289,12 +308,12 @@ JSON events. No personal filesystem data beyond paths required for debugging.
 
 ## 12. Known limitations (MVP)
 
-- **Metadata edits after encoding** apply to the manifest but not to the
-  already-written `.mpc` APEv2 tags; edit before encoding, or re-import.
-  (`encode-draft` writes tags at encode time; `build-draft` copies the encoded
-  files verbatim.)
-- **FFmpeg is an external requirement** for encoding (not bundled; like
-  `curl`). The app is unusable for FLAC sources without it.
+- **Metadata is locked after encoding.** Tag-affecting fields cannot be edited
+  while encoded staging exists; choose the source album again to re-encode.
+  This prevents manifest/APEv2 divergence.
+- **FFmpeg is an external requirement** for encoding. A packaged app resolves
+  it deterministically from supported macOS install locations or
+  `MUSICPACK_FFMPEG`; users must install a compatible ffmpeg if it is absent.
 - Source formats limited to FLAC/WAV for encoding; ALAC/APE/etc. are future
   work. 88.2/96/176.4/192 kHz sources cannot be encoded to Musepack (fixed
   sample-rate codec) and are only surfaced as warnings.
