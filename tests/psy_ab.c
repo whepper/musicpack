@@ -19,22 +19,17 @@
  */
 
 #include <math.h>
-#include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <mpc/datatypes.h>
 
 #include "libmpcpsy.h"
-extern float a[4096];
-extern float Hann_256[256], Hann_1024[1024];
-extern float tabatan2[][2], tabcos[][2];
-#define a_tab a
-#define Hann_1024_tab Hann_1024
-#define Hann_256_tab Hann_256
 
 // White-box declarations (libmpcpsy internals; mpcenc.h declares them too).
+#ifdef FAST_MATH
+void Init_FastMath ( void );
+#endif
 void Init_Psychoakustik ( PsyModel* );
 void Init_Psychoakustiktabellen ( PsyModel* );
 void SetQualityParams ( PsyModel*, float );
@@ -80,23 +75,9 @@ check_kernel ( const char* stage, const float* x,
     }
 }
 
-static void
-segv_handler ( int sig, siginfo_t* si, void* ctx )
-{
-    fprintf ( stderr, "SEGV at address %p\n", si->si_addr );
-    abort ();
-}
-
 int
 main ( void )
 {
-    struct sigaction sa;
-    memset ( &sa, 0, sizeof sa );
-    sa.sa_sigaction = segv_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction ( SIGSEGV, &sa, 0 );
-    fprintf ( stderr, "tables: a=%p tabatan2=%p tabcos=%p Hann_1024=%p Hann_256=%p\n",
-              (void*) a_tab, (void*) tabatan2, (void*) tabcos, (void*) Hann_1024_tab, (void*) Hann_256_tab );
     PsyModel m;
     PCMDataTyp Main;
     float F_a[1024], F_b[1024];
@@ -124,26 +105,30 @@ main ( void )
     for ( i = 0; i < ANABUFFER; i++ )
         x[i] = Main.L[i];
 
+#ifdef FAST_MATH
+    Init_FastMath ();
+#endif
+    memset ( &m, 0, sizeof m );
+    SetQualityParams (&m, 6.0f);        // q6 profile
+    Init_Psychoakustik (&m);            // FFT/ANS tables + zeroed state
+    m.SampleFreq = 44100.f;
+    SetQualityParams (&m, 6.0f);        // re-apply after init reset (mirrors mpcenc)
+    Init_Psychoakustiktabellen (&m);    // ATH tables with final params
+    m.Max_Band = 31;
+
     // ---- kernel level ----------------------------------------------------
     mpc_psy_set_impl (MPC_PSY_SCALAR);
-    fprintf (stderr, "c0\n");
     check_kernel ("PowSpec256",   x, PowSpec256,  PowSpec256,  F_a, F_b, 128);
-    fprintf (stderr, "c1\n");
     check_kernel ("PowSpec1024",  x, PowSpec1024, PowSpec1024, F_a, F_b, 512);
-    fprintf (stderr, "c2\n");
     check_kernel ("PowSpec2048",  x, PowSpec2048, PowSpec2048, F_a, F_b, 1024);
     // PolarSpec1024 (3-arg): compare erg and phs separately.
-    fprintf (stderr, "c3\n");
     mpc_psy_set_impl (MPC_PSY_SCALAR); PolarSpec1024 (x, F_a, ph_a);
-    fprintf (stderr, "c3a scalar polar done\n");
     mpc_psy_set_impl (MPC_PSY_SIMD);   PolarSpec1024 (x, F_b, ph_b);
-    fprintf (stderr, "c3b simd polar done\n");
     for ( i = 0; i < 512; i++ )
         if ( !same_bits (F_a[i], F_b[i]) ) { report_div ("PolarSpec1024.erg", i, F_a[i], F_b[i]); break; }
     for ( i = 0; i < 512; i++ )
         if ( !same_bits (ph_a[i], ph_b[i]) ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
 
-    fprintf (stderr, "c4\n");
     // ---- batch level (lane-parallel FFT) ---------------------------------
     {
         static float w4a[4][128], w4b[4][128];
@@ -152,18 +137,16 @@ main ( void )
         static float poa[2][512],  pob[2][512];
         int l;
 
-        fprintf (stderr, "c5\n");
         mpc_psy_set_impl (MPC_PSY_SCALAR);
-            PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
-            PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
-            PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
-            PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
-            fprintf (stderr, "c6\n");
-            mpc_psy_set_impl (MPC_PSY_SIMD);
-                PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
-            PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
-            PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
-            PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
+        PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
+        PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
+        PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
+        PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
+        mpc_psy_set_impl (MPC_PSY_SIMD);
+        PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
+        PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
+        PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
+        PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
 
         for ( l = 0; l < 4 && !failures; l++ )
             for ( i = 0; i < 128 && !failures; i++ )
@@ -181,17 +164,7 @@ main ( void )
     }
     printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
-    fprintf (stderr, "c7\n");
-    fprintf (stderr, "c7\n");
     // ---- model level (evolving state) ------------------------------------
-    memset ( &m, 0, sizeof m );
-    SetQualityParams (&m, 6.0f);        // q6 profile
-    Init_Psychoakustik (&m);            // FFT/ANS tables + zeroed state
-    m.SampleFreq = 44100.f;
-    SetQualityParams (&m, 6.0f);        // re-apply after init reset (mirrors mpcenc)
-    Init_Psychoakustiktabellen (&m);    // ATH tables with final params
-    m.Max_Band = 31;
-
     mpc_psy_set_impl (MPC_PSY_SCALAR);
     mpc_psy_reset_state (&m);
     for ( f = 0; f < FRAMES; f++ ) {
