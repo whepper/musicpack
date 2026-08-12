@@ -19,6 +19,7 @@ on:
       - 'tests/**'
       - 'mpcenc/**'
       - 'bench/**'
+      - 'scripts/ci_config.py'
       - 'wasm/**'
       - '**/CMakeLists.txt'
       - 'include/**'
@@ -56,8 +57,8 @@ jobs:
 
       - name: Report configurations
         run: |
-          python3 scripts/ci_config.py --build build --role benchmark-native
-          python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile
+          python3 scripts/ci_config.py --build build --role benchmark-native --selected-config Release --expect compiler_id=GNU --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=sse2
+          python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile --selected-config Release --expect compiler_id=GNU --expect selected_configuration=Release --expect psy_profile=ON
 
       - name: Generate corpus
         run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
@@ -69,11 +70,11 @@ jobs:
       - name: Encoder corpus + benchmark (q5/q6/q7, scalar vs SIMD psycho)
         run: |
           python3 tests/generate_encoder_corpus.py /tmp/enc-corpus >/dev/null
-          bench/encode_bench.sh /tmp/enc-corpus "$(pwd)/build/mpcenc/mpcenc" 5,6,7 5
+          MPC_BENCH_BUILD="$(pwd)/build" bench/encode_bench.sh /tmp/enc-corpus "$(pwd)/build/mpcenc/mpcenc" 5,6,7 5
 
       - name: Psychoacoustic FFT kernel benchmark
         run: |
-          MPC_PSY_FFT_BENCH="$(pwd)/build/bench/psy_fft_bench" bench/run_psy_fft_bench.sh 1000
+          MPC_PSY_FFT_BENCH="$(pwd)/build/bench/psy_fft_bench" MPC_BENCH_BUILD="$(pwd)/build" bench/run_psy_fft_bench.sh 1000
 
       - name: Psychoacoustic CPU-share profile (q5/q6/q7)
         run: |
@@ -81,11 +82,13 @@ jobs:
             --mpcenc "$(pwd)/build-profile/mpcenc/mpcenc" \
             --input /tmp/enc-corpus/long_60s_44100.wav \
             --impl scalar --qualities 5,6,7 --warmup 1 --runs 5 \
+            --build "$(pwd)/build-profile" \
             --output bench/results/psy-profile-x86_64-scalar.json
           python3 bench/profile_psy.py \
             --mpcenc "$(pwd)/build-profile/mpcenc/mpcenc" \
             --input /tmp/enc-corpus/long_60s_44100.wav \
             --impl simd --qualities 5,6,7 --warmup 1 --runs 5 \
+            --build "$(pwd)/build-profile" \
             --output bench/results/psy-profile-x86_64-simd.json
 
       - name: Upload results
@@ -134,9 +137,9 @@ jobs:
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          python3 scripts/ci_config.py --build build-wasm-scalar --role benchmark-wasm-scalar
-          python3 scripts/ci_config.py --build build-wasm-autovec --role benchmark-wasm-autovec
-          python3 scripts/ci_config.py --build build-wasm-simd --role benchmark-wasm-simd
+          python3 scripts/ci_config.py --build build-wasm-scalar --role benchmark-wasm-scalar --selected-config Release --expect selected_configuration=Release --expect simd_option=OFF --expect decoder_simd_enabled=FALSE --expect decoder_simd_backend=scalar --expect wasm_simd=OFF
+          python3 scripts/ci_config.py --build build-wasm-autovec --role benchmark-wasm-autovec --selected-config Release --expect selected_configuration=Release --expect simd_option=OFF --expect decoder_simd_enabled=FALSE --expect decoder_simd_backend=scalar --expect wasm_simd=ON
+          python3 scripts/ci_config.py --build build-wasm-simd --role benchmark-wasm-simd --selected-config Release --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=wasm-simd128 --expect wasm_simd=ON
 
       - name: Generate corpus
         run: |

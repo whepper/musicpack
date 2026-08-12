@@ -16,16 +16,24 @@ jobs:
           - os: ubuntu-latest
             compiler: gcc
             cmake_compiler: gcc
+            compiler_id: GNU
+            decoder_backend: sse2
           - os: ubuntu-latest
             compiler: clang
             cmake_compiler: clang
+            compiler_id: Clang
+            decoder_backend: sse2
           - os: macos-14
             compiler: clang
             cmake_compiler: clang
             label: macos-arm64
+            compiler_id: AppleClang
+            decoder_backend: neon
           - os: windows-latest
             compiler: msvc
             cmake_compiler: ''
+            compiler_id: MSVC
+            decoder_backend: sse2
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -58,7 +66,11 @@ jobs:
 
       - name: Report configuration
         shell: bash
-        run: python3 scripts/ci_config.py --build build --role native
+        run: >
+          python3 scripts/ci_config.py --build build --role native --selected-config Release
+          --expect compiler_id=${{ matrix.compiler_id }} --expect selected_configuration=Release
+          --expect simd_option=ON --expect decoder_simd_enabled=TRUE
+          --expect decoder_simd_backend=${{ matrix.decoder_backend }}
 
       - name: Build
         run: cmake --build build --config Release -j
@@ -111,7 +123,10 @@ jobs:
 
       - name: Report reference configuration
         shell: bash
-        run: python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference --reference
+        run: >
+          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference --reference
+          --selected-config Release --expect compiler_id=${{ matrix.compiler_id }}
+          --expect selected_configuration=Release
 
       - name: Build reference encoder
         shell: bash
@@ -125,8 +140,8 @@ jobs:
           REF_MPCENC="$(python3 scripts/ci_find_executable.py "$RUNNER_TEMP/ref-build" "$EXE")"
           DUT_MPCENC="$(python3 scripts/ci_find_executable.py build "$EXE")"
           [ -x "$REF_MPCENC" ] || { echo "reference mpcenc not found"; exit 1; }
-          python3 scripts/ci_config.py --build build --role native-compat --executable "$DUT_MPCENC"
-          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference-compat --reference --executable "$REF_MPCENC"
+          python3 scripts/ci_config.py --build build --role native-compat --executable "$DUT_MPCENC" --selected-config Release --compare-build "$RUNNER_TEMP/ref-build" --compare-field compiler --compare-field compiler_id --compare-field compiler_version
+          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference-compat --reference --executable "$REF_MPCENC" --selected-config Release
           export REF_MPCENC
           python3 scripts/ci_ctest.py --build build --config Release compat
           # Phase 2: extended-corpus q5/q6/q7 bit-exact regression (live mode,
@@ -145,7 +160,10 @@ jobs:
           -DMPC_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build-nosimd -j
       - name: Report configuration
-        run: python3 scripts/ci_config.py --build build-nosimd --role scalar-only
+        run: >
+          python3 scripts/ci_config.py --build build-nosimd --role scalar-only --selected-config Release
+          --expect compiler_id=GNU --expect selected_configuration=Release --expect simd_option=OFF
+          --expect decoder_simd_enabled=FALSE --expect decoder_simd_backend=scalar
       - name: Test scalar-only suites
         run: >
           python3 scripts/ci_ctest.py --build build-nosimd
@@ -183,7 +201,7 @@ jobs:
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          python3 scripts/ci_config.py --build build-wasm --role wasm
+          python3 scripts/ci_config.py --build build-wasm --role wasm --selected-config Release --expect compiler_id=Clang --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=wasm-simd128 --expect wasm_simd=ON --expect wasm_test_hooks=ON
 
       - name: Test Wasm smoke
         shell: bash

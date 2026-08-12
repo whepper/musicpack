@@ -27,17 +27,12 @@ RESULTS_DIR="$BENCH/results"
 mkdir -p "$RESULTS_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RESULTS="$RESULTS_DIR/enc-$STAMP.tsv"
+BUILD="${MPC_BENCH_BUILD:-$ROOT/build}"
 
 {
   echo "# date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "# commit: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "# compiler: $(cc --version 2>/dev/null | head -1 || clang --version | head -1)"
-  if [ "$(uname -s)" = "Darwin" ]; then
-    echo "# cpu: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
-  else
-    echo "# cpu: $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ //' || echo unknown)"
-  fi
-  echo "# arch: $(uname -m)"
+  python3 "$ROOT/scripts/ci_config.py" --build "$BUILD" --role benchmark-encoder \
+    --selected-config Release --executable "$MPCENC" --corpus "$CORPUS" --format metadata
   echo "# qualities: $QUALITIES"
   echo "# runs: $RUNS"
   echo "# comparison: analyser=auto, psychoacoustics=scalar|simd"

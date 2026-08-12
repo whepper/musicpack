@@ -62,32 +62,16 @@ for path in sorted(root.rglob("*.mpc"), key=lambda p: p.relative_to(root).as_pos
 print(h.hexdigest())
 PY
 )"
-CMAKE_COMPILER=""
-if [ -n "${MPC_BENCH_BUILD:-}" ] && [ -f "$MPC_BENCH_BUILD/CMakeCache.txt" ]; then
-  CMAKE_COMPILER="$(grep '^CMAKE_C_COMPILER:FILEPATH=' "$MPC_BENCH_BUILD/CMakeCache.txt" | cut -d= -f2-)"
-fi
-
 # ---- metadata record ------------------------------------------------------
 {
   echo "# date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "# commit: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "# cmake_version: $(cmake --version | head -1)"
-  if [ -n "$CMAKE_COMPILER" ]; then
-    echo "# compiler: $($CMAKE_COMPILER --version 2>&1 | head -1)"
-  else
-    echo "# compiler: unknown"
-  fi
-  if [ "$(uname -s)" = "Darwin" ]; then
-    echo "# cpu: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
-  else
-    echo "# cpu: $(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ //' || echo unknown)"
-  fi
-  echo "# arch: $(uname -m)"
+  python3 "$ROOT/scripts/ci_config.py" --build "${MPC_BENCH_BUILD:-$ROOT/build}" \
+    --role benchmark-native --selected-config Release --executable "$BIN" --corpus "$CORPUS" --format metadata
   echo "# impl: ${IMPL:-auto}"
   echo "# iterations: $ITERATIONS"
   echo "# runs: $RUNS"
   echo "# binary_sha256: $(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$BIN")"
-  echo "# corpus_sha256: $CORPUS_HASH"
+  echo "# corpus_mpc_sha256: $CORPUS_HASH"
   if [ -n "${MPC_BENCH_BUILD:-}" ] && [ -f "$MPC_BENCH_BUILD/CMakeCache.txt" ]; then
     grep -E '^(CMAKE_BUILD_TYPE|CMAKE_C_COMPILER|CMAKE_C_COMPILER_ID|CMAKE_C_COMPILER_VERSION|CMAKE_C_FLAGS|CMAKE_C_FLAGS_RELEASE|MPC_ENABLE_SIMD|MPC_ENABLE_NATIVE_TUNING):' "$MPC_BENCH_BUILD/CMakeCache.txt" | sed 's/^/# cmake: /'
   fi

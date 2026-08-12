@@ -38,6 +38,7 @@ def run(args):
             "cpu": platform.processor(),
         },
         "binary_sha256": hashlib.sha256(open(args.mpcenc, "rb").read()).hexdigest(),
+        "build": build_metadata(args.build),
         "workload": workload,
         "method": {
             "clock": "CLOCK_PROCESS_CPUTIME_ID",
@@ -103,6 +104,17 @@ def run(args):
     return result
 
 
+def build_metadata(build):
+    if not build:
+        return {}
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "scripts", "ci_config.py")
+    output = subprocess.check_output(
+        ["python3", script, "--build", build, "--role", "benchmark-psy-profile",
+         "--selected-config", "Release", "--format", "json"], text=True)
+    return json.loads(output)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mpcenc", required=True)
@@ -111,6 +123,7 @@ def main():
     parser.add_argument("--qualities", default="5,6,7")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--build")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     result = run(args)

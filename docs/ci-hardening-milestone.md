@@ -35,14 +35,15 @@ multi-config generators.
 
 ## Changes
 
-- Portable Python helpers emit `CI_CONFIG` summaries, execute required CTest
-  names one at a time, and locate a unique reference executable.
+- Portable Python helpers assert and emit effective `CI_CONFIG` values,
+  execute required CTest names one at a time, and locate a unique reference
+  executable.
 - Native, scalar-only, Wasm, and benchmark jobs print the same effective
   compiler/build/SIMD configuration summary after configure.
 - Required test groups are explicit rather than exclusion-based. Unix-only
   suites remain explicitly Unix-only.
-- Reference builds receive the matrix compiler selection and report matched
-  compiler/version, commit, configuration, patch digest, and executable hashes.
+- Reference builds receive the matrix compiler selection and require matching
+  compiler path, ID, and CMake-generated version before compatibility tests.
 - Benchmark triggers cover codec sources, headers, all CMake files, benchmark
   helpers, tests, Wasm sources, and workflow files while remaining push-only.
 
@@ -50,6 +51,8 @@ multi-config generators.
 
 - Requested scalar and SIMD implementations are forced and independently
   checked; unavailable SIMD rejects rather than falling back.
+- CI asserts compiler ID, selected Release configuration, SIMD option,
+  compiled decoder backend, and applicable Wasm flags before running tests.
 - Direct decoder state, full-file decoder PCM, encoder filterbank, and
   psychoacoustic differential tests run on every applicable native job.
 - Live encoder compatibility pairs GCC with GCC, Clang with Clang, Apple Clang
@@ -74,17 +77,18 @@ SIMD rejection gate. The Wasm job reported Emscripten, `MPC_WASM_SIMD=ON`,
 test hooks enabled, and ran both smoke and scalar/explicit-SIMD A/B gates.
 
 The benchmark run logged effective configuration for native and all three Wasm
-builds. Its artifacts include commit/configuration metadata, module and input
-SHA-256 hashes, complete corpus provenance, five counterbalanced Wasm runs,
-and native decoder/encoder/psychoacoustic measurements. No performance
-threshold was evaluated.
+builds. Decoder, encoder, psycho FFT, and psycho profile artifacts record the
+executed binary where applicable, full commit, effective CMake metadata, and
+their input or corpus hashes. The Wasm artifact records JS/module/input hashes
+for every execution and five counterbalanced runs. No performance threshold is
+evaluated.
 
 ## Troubleshooting
 
 | Failure | Check |
 |---|---|
 | Required CTest missing | Locate the preceding `CI_CONFIG` line, then inspect CMake SIMD options and the named test registration. |
-| SIMD A/B unavailable | Confirm `decoder_simd_enabled=ON` and the expected backend in `CI_CONFIG`; verify the target architecture. |
+| SIMD A/B unavailable | Confirm `decoder_simd_enabled=TRUE` and `decoder_simd_backend` (`sse2`, `neon`, or `wasm-simd128`) in `CI_CONFIG`; verify the target architecture. |
 | Scalar-only rejection fails | Confirm `MPC_ENABLE_SIMD=OFF`; the selector must return failure without changing scalar dispatch. |
 | Compatibility mismatch | Compare the modern/reference `CI_CONFIG` compiler fields, reference commit, patch digest, and executable hashes. Do not regenerate manifests. |
 | Wasm A/B missing | Confirm `MPC_WASM_SIMD=ON`, `MPC_ENABLE_SIMD=ON`, and `MPC_WASM_TEST_HOOKS=ON` in the Wasm test build. |
@@ -93,7 +97,13 @@ threshold was evaluated.
 ## Limitations
 
 - Windows ARM64 has compile support but no hosted runtime gate.
+- Windows uses a multi-config generator: the selected CI configuration is
+  explicitly recorded and asserted as `Release`; `CMAKE_BUILD_TYPE` is not
+  treated as proof on that platform.
 - Emscripten is intentionally installed from its current SDK channel; artifacts
   retain its exact version and hashes.
 - Benchmarks run on shared infrastructure. They retain repetitions and spread
   but do not gate on a fixed performance threshold.
+- The informational `bench` CTest is intentionally absent from explicit
+  correctness suites because it only prints usage instructions; real benchmark
+  execution remains in the separate benchmark workflow.
