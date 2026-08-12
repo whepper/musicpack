@@ -59,8 +59,8 @@ endif()
 # ---- scalar-vs-SIMD synthesis differential test ---------------------------
 # Decodes the fixtures once per synthesis path and asserts they agree within
 # the fixture tolerance. Requires MPC_ENABLE_SIMD (both kernels compiled in);
-# with SIMD off the forced-simd request falls back to scalar and the test
-# trivially passes. White-box (links the static lib + internal headers).
+# with SIMD off the test fails closed. White-box (links the static lib +
+# internal headers).
 if(MPC_BUILD_SHARED)
   set(MPC_WHITEBOX_LIB musepack_static)
 else()
@@ -249,7 +249,7 @@ endif()
 # bit-identical subband output over several frames (with state evolution).
 # Links mpcenc_static + mpcpsy (libm). Only meaningful when the encoder SIMD
 # kernel is compiled in (MPC_ENABLE_SIMD on aarch64/x86-64); otherwise the
-# forced-simd request falls back to scalar and the test trivially passes.
+# test fails closed.
 add_executable(mpc_enc_synth_ab enc_synth_ab.c)
 target_link_libraries(mpc_enc_synth_ab PRIVATE mpcenc_static mpcpsy)
 target_include_directories(mpc_enc_synth_ab PRIVATE
@@ -264,9 +264,8 @@ add_test(NAME enc_ab COMMAND mpc_enc_synth_ab)
 # ---- psychoacoustic scalar-vs-SIMD differential test ----------------------
 # White-box: forces the psychoacoustic spectrum/FFT kernels (and the full
 # model) scalar vs SIMD and asserts bit-identical outputs, reporting the first
-# divergence. Links mpcpsy (libm). Only meaningful with MPC_ENABLE_SIMD; the
-# forced-simd request falls back to scalar otherwise and the test trivially
-# passes.
+# divergence. Links mpcpsy (libm). Only meaningful with MPC_ENABLE_SIMD;
+# otherwise the test fails closed.
 add_executable(mpc_psy_ab psy_ab.c)
 target_link_libraries(mpc_psy_ab PRIVATE mpcpsy)
 target_include_directories(mpc_psy_ab PRIVATE ${PROJECT_SOURCE_DIR}/libmpcpsy)

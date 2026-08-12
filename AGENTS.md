@@ -56,26 +56,37 @@ Options (see CMakeLists.txt):
 | `MPC_BUILD_TESTS`    | `OFF`              | Register the CTest suites                |
 | `MPC_BUILD_MPCGAIN`  | `ON`               | `mpcgain` (needs libreplaygain)          |
 | `MPC_BUILD_MPCCHAP`  | `ON`               | `mpcchap` (needs libcuefile)             |
+| `MPC_ENABLE_SIMD`    | `ON`               | Build supported decoder/encoder SIMD     |
+| `MPC_ENABLE_NATIVE_TUNING` | `OFF`         | Opt in to `-march=native`                |
+| `MPC_ENABLE_PSY_PROFILE` | `OFF`            | Add psychoacoustic CPU-time counters     |
 
 Enable tests with `-DMPC_BUILD_TESTS=ON`. Local CI runs on Linux/macOS/Windows.
 
 ## Tests
 
-Five CTest suites, all under `tests/`:
+CTest coverage lives under `tests/`. Important codec-facing tests include:
 
-| Suite         | What it checks                                             |
+| Test          | What it checks                                             |
 |---------------|------------------------------------------------------------|
 | `unit`        | crc32, bit writer/reader, size codes, Cnk tables, Huffman  |
+| `api`         | stable `libmusepack` decoder API                           |
 | `fixtures`    | decode(fixture.mpc) ≈ golden .wav (tolerance ±2 LSB)       |
 | `integration` | end-to-end encode/decode/seek/cut/compare                  |
 | `fuzz`        | decoder survives truncated/bit-flipped input               |
-| `compat`      | encoder output byte-identical to reference encoder         |
+| `compat`      | core corpus byte-identical to the reference encoder        |
+| `enc_compat`  | extended q5/q6/q7 corpus byte-identical to reference       |
+| `synth_ab`    | decoder scalar/SIMD differential                           |
+| `enc_ab`      | analysis-filter scalar/SIMD differential                   |
+| `psy_ab`      | psychoacoustic scalar/SIMD differential                    |
+
+Package, Sonic, authoring, and server tests are registered alongside these;
+inspect `tests/CMakeLists.txt` for the current complete list.
 
 Key details:
 
-- `fixtures`, `integration`, `fuzz` are bash/python3 and only registered on
-  UNIX. `compat` runs on all platforms (Windows invokes it through Git Bash).
-  `unit` runs on all platforms.
+- Shell integration/fuzz suites are registered only on UNIX. `compat` and
+  `enc_compat` run on all platforms (Windows invokes them through Git Bash).
+  Unit, package, server-core, and direct SIMD A/B tests run on all platforms.
 - **Fixture comparison is tolerance-based, not byte-exact.** `mpcdec -i`
   uses `pow`/`log10` (ReplayGain), and cross-platform libm/codegen can flip
   a 16-bit sample by ±1 LSB. Use `tests/wavcmp_tol.py` for comparisons.
@@ -117,11 +128,12 @@ because `mpcgain`/`mpcchap` hard-fail without libreplaygain/libcuefile and
 `mpcdec`/`mpc2sv8`/`mpccut` declare duplicate `add_executable` targets under
 MSVC. It keeps the reference's hardcoded `-O3` optimization (matching the
 Unix Release CI build) and adds `-Wno-error=incompatible-pointer-types`
-for GCC 14+. For MSVC it applies two source fixes the modernized tree also
-made: renames the `log2`/`log2_lost` tables in `libmpcenc/bitstream.c` to
-`mpc_log2`/`mpc_log2_lost` (collides with C99 `log2()`) and removes the
-`_MSC_VER` `asinh` shim in `libmpcpsy/psy_tab.c` (collides with the CRT
-function).
+for GCC 14+. It also applies narrowly proven source corrections already
+present in the modernized tree: MSVC `log2`/`asinh` name collisions, the
+zero-sample-rate guard, in-bounds `Vectoring` pointers, unsigned bitstream
+shifts, matching quantizer declarations, and writable runtime-initialized
+FAST_MATH tables. These patches are required for a reliable same-toolchain
+Release reference; do not remove them merely to make it look more pristine.
 
 Verified facts (from the compatibility audit):
 - Reference vs modernized are byte-identical at matched optimization
@@ -131,6 +143,27 @@ Verified facts (from the compatibility audit):
 - FAST_MATH scope was narrowed from global (reference) to `mpcpsy`/`mpcenc`
   only (modernized) with zero effect: `libmpcenc` contains no FAST_MATH-guarded
   code.
+
+## Phase 3 psychoacoustic SIMD
+
+Phase 3 is **complete**. Reproducible q5/q6/q7 profiles and retained ARM64 and
+x86-64 reports live in `docs/measurements/phase3/`; the milestone verdict is
+in `docs/psy-optimization-milestone-3.md`.
+
+- `mpcenc --psy-impl scalar|simd` changes only psychoacoustic dispatch and
+  fails closed when SIMD is unavailable. The analyser remains AUTO in both
+  benchmark arms.
+- `psy_ab` compares distinct scalar/SIMD kernels, batches, and evolving model
+  state. `enc_ab` and `synth_ab` also fail closed without their SIMD kernels.
+- `bench/encode_bench.sh`, `bench/psy_fft_bench.c`, and
+  `bench/profile_psy.py` provide end-to-end, isolated-kernel, and CPU-share
+  evidence. Profiling counters exist only with `MPC_ENABLE_PSY_PROFILE=ON`.
+- FFT measured below 35% of total encoder CPU on both architectures. The 35%
+  rule is a decision gate for a broader FFT rewrite, not a completion gate.
+  Do not start further FFT work without new profiling evidence and a separate
+  scope decision.
+- Retained exact optimizations improve end-to-end encoding by about 5-10%
+  while remaining byte-identical to the same-toolchain reference.
 
 ## Undefined behavior
 
@@ -171,8 +204,10 @@ negative.
   carry is never consumed). The fix is correct — **keep it**, don't revert.
 - `MAX_NS_ORDER = 6` (`libmpcpsy/libmpcpsy.h`). `NS_Order_L/R` are per-band,
   reset each frame in `NS_Analyse`, set by `FindOptimalANS`.
-- `libmpcpsy` is reentrant (per-instance `psy_state_t` embedded in `PsyModel`);
-  do not reintroduce file-scope mutable state.
+- Psychoacoustic working history is per-instance (`psy_state_t` embedded in
+  `PsyModel`), but implementation dispatch and FFT/FAST_MATH tables remain
+  process-global. Do not add new file-scope mutable model state or claim that
+  concurrent encoder sessions are fully proven reentrant.
 - Combinatorial tables (`Cnk`/`Cnk_len`/`Cnk_lost`) live in
   `common/cnk_tables.h`, shared by decoder and encoder.
 
