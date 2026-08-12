@@ -20,7 +20,8 @@ on:
       - 'mpcenc/**'
       - 'bench/**'
       - 'wasm/**'
-      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'include/**'
       - '.github/workflows/bench.yml'
 
 jobs:
@@ -52,6 +53,11 @@ jobs:
 
       - name: Build psycho profile encoder
         run: cmake --build build-profile -j --target mpcenc
+
+      - name: Report configurations
+        run: |
+          python3 scripts/ci_config.py --build build --role benchmark-native
+          python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile
 
       - name: Generate corpus
         run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
@@ -123,6 +129,14 @@ jobs:
           emcmake cmake -S . -B build-wasm-simd -DCMAKE_BUILD_TYPE=Release \
             -DMPC_WASM_SIMD=ON -DMPC_ENABLE_SIMD=ON
           cmake --build build-wasm-simd -j --target musepack_wasm
+
+      - name: Report wasm configurations
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          python3 scripts/ci_config.py --build build-wasm-scalar --role benchmark-wasm-scalar
+          python3 scripts/ci_config.py --build build-wasm-autovec --role benchmark-wasm-autovec
+          python3 scripts/ci_config.py --build build-wasm-simd --role benchmark-wasm-simd
 
       - name: Generate corpus
         run: |

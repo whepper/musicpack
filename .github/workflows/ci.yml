@@ -56,6 +56,10 @@ jobs:
         shell: bash
         run: test "$(uname -m)" = arm64
 
+      - name: Report configuration
+        shell: bash
+        run: python3 scripts/ci_config.py --build build --role native
+
       - name: Build
         run: cmake --build build --config Release -j
 
@@ -65,27 +69,27 @@ jobs:
       # is not built there since libmicrohttpd is unavailable).
       - name: Test direct SIMD gates
         shell: bash
-        run: |
-          for TEST in synth_ab synth_state_ab enc_ab psy_ab; do
-            ctest --test-dir build -C Release --no-tests=error -R "^${TEST}$" --output-on-failure
-          done
+        run: python3 scripts/ci_ctest.py --build build --config Release synth_ab synth_state_ab enc_ab psy_ab
 
       - name: Test unit, package, and server core
-        run: ctest --test-dir build -C Release --no-tests=error -R "^(unit|mpack|server_unit)$" --output-on-failure
+        run: python3 scripts/ci_ctest.py --build build --config Release unit mpack server_unit
 
       # enc_compat is excluded here: its manifest mode is a local developer
       # fallback pinned to the arm64-clang -O0 reference build. CI enforces
       # the Phase 2 guarantee in live mode (REF_MPCENC) in the compat step.
-      - name: Test (integration + fuzz + fixtures)
+      - name: Test Unix suites
         if: matrix.os != 'windows-latest'
-        run: ctest --test-dir build -C Release --no-tests=error -E "^unit$|^mpack$|^compat$|^enc_compat$" --output-on-failure
+        run: >
+          python3 scripts/ci_ctest.py --build build --config Release
+          api sonic_unit sonic_analyzer synth_simd_unavailable fixtures integration fuzz
+          mpack_integration author_backend author_app_audit mpack_fuzz meta_fuzz
+          server_integration
 
       # Build the pristine reference encoder (05d97a5) and verify the built
       # encoder is byte-identical to it. Runs on all platforms: the live
       # comparison is toolchain-agnostic (the committed -O0 manifest is only a
-      # local fallback). Unix: patch the reference's hardcoded -O3 CFLAGS to
-      # match the main build's default (-O0). Windows: both use --config
-      # Release (/O2).
+      # local fallback). The patched reference retains its hardcoded -O3;
+      # both builds are configured as Release.
       - name: Checkout reference encoder
         shell: bash
         run: git worktree add --detach "$RUNNER_TEMP/musepack-ref" 05d97a5
@@ -96,13 +100,18 @@ jobs:
           # Keep only the encoder targets (libmpcpsy/libmpcenc/mpcenc): the
           # pristine tree cannot configure otherwise (mpcgain/mpcchap need
           # external libs; mpcdec/mpc2sv8/mpccut declare duplicate targets
-          # under MSVC). Also aligns -O3 to -O0 and downgrades
-          # -Wincompatible-pointer-types (an error on GCC 14+).
+          # under MSVC). It retains the reference's hardcoded -O3 and
+          # downgrades -Wincompatible-pointer-types (an error on GCC 14+).
           PY="$(command -v python3 || command -v python)"
           "$PY" "$GITHUB_WORKSPACE/tests/patch_reference.py" "$RUNNER_TEMP/musepack-ref"
           cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release \
             ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }} \
-            -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
+             -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
+
+      - name: Report reference configuration
+        shell: bash
+        run: python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference --reference
 
       - name: Build reference encoder
         shell: bash
@@ -111,19 +120,18 @@ jobs:
       - name: Test (compat)
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # MSVC multi-config builds put binaries in a per-config dir whose
-            # exact layout varies by generator; locate it rather than guess.
-            REF_MPCENC="$(find "$RUNNER_TEMP/ref-build" -name mpcenc.exe -type f | head -1)"
-          else
-            REF_MPCENC="$RUNNER_TEMP/ref-build/mpcenc/mpcenc"
-          fi
+          EXE=mpcenc
+          [ "$RUNNER_OS" = "Windows" ] && EXE=mpcenc.exe
+          REF_MPCENC="$(python3 scripts/ci_find_executable.py "$RUNNER_TEMP/ref-build" "$EXE")"
+          DUT_MPCENC="$(python3 scripts/ci_find_executable.py build "$EXE")"
           [ -x "$REF_MPCENC" ] || { echo "reference mpcenc not found"; exit 1; }
+          python3 scripts/ci_config.py --build build --role native-compat --executable "$DUT_MPCENC"
+          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference-compat --reference --executable "$REF_MPCENC"
           export REF_MPCENC
-          ctest --test-dir build -C Release --no-tests=error -R "^compat$" --output-on-failure
+          python3 scripts/ci_ctest.py --build build --config Release compat
           # Phase 2: extended-corpus q5/q6/q7 bit-exact regression (live mode,
           # same reference encoder => toolchain-agnostic per-platform proof).
-          ctest --test-dir build -C Release --no-tests=error -R "^enc_compat$" --output-on-failure
+          python3 scripts/ci_ctest.py --build build --config Release enc_compat
 
   simd-off:
     name: linux scalar-only
@@ -136,10 +144,15 @@ jobs:
           -DMPC_BUILD_MPCGAIN=OFF -DMPC_BUILD_MPCCHAP=OFF
           -DMPC_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build-nosimd -j
+      - name: Report configuration
+        run: python3 scripts/ci_config.py --build build-nosimd --role scalar-only
       - name: Test scalar-only suites
-        run: ctest --test-dir build-nosimd --no-tests=error -R "^(unit|api|mpack|sonic_unit|sonic_analyzer|server_unit|fixtures|fuzz|mpack_integration|author_backend|author_app_audit|mpack_fuzz|meta_fuzz)$" --output-on-failure
+        run: >
+          python3 scripts/ci_ctest.py --build build-nosimd
+          unit api mpack sonic_unit sonic_analyzer server_unit fixtures fuzz
+          mpack_integration author_backend author_app_audit mpack_fuzz meta_fuzz
       - name: Verify forced SIMD rejects scalar-only build
-        run: ctest --test-dir build-nosimd --no-tests=error -R "^synth_simd_unavailable$" --output-on-failure
+        run: python3 scripts/ci_ctest.py --build build-nosimd synth_simd_unavailable
 
   wasm-build:
     name: wasm
@@ -166,17 +179,23 @@ jobs:
           source /opt/emsdk/emsdk_env.sh
           cmake --build build-wasm -j
 
+      - name: Report configuration
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          python3 scripts/ci_config.py --build build-wasm --role wasm
+
       - name: Test Wasm smoke
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          ctest --test-dir build-wasm --no-tests=error -R "^wasm_smoke$" --output-on-failure
+          python3 scripts/ci_ctest.py --build build-wasm wasm_smoke
 
       - name: Test Wasm scalar vs explicit SIMD
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          ctest --test-dir build-wasm --no-tests=error -R "^wasm_synth_ab$" --output-on-failure
+          python3 scripts/ci_ctest.py --build build-wasm wasm_synth_ab
 
   research:
     name: research (model-free)
