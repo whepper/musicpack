@@ -13,6 +13,11 @@ three target ISAs behind one shared abstraction, selected per decoder
 session. The scalar path is byte-for-byte untouched and remains the
 reference/fallback.
 
+Post-milestone independent integrity hardening is complete with a **PASS**
+verdict. Current CI and fresh benchmark evidence are documented in
+`docs/decoder-simd-milestone-1-integrity-review.md`; the table below is the
+original milestone measurement and is retained for historical context.
+
 Measured realtime-multiplier improvements (higher = faster):
 
 | Target                                | scalar | SIMD   | speedup |
