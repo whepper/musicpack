@@ -121,8 +121,9 @@ main ( void )
         PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
         fprintf (stderr, "[psy_ab] batch scalar polar\n");
         PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
-
+        fprintf (stderr, "[psy_ab] batch scalar polar done\n");
         mpc_psy_set_impl (MPC_PSY_SIMD);
+        fprintf (stderr, "[psy_ab] batch set simd done\n");
         fprintf (stderr, "[psy_ab] batch simd 256\n");
         PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
         fprintf (stderr, "[psy_ab] batch simd 1024\n");
