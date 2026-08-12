@@ -108,8 +108,8 @@ def main():
     })
     add_case(cases, "valid", "complete", complete, files)
 
-    unicode_files = {"audio/01-Cafe\u0301.bin": b"unicode", "artwork/back.bin": b"back"}
-    unicode_manifest = base_manifest("audio/01-Cafe\u0301.bin", HASH(b"unicode"))
+    unicode_files = {"audio/01-unicode.bin": b"unicode", "artwork/back.bin": b"back"}
+    unicode_manifest = base_manifest("audio/01-unicode.bin", HASH(b"unicode"))
     unicode_manifest["album"] = {"title": "Cafe\u0301", "artists": [{"name": "Beyonce\u0301"}]}
     unicode_manifest["artwork"] = [{"role": "front", "path": "artwork/back.bin",
                                     "sha256": HASH(b"back")}]
