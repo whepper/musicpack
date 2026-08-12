@@ -11,8 +11,8 @@ import tempfile
 
 
 def invoke(command, verb, package):
-    return subprocess.run([command, verb, package], stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True).returncode
+    return subprocess.run([command, verb, package], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode
 
 
 def main():
