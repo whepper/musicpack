@@ -26,7 +26,7 @@ DB="$TMP/lib.db"
     "$TMP" || { echo "FAIL fixture setup" >&2; exit 1; }
 LIB="$(cat "$TMP/libdir")"
 
-"$SERVER_BIN" scan --library "$LIB" --database "$DB" >/dev/null 2>&1
+"$SERVER_BIN" verify --library "$LIB" --database "$DB" >/dev/null 2>&1
 TOKEN="$("$SERVER_BIN" token create --name "E2E" --database "$DB" 2>/dev/null | grep '^mpk_')"
 
 # Build a "Long Player" album whose first track is the 48-second sine fixture,
@@ -48,7 +48,7 @@ m["media"][0]["tracks"][0]["duration"] = 48
 json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
 PY
 
-"$SERVER_BIN" scan --library "$LIB" --database "$DB" >/dev/null 2>&1
+"$SERVER_BIN" verify --library "$LIB" --database "$DB" >/dev/null 2>&1
 
 cat > "$E2E/.server-env.json" <<JSON
 { "token": "$TOKEN", "baseUrl": "http://127.0.0.1:$PORT", "libdir": "$LIB" }
