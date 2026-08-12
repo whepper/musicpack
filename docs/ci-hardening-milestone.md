@@ -57,6 +57,28 @@ multi-config generators.
 - Wasm smoke and forced scalar/explicit-SIMD A/B are separate exact gates.
 - Correctness CI and performance measurement stay in separate workflows.
 
+## Hosted validation
+
+The finalized workflow behavior was validated at commit
+`f174dfb0106a1728b3feb1495aa43ac837c5175e`.
+
+| Workflow | Run | Result |
+|---|---|---|
+| CI | [31596589613](https://github.com/whepper/musicpack/actions/runs/31596589613) | PASS: Linux GCC/Clang, macOS ARM64 Apple Clang, Windows x64 MSVC, Linux SIMD-off, and Wasm/Node |
+| Benchmark | [31596605459](https://github.com/whepper/musicpack/actions/runs/31596605459) | PASS: native x86-64 plus scalar/autovec/explicit-SIMD Wasm measurements and artifacts |
+
+All native jobs logged the claimed platform/compiler/configuration and ran
+`synth_ab`, `enc_ab`, `psy_ab`, and live `enc_compat`. The scalar-only job
+reported `simd_option=OFF`, `decoder_simd_enabled=FALSE`, and ran the forced
+SIMD rejection gate. The Wasm job reported Emscripten, `MPC_WASM_SIMD=ON`,
+test hooks enabled, and ran both smoke and scalar/explicit-SIMD A/B gates.
+
+The benchmark run logged effective configuration for native and all three Wasm
+builds. Its artifacts include commit/configuration metadata, module and input
+SHA-256 hashes, complete corpus provenance, five counterbalanced Wasm runs,
+and native decoder/encoder/psychoacoustic measurements. No performance
+threshold was evaluated.
+
 ## Troubleshooting
 
 | Failure | Check |
