@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 
 struct AppState {
@@ -126,6 +127,30 @@ fn mime_for_path(path: &str) -> &'static str {
 
 fn cli_err(e: author_service::AuthorError) -> String {
     e.to_string()
+}
+
+fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn cleanup_encode_staging(state: &State<AppState>, staging: &Path) {
+    let path = staging.to_string_lossy();
+    let _ = state.service.lock().unwrap().cleanup_staging(&path);
 }
 
 /// Repository root for development build-tree probing: `src-tauri -> author -> root`.
@@ -507,14 +532,23 @@ async fn encode_tracks(
         .unwrap()
         .encode_staging_dir()
         .map_err(cli_err)?;
-    let (mut child, draft_tmp) = {
+    let spawned = {
         let svc = state.service.lock().unwrap();
         svc.encode_spawn(&draft_json, &staging, &quality, &mpcenc, &ffmpeg)
-            .map_err(cli_err)?
     };
-    let stdout = child.stdout.take().ok_or_else(|| {
-        "encode backend produced no stdout".to_string()
-    })?;
+    let (mut child, draft_tmp) = match spawned {
+        Ok(result) => result,
+        Err(err) => {
+            cleanup_encode_staging(&state, &staging);
+            return Err(cli_err(err));
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        stop_child(&mut child);
+        let _ = std::fs::remove_file(&draft_tmp);
+        cleanup_encode_staging(&state, &staging);
+        return Err("encode backend produced no stdout".to_string());
+    };
     *state.encode_running.lock().unwrap() = Some((child, staging.clone()));
 
     let app2 = app.clone();
@@ -535,9 +569,12 @@ async fn encode_tracks(
     });
     let final_event = reader.join().unwrap_or(None);
     let _ = std::fs::remove_file(&draft_tmp);
-    *state.encode_running.lock().unwrap() = None;
+    if let Some((mut child, _)) = state.encode_running.lock().unwrap().take() {
+        let _ = child.wait();
+    }
 
     let Some(event) = final_event else {
+        cleanup_encode_staging(&state, &staging);
         return Err("encode backend produced no result".to_string());
     };
     let ev = event
@@ -545,14 +582,15 @@ async fn encode_tracks(
         .and_then(|e| e.as_str())
         .unwrap_or("error");
     if ev == "cancelled" {
-        // the CLI already removed the staging directory
+        cleanup_encode_staging(&state, &staging);
         return Ok(json!({ "ok": false, "cancelled": true }));
     }
-    if ev == "error" {
+    if ev != "done" {
         let message = event
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("encoding failed");
+        cleanup_encode_staging(&state, &staging);
         return Err(message.to_string());
     }
     Ok(json!({
@@ -564,16 +602,17 @@ async fn encode_tracks(
     }))
 }
 
-/// Cancels a running encode stage; the encode child is terminated and the
-/// CLI removes the partial staging directory.
+/// Cancels a running encode stage. Unix gives the CLI SIGTERM time to clean
+/// up before the bounded hard-kill fallback; Author removes staging either way.
 #[tauri::command]
 fn encode_cancel(state: State<AppState>) -> Result<(), String> {
     let mut running = state.encode_running.lock().unwrap();
-    if let Some((child, _)) = running.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some((mut child, staging)) = running.take() {
+        stop_child(&mut child);
+        drop(running);
+        cleanup_encode_staging(&state, &staging);
+        return Ok(());
     }
-    *running = None;
     Ok(())
 }
 
@@ -665,6 +704,17 @@ mod tests {
             v["outPath"],
             dir.path().join("sonic/sonic.json").to_string_lossy().into_owned()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_child_terminates_after_sigterm() {
+        let mut child = Command::new("sh")
+            .args(["-c", "trap 'exit 0' TERM; while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        stop_child(&mut child);
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

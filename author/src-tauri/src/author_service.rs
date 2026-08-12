@@ -498,14 +498,24 @@ impl AuthorService {
         }
     }
 
-    /// Resolves the FFmpeg binary used to decode FLAC/WAV sources. FFmpeg is
-    /// an external tool (never bundled): MUSICPACK_FFMPEG, then PATH.
+    /// Resolves the FFmpeg binary used to decode FLAC/WAV sources. Packaged
+    /// apps use explicit configuration or fixed macOS installation locations;
+    /// Finder's minimal PATH is never consulted. Development retains PATH
+    /// discovery for the normal command-line workflow.
     pub fn encode_resolve_ffmpeg(&self) -> Result<PathBuf, AuthorError> {
-        if let Ok(v) = std::env::var("MUSICPACK_FFMPEG") {
-            let p = PathBuf::from(v.trim());
-            if !p.as_os_str().is_empty() && p.is_file() {
+        if let Some(p) = configured_ffmpeg() {
+            return Ok(p);
+        }
+        if matches!(self.location, Ok(BackendLocation::Bundled(_))) {
+            if let Some(p) = common_macos_ffmpeg() {
                 return Ok(p);
             }
+            return Err(AuthorError::CliNotFound(
+                "ffmpeg is required to decode FLAC/WAV sources; install it in \
+                 /opt/homebrew/bin, /usr/local/bin, or /opt/local/bin, or set \
+                 MUSICPACK_FFMPEG to its absolute path"
+                    .to_string(),
+            ));
         }
         if command_on_path("ffmpeg") {
             return Ok(PathBuf::from("ffmpeg"));
@@ -572,12 +582,15 @@ impl AuthorService {
     /// (defense in depth against a stray path from the frontend).
     pub fn cleanup_staging(&self, dir: &str) -> Result<(), AuthorError> {
         let d = PathBuf::from(dir);
+        let temp = std::fs::canonicalize(std::env::temp_dir())
+            .map_err(|e| AuthorError::Io(format!("cannot resolve temporary directory: {e}")))?;
+        let parent = d.parent().and_then(|p| std::fs::canonicalize(p).ok());
         let prefix = format!("musicpack-author-encode-{}", std::process::id());
         let name = d
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if !name.starts_with(&prefix) {
+        if !name.starts_with(&prefix) || parent.as_deref() != Some(temp.as_path()) {
             return Err(AuthorError::Output(format!(
                 "refusing to remove {dir}: not a MusicPack Author staging directory"
             )));
@@ -586,6 +599,27 @@ impl AuthorService {
             .map_err(|e| AuthorError::Io(format!("cannot remove staging directory: {e}")))?;
         Ok(())
     }
+}
+
+fn configured_ffmpeg() -> Option<PathBuf> {
+    let value = std::env::var("MUSICPACK_FFMPEG").ok()?;
+    let path = PathBuf::from(value.trim());
+    (!path.as_os_str().is_empty() && path.is_file()).then_some(path)
+}
+
+fn common_macos_ffmpeg() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    for path in [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",
+    ] {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Whether `name` resolves to an executable on PATH (dev-mode discovery only;
@@ -978,6 +1012,20 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_bundled_never_returns_a_path_lookup() {
+        let tmp = TempDir::new().unwrap();
+        let cli = make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+        std::env::set_var("PATH", tmp.path());
+        std::env::remove_var("MUSICPACK_FFMPEG");
+        match svc.encode_resolve_ffmpeg() {
+            Ok(path) => assert!(path.is_absolute(), "packaged path: {}", path.display()),
+            Err(error) => assert!(error.to_string().contains("MUSICPACK_FFMPEG")),
+        }
+        std::env::remove_var("PATH");
+    }
+
+    #[test]
     fn cleanup_staging_refuses_foreign_paths() {
         let tmp = TempDir::new().unwrap();
         let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
@@ -987,11 +1035,11 @@ mod tests {
 
     #[test]
     fn cleanup_staging_removes_own_staging() {
-        let tmp = TempDir::new().unwrap();
         let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
         // synthesize the exact staging name the service would create
         let name = format!("musicpack-author-encode-{}-42", std::process::id());
-        let dir = tmp.path().join(&name);
+        let dir = std::env::temp_dir().join(&name);
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("x.mpc"), "data").unwrap();
         svc.cleanup_staging(dir.to_str().unwrap()).unwrap();

@@ -36,7 +36,7 @@ musicpack backend                       ← inspect / validate-draft / encode-dr
 libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770
    │
    ├─ mpcenc (static sidecar)           ← Musepack encoder (encode-draft)
-   └─ ffmpeg (external, like curl)      ← FLAC/WAV decode for encoding
+    └─ ffmpeg (external, deterministic)  ← FLAC/WAV decode for encoding
 ```
 
 The `musicpack` backend runs either as the **bundled sidecar** inside the
@@ -141,10 +141,11 @@ author/src-tauri/target/release/bundle/macos/MusicPack Author.app
 
 The standalone application bundles its MusicPack authoring backend **and the
 `mpcenc` encoder** and does not require a separate `musicpack` or `mpcenc`
-installation. It also does not require Homebrew, CMake, Node.js, Rust, the
-source repository, or `MUSICPACK_CLI`; copy the `.app` to another compatible
-Mac and launch it. FFmpeg (decode) and `/usr/bin/curl` (MusicBrainz) remain
-external macOS tools, exactly like the existing `curl` dependency.
+installation. It also does not require CMake, Node.js, Rust, the source
+repository, or `MUSICPACK_CLI`; copy the `.app` to another compatible Mac and
+launch it. `/usr/bin/curl` (MusicBrainz) remains external. FFmpeg (decode) is
+also external, but packaged builds discover it independently of PATH as
+documented below.
 
 The script (1) builds **fully static** `musicpack` and `mpcenc` binaries in
 `build-author/`, (2) verifies with `otool -L` that they reference only macOS
@@ -177,8 +178,10 @@ Homebrew paths. The build hard-fails if any sidecar references anything
 outside `/usr/lib`/`/System/Library` (`scripts/verify-backend-dylibs.sh`).
 
 The only external tools the backend shells out to are `/usr/bin/curl` (system,
-for MusicBrainz lookups) and **ffmpeg** (for FLAC/WAV decode during encoding);
-both are part of macOS or a normal Homebrew install, never bundled.
+for MusicBrainz lookups) and **ffmpeg** (for FLAC/WAV decode during encoding).
+FFmpeg is deliberately not bundled: the installed Homebrew FFmpeg 9.0 reports
+`--enable-nonfree`, says it is not legally redistributable, and links a large
+Homebrew dylib closure. The package audit rejects any bundled `ffmpeg*` file.
 
 ## Backend resolution
 
@@ -192,10 +195,17 @@ a packaged app can never silently run an unrelated `musicpack`:
 
 The encoder resolves the same way but separately: a packaged app uses the
 `mpcenc` sidecar next to the bundled CLI; development uses `MUSICPACK_MPCENC`
-→ the CMake build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg resolves via
-`MUSICPACK_FFMPEG` → PATH and is **never bundled** (it is an external tool,
-like `/usr/bin/curl`). They are only required when the user actually runs the
-encode stage.
+→ the CMake build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg is never bundled.
+In a packaged app it resolves in this deterministic order:
+
+1. `MUSICPACK_FFMPEG`, when it names an existing file (use an absolute path).
+2. `/opt/homebrew/bin/ffmpeg` (Homebrew Apple Silicon).
+3. `/usr/local/bin/ffmpeg` (Homebrew Intel).
+4. `/opt/local/bin/ffmpeg` (MacPorts).
+
+It never searches PATH in a packaged app, including when started through
+Finder. Development retains `MUSICPACK_FFMPEG` → PATH for convenience. FFmpeg
+is only required when the user runs the encode stage.
 
 - The packaged sidecar is located through Tauri's runtime path API
   (`BaseDirectory::Executable`), not guessed filesystem paths.
@@ -332,9 +342,10 @@ package build time (the authoring view shows “Loudness · at build”).
 - **Metadata edited after encoding** updates the manifest but not the
   `.mpc` APEv2 tags already written at encode time — edit before encoding, or
   re-import the album.
-- **Encoding requires ffmpeg** on PATH (or `MUSICPACK_FFMPEG`); it is never
-  bundled (it is external, like curl). The app is still fully usable for
-  already-encoded Musepack albums without it.
+- **Encoding requires ffmpeg.** Packaged apps use `MUSICPACK_FFMPEG` or the
+  fixed Homebrew/MacPorts locations above, never PATH; development uses PATH
+  after the explicit override. It is never bundled. The app is still fully
+  usable for already-encoded Musepack albums without it.
 - FLAC/WAV are the supported encode sources; ALAC/APE/etc. are future work.
   Sources above 48 kHz cannot be encoded to Musepack (fixed-rate codec) and
   are surfaced as warnings only.
@@ -453,4 +464,3 @@ On a clean macOS user account (or equivalent isolated environment):
 (Verified on this machine up to and including the build/audit/smoke gates and
 the analyzer's relocatable load; the full GUI click-through + first-use
 download is the remaining manual step on a clean Mac.)
-

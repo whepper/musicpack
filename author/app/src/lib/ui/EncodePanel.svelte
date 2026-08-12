@@ -111,7 +111,8 @@
       </p>
       <p class="muted">
         Tracks carry the tags written at encode time. Edit album and track
-        metadata before encoding; to re-encode, choose the source album again.
+        metadata before encoding; editing is locked until you choose the source
+        album again.
       </p>
     {:else}
       {#if error}

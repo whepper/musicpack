@@ -1,5 +1,6 @@
 <script lang="ts">
   import { draft, draftStore } from '../bootstrap';
+  import { encodeStaging } from '../authoring-state';
   import { MEDIUM_FORMATS, RELEASE_TYPES, SOURCE_TYPES, type Artist } from '../types';
 
 
@@ -39,6 +40,7 @@
 </script>
 
 {#if $draft}
+<fieldset disabled={$encodeStaging !== null} style="border:0;padding:0;margin:0;min-inline-size:0">
 <div class="section">
   <h2>Release</h2>
   <div class="form-grid">
@@ -292,4 +294,5 @@
     </div>
   {/each}
 </div>
+ </fieldset>
 {/if}

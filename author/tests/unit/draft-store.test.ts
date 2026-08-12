@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createDraftStore, chipState } from '../../app/src/lib/draft-store';
+import { encodeStaging, setEncodeStaging, validation } from '../../app/src/lib/authoring-state';
 import type { Draft } from '../../app/src/lib/types';
 
 function sampleDraft(overrides: Partial<Draft> = {}): Draft {
@@ -40,6 +41,42 @@ function sampleDraft(overrides: Partial<Draft> = {}): Draft {
 }
 
 describe('draft store', () => {
+  it('invalidates validation after draft replacement and every mutation', () => {
+    const store = createDraftStore();
+    validation.set({ ok: true, errors: [], warnings: [] });
+    store.setDraft(sampleDraft());
+    expect(validation.get()).toBeNull();
+    const mutations = [
+      () => store.updateAlbum((a) => (a.title = 'Changed')),
+      () => store.updateRelease((r) => (r.edition = 'Changed')),
+      () => store.updateIdentifiers((i) => (i.barcode = '1')),
+      () => store.updateIdentity((i) => (i.confidence = 'confirmed')),
+      () => store.updateSource((s) => (s.type = 'digital-download')),
+      () => store.updateMedium(0, (m) => (m.title = 'Changed')),
+      () => store.updateTrack(0, 0, { title: 'Changed' }),
+      () => store.setArtwork([]),
+      () => store.setAssets('lyrics', [{ path: 'song.lrc' }]),
+      () => store.updateSonicAnalysis((s) => (s.status = 'ready')),
+    ];
+    for (const mutate of mutations) {
+      validation.set({ ok: true, errors: [], warnings: [] });
+      mutate();
+      expect(validation.get()).toBeNull();
+    }
+  });
+
+  it('locks mutations while encoded staging is active', () => {
+    const store = createDraftStore();
+    store.setDraft(sampleDraft());
+    setEncodeStaging('/tmp/stage');
+    store.updateAlbum((a) => (a.title = 'Divergent title'));
+    store.setArtwork([]);
+    expect(store.draft.get()?.album.title).toBe('Example Album');
+    expect(store.draft.get()?.artwork).toHaveLength(1);
+    setEncodeStaging(null);
+    expect(encodeStaging.get()).toBeNull();
+  });
+
   it('ingests an inspect result (deep-cloned, immutable)', () => {
     const store = createDraftStore();
     const d = sampleDraft();

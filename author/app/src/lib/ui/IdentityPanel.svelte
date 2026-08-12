@@ -2,6 +2,7 @@
   import { api, draft, draftStore } from '../bootstrap';
   import type { IdentifyCandidate, IdentifyResult } from '../types';
   import { formatDate } from '../format';
+  import { encodeStaging } from '../authoring-state';
   import ConfidenceBadge from './ConfidenceBadge.svelte';
 
   let {
@@ -73,6 +74,7 @@
       type="text"
       placeholder="11111111-2222-3333-4444-555555555555"
       bind:value={mbid}
+      disabled={$encodeStaging !== null}
       onkeydown={(e) => {
         if (e.key === 'Enter') void applyMbid();
       }}
@@ -86,6 +88,7 @@
         type="text"
         placeholder="0198765432197"
         bind:value={barcode}
+        disabled={$encodeStaging !== null}
         onkeydown={(e) => {
           if (e.key === 'Enter') void searchBarcode();
         }}
@@ -94,10 +97,10 @@
   </div>
 </div>
 <div class="artwork-row">
-  <button class="btn ghost" onclick={applyMbid} disabled={applying || !mbid.trim()}>
+  <button class="btn ghost" onclick={applyMbid} disabled={$encodeStaging !== null || applying || !mbid.trim()}>
     {applying ? 'Applying…' : 'Apply release ID'}
   </button>
-  <button class="btn ghost" onclick={searchBarcode} disabled={searching || !barcode.trim()}>
+  <button class="btn ghost" onclick={searchBarcode} disabled={$encodeStaging !== null || searching || !barcode.trim()}>
     {searching ? 'Searching…' : 'Search barcode'}
   </button>
   <ConfidenceBadge confidence={$draft.identity?.confidence} />
@@ -118,7 +121,7 @@
         </div>
       </div>
       <ConfidenceBadge confidence={c.confidence} />
-      <button class="btn ghost" onclick={() => applyCandidate(c)} disabled={!c.releaseId}>
+      <button class="btn ghost" onclick={() => applyCandidate(c)} disabled={$encodeStaging !== null || !c.releaseId}>
         Apply
       </button>
     </div>

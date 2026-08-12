@@ -2,6 +2,7 @@
   import { draft, draftStore } from '../bootstrap';
   import { codecLabel, fmtTime } from '../format';
   import type { Track } from '../types';
+  import { encodeStaging } from '../authoring-state';
 
 
   let editing = $state<{ disc: number; track: number } | null>(null);
@@ -38,6 +39,7 @@
             aria-label="Track title"
             value={track.title}
             oninput={(e) => updateTrackField(di, ti, { title: e.currentTarget.value })}
+            disabled={$encodeStaging !== null}
           />
           <input
             type="text"
@@ -48,13 +50,14 @@
               draftStore.updateTrack(di, ti, {
                 artists: e.currentTarget.value
                   ? [{ name: e.currentTarget.value, role: 'main' }]
-                  : undefined,
+                   : undefined,
               })}
+            disabled={$encodeStaging !== null}
           />
-          <button class="btn ghost" onclick={() => commitEdit(di, ti, {})}>Done</button>
+          <button class="btn ghost" onclick={() => commitEdit(di, ti, {})} disabled={$encodeStaging !== null}>Done</button>
         </div>
       {:else}
-        <button class="track" onclick={() => beginEdit(di, ti)}>
+        <button class="track" onclick={() => beginEdit(di, ti)} disabled={$encodeStaging !== null}>
           <span class="num">{track.track}</span>
           <span class="tt">
             {#if track.title}{track.title}{:else}<em>untitled</em>{/if}

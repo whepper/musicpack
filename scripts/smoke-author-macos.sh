@@ -8,6 +8,8 @@
 #     author API version,
 #   - the backend references only macOS system libraries (no Homebrew/local),
 #   - a harmless structured backend operation succeeds using the bundled CLI.
+#   - external FFmpeg discovery can execute from an absolute common location
+#     with Finder's minimal PATH (when FFmpeg is installed there).
 #
 # Usage: scripts/smoke-author-macos.sh <MusicPack Author.app> <repo-root>
 
@@ -42,6 +44,21 @@ MPCENC="$MACOS/mpcenc"
 [ -x "$MPCENC" ] || { echo "fail: bundled mpcenc not executable" >&2; exit 1; }
 "$ROOT/scripts/verify-backend-dylibs.sh" "$MPCENC"
 echo "ok: bundled mpcenc present, executable and static"
+
+echo "== FFmpeg minimal-PATH discovery =="
+FFMPEG=""
+for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg; do
+  if [ -x "$candidate" ]; then
+    FFMPEG="$candidate"
+    break
+  fi
+done
+if [ -n "$FFMPEG" ]; then
+  env -i PATH=/usr/bin:/bin "$FFMPEG" -version >/dev/null
+  echo "ok: $FFMPEG runs with Finder-like PATH"
+else
+  echo "skip: no common-location ffmpeg installed; configure MUSICPACK_FFMPEG to encode"
+fi
 
 SONIC="$MACOS/musicpack-sonic"
 [ -f "$SONIC" ] || { echo "fail: bundled sonic analyzer missing at $SONIC" >&2; exit 1; }

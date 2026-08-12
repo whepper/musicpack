@@ -17,3 +17,7 @@ export const encodeStaging = writable<string | null>(null);
 export function setEncodeStaging(dir: string | null): void {
   encodeStaging.set(dir);
 }
+
+export function invalidateValidation(): void {
+  validation.set(null);
+}

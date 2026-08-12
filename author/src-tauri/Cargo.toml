@@ -23,6 +23,7 @@ base64 = "0.22"
 ureq = "2"
 sha2 = "0.10"
 hex = "0.4"
+libc = "0.2"
 
 [features]
 # This feature is used for production builds where a bundler is expected to

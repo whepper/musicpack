@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, draft, draftStore } from '../bootstrap';
   import { ARTWORK_ROLES } from '../types';
+  import { encodeStaging } from '../authoring-state';
 
   let { onChange }: { onChange?: () => void } = $props();
 
@@ -65,6 +66,7 @@
 </script>
 
 {#if $draft}
+<fieldset disabled={$encodeStaging !== null} style="border:0;padding:0;margin:0;min-inline-size:0">
 {#if note}<div class="error-banner" style="margin: 8px 0">{note}</div>{/if}
 
 <h3 class="disc-title">Artwork</h3>
@@ -121,4 +123,5 @@
   <span class="meta">{#each $draft.extras as x}({x.path}) {/each}</span>
   <button class="btn ghost" onclick={() => addAsset('extras')}>Add…</button>
 </div>
+ </fieldset>
 {/if}

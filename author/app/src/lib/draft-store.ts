@@ -5,6 +5,7 @@
 // from a validated draft at "Create MusicPack".
 
 import { writable, type Writable } from './store';
+import { encodeStaging, invalidateValidation } from './authoring-state';
 import type {
   ArtworkEntry,
   AssetEntry,
@@ -63,7 +64,12 @@ export function createDraftStore(): DraftStore {
 
   const withDraft = (fn: (d: Draft) => void): void => {
     const current = draft.get();
-    if (current) draft.set(mutate(current, fn));
+    // Encoded files already carry these tags, so edits must wait for a new
+    // source load rather than allowing the manifest and audio to diverge.
+    if (current && !encodeStaging.get()) {
+      draft.set(mutate(current, fn));
+      invalidateValidation();
+    }
   };
 
   return {
@@ -72,10 +78,12 @@ export function createDraftStore(): DraftStore {
     error,
     setDraft(d: Draft) {
       draft.set(structuredClone(d));
+      invalidateValidation();
     },
     clear() {
       draft.set(null);
       error.set(null);
+      invalidateValidation();
     },
     setBusy(b: boolean) {
       busy.set(b);
