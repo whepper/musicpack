@@ -113,7 +113,9 @@ main ( void )
     // PolarSpec1024 (3-arg): compare erg and phs separately.
     fprintf (stderr, "c3\n");
     mpc_psy_set_impl (MPC_PSY_SCALAR); PolarSpec1024 (x, F_a, ph_a);
+    fprintf (stderr, "c3a scalar polar done\n");
     mpc_psy_set_impl (MPC_PSY_SIMD);   PolarSpec1024 (x, F_b, ph_b);
+    fprintf (stderr, "c3b simd polar done\n");
     for ( i = 0; i < 512; i++ )
         if ( !same_bits (F_a[i], F_b[i]) ) { report_div ("PolarSpec1024.erg", i, F_a[i], F_b[i]); break; }
     for ( i = 0; i < 512; i++ )
