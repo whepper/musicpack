@@ -285,16 +285,19 @@ report(musicpack_report *rep, musicpack_report_fn fn, void *ctx,
    (hard links are already rejected, but an asset may be referenced twice
    through two manifest paths). */
 
+#ifndef _WIN32
 typedef struct verify_inode {
     unsigned long long dev, ino;
 } verify_inode;
+#endif
 
 typedef struct verify_budget {
     unsigned long long total_bytes;
     size_t inode_count;
     size_t inode_cap;
+#ifndef _WIN32
     verify_inode *inodes;
-    int failed;
+#endif
 } verify_budget;
 
 static long long
@@ -330,10 +333,13 @@ verify_budget_init(verify_budget *b)
 static void
 verify_budget_free(verify_budget *b)
 {
+#ifndef _WIN32
     free(b->inodes);
     b->inodes = 0;
+#endif
 }
 
+#ifndef _WIN32
 /* Returns 1 if (dev,ino) was already seen (content already hashed), else
    records it and returns 0. Bounded by the asset cap. */
 static int
@@ -357,17 +363,6 @@ inode_seen(verify_budget *b, unsigned long long dev, unsigned long long ino)
     return 0;
 }
 
-#ifdef _WIN32
-static void
-inode_of(const char *path, unsigned long long *dev, unsigned long long *ino)
-{
-    struct _stat st;
-    if (_stat(path, &st) == 0) {
-        *dev = 0;
-        *ino = (unsigned long long) st.st_ino;
-    }
-}
-#else
 static void
 inode_of(const char *path, unsigned long long *dev, unsigned long long *ino)
 {
@@ -415,12 +410,18 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
             continue;
         }
         if (budget != 0) {
+#ifndef _WIN32
             unsigned long long dev = 0, ino = 0;
             inode_of(abs, &dev, &ino);
             if (inode_seen(budget, dev, ino)) {
                 /* same underlying object already hashed this pass */
                 continue;
             }
+#else
+            /* Windows st_ino is not a reliable object identity (often 0 or
+               identical across files), so inode-based dedup is disabled there
+               and every referenced asset is hashed. */
+#endif
             budget->total_bytes += (unsigned long long) size;
             if (budget->total_bytes > MUSICPACK_MANIFEST_MAX_TOTAL_BYTES) {
                 snprintf(buf, sizeof buf,
@@ -429,7 +430,6 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
                          (unsigned long long) MUSICPACK_MANIFEST_MAX_TOTAL_BYTES);
                 report(rep, fn, ctx, buf, 1);
                 *failed = 1;
-                budget->failed = 1;
                 continue;
             }
         }
