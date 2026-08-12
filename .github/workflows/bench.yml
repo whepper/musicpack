@@ -156,7 +156,7 @@ jobs:
             for CFG in scalar autovec simd; do
               echo "# cmake $CFG"
               grep -E '^(CMAKE_BUILD_TYPE|CMAKE_C_COMPILER|CMAKE_C_FLAGS|CMAKE_C_FLAGS_RELEASE|MPC_ENABLE_SIMD|MPC_ENABLE_NATIVE_TUNING|MPC_WASM_SIMD):' \
-                "build-wasm-$CFG/CMakeCache.txt"
+                "build-wasm-$CFG/CMakeCache.txt" | sed 's/^/# /'
             done
           } >> bench/results/wasm.tsv
           ORDERS=("scalar autovec simd" "simd scalar autovec" "autovec simd scalar")
