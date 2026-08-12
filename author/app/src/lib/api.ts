@@ -13,6 +13,8 @@ import type {
   BackendInfo,
   CreateResult,
   Draft,
+  EncodeProgress,
+  EncodeResult,
   IdentifyOptions,
   IdentifyResult,
   ModelStatus,
@@ -137,6 +139,39 @@ export class AuthorApi {
   /** Cancels a running sonic analysis or model download. */
   async sonicCancel(): Promise<void> {
     await this.invokeFn('sonic_cancel', {});
+  }
+
+  /** Runs the FLAC/WAV -> Musepack encode stage for the draft. Progress
+   * arrives as `encode-progress` Tauri events (forwarded to `onProgress`);
+   * the promise resolves with the transformed draft on success. */
+  async encodeTracks(
+    draft: Draft,
+    quality: string,
+    onProgress?: (p: EncodeProgress) => void,
+  ): Promise<EncodeResult> {
+    const unlisten = onProgress
+      ? await this.eventListen<EncodeProgress>('encode-progress', (event) =>
+          onProgress(event.payload),
+        )
+      : null;
+    try {
+      return (await this.invokeFn('encode_tracks', {
+        draftJson: JSON.stringify(draft),
+        quality,
+      })) as EncodeResult;
+    } finally {
+      unlisten?.();
+    }
+  }
+
+  /** Cancels a running encode stage. */
+  async encodeCancel(): Promise<void> {
+    await this.invokeFn('encode_cancel', {});
+  }
+
+  /** Removes an encode staging directory after a successful package build. */
+  async cleanupStaging(path: string): Promise<void> {
+    await this.invokeFn('cleanup_staging', { path });
   }
 
   pickDirectory(): Promise<string | null> {

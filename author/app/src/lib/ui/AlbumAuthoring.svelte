@@ -7,6 +7,7 @@
   import ConfidenceBadge from './ConfidenceBadge.svelte';
   import ReleaseForm from './ReleaseForm.svelte';
   import TrackList from './TrackList.svelte';
+  import EncodePanel from './EncodePanel.svelte';
   import ArtworkManager from './ArtworkManager.svelte';
   import IdentityPanel from './IdentityPanel.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
@@ -107,6 +108,8 @@
     <h2>Tracks</h2>
     <TrackList />
   </section>
+
+  <EncodePanel />
 
   <section class="section">
     <h2>Artwork &amp; assets</h2>

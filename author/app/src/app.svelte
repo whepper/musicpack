@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, draft, busy, draftStore, error } from './lib/bootstrap';
+  import { encodeStaging, setEncodeStaging } from './lib/authoring-state';
   import BackendBanner from './lib/ui/BackendBanner.svelte';
   import Welcome from './lib/ui/Welcome.svelte';
   import AlbumAuthoring from './lib/ui/AlbumAuthoring.svelte';
@@ -8,6 +9,12 @@
   async function openAlbum(path: string): Promise<void> {
     draftStore.setBusy(true);
     draftStore.setError(null);
+    // leaving one album for another drops the old encode staging area
+    const stale = encodeStaging.get();
+    if (stale) {
+      setEncodeStaging(null);
+      void api.cleanupStaging(stale);
+    }
     try {
       const d = await api.inspectAlbum(path);
       draftStore.setDraft(d);
@@ -19,6 +26,11 @@
   }
 
   function reset(): void {
+    const stale = encodeStaging.get();
+    if (stale) {
+      setEncodeStaging(null);
+      void api.cleanupStaging(stale);
+    }
     draftStore.clear();
   }
 </script>

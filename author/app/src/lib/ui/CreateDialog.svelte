@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, draft, draftStore } from '../bootstrap';
-  import { createOpen, createResult } from '../authoring-state';
+  import { createOpen, createResult, encodeStaging } from '../authoring-state';
+  import { defaultPackageName } from '../format';
   import type { ValidationResult } from '../types';
 
 
-  let outputDir = $state<string | null>(null);
+  let outputParent = $state<string | null>(null);
+  let packageName = $state('');
   let creating = $state(false);
   let reVerifying = $state(false);
 
@@ -17,16 +19,27 @@
     return () => window.removeEventListener('keydown', fn);
   });
 
+  function outputPath(): string | null {
+    if (!outputParent) return null;
+    const name = packageName.trim() || 'Untitled';
+    return `${outputParent}/${name}.mpack`;
+  }
+
   async function chooseOutput(): Promise<void> {
-    outputDir = await api.pickOutputDirectory();
+    const parent = await api.pickOutputDirectory();
+    if (!parent) return;
+    outputParent = parent;
+    const d = draft.get();
+    if (d) packageName = defaultPackageName(d);
   }
 
   async function runCreate(): Promise<void> {
     const d = draft.get();
-    if (!d || !outputDir) return;
+    const out = outputPath();
+    if (!d || !out) return;
     creating = true;
     try {
-      createResult.set(await api.createPackage(d, outputDir));
+      createResult.set(await api.createPackage(d, out));
     } catch (e) {
       createResult.set({
         ok: false,
@@ -34,6 +47,18 @@
       });
     } finally {
       creating = false;
+    }
+    // a successfully built package no longer needs its encode staging area
+    if (createResult.get()?.ok) {
+      const staging = encodeStaging.get();
+      if (staging) {
+        encodeStaging.set(null);
+        try {
+          await api.cleanupStaging(staging);
+        } catch {
+          /* the temp directory is eventually reclaimed; not a user error */
+        }
+      }
     }
   }
 
@@ -97,16 +122,24 @@
         {/if}
       {:else}
         <h2>Create MusicPack</h2>
-        {#if outputDir}
-          <p class="path">{outputDir}</p>
+        {#if outputParent}
+          <label class="smallcaps" for="pkg-name">Package name</label>
+          <input
+            id="pkg-name"
+            type="text"
+            bind:value={packageName}
+            placeholder="Artist - Album"
+            style="width:100%;margin:0.35rem 0 0.75rem;box-sizing:border-box"
+          />
+          <p class="path">{outputPath()}</p>
         {:else}
           <p class="muted">Choose where to write the <span class="smallcaps">.mpack</span> directory.</p>
         {/if}
         <div class="artwork-row">
           <button class="btn ghost" onclick={chooseOutput}>
-            {outputDir ? 'Change output…' : 'Choose output…'}
+            {outputParent ? 'Change output…' : 'Choose output…'}
           </button>
-          <button class="btn" onclick={runCreate} disabled={!outputDir || creating}>
+          <button class="btn" onclick={runCreate} disabled={!outputPath() || creating}>
             {creating ? 'Creating…' : 'Create'}
           </button>
           <button class="btn ghost" onclick={close}>Cancel</button>

@@ -64,6 +64,11 @@
           </span>
           <span class="dur">{fmtTime(track.duration)}</span>
           <span class="codec-tag">{codecLabel(track.codec, track.streamVersion)}</span>
+          {#if track.sampleRate}
+            <span class="smallcaps">
+              {track.sampleRate / 1000} kHz{track.bitDepth ? ` · ${track.bitDepth}-bit` : ''}
+            </span>
+          {/if}
           <span class="filename">{track.audioPath}</span>
           {#if track.identifiers?.isrc}<span class="smallcaps">ISRC {track.identifiers.isrc}</span>{/if}
           {#if track.identifiers?.musicbrainzRecordingId}<span class="smallcaps">MB {track.identifiers.musicbrainzRecordingId.slice(0, 8)}</span>{/if}

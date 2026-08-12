@@ -75,6 +75,7 @@ export interface Track {
   streamVersion?: number;
   sampleRate?: number;
   channels?: number;
+  bitDepth?: number;
   /** source file path relative to the draft's sourceRoot */
   audioPath: string;
 }
@@ -271,4 +272,34 @@ export interface IdentifyOptions {
   mbid?: string;
   barcode?: string;
   mbJson?: string;
+}
+
+// ---- FLAC -> Musepack encode stage ----------------------------------------
+
+/** A progress event emitted during the encode stage (mirrors the CLI
+ * `encode-draft` progress protocol). */
+export interface EncodeProgress {
+  event: 'stage' | 'track' | 'done' | 'error' | 'cancelled';
+  stage?: 'decoding' | 'encoding' | 'tagging';
+  done?: number;
+  total?: number;
+  disc?: number;
+  track?: number;
+  title?: string;
+  status?: 'ok' | 'error';
+  code?: string;
+  message?: string;
+  sha256?: string;
+  duration?: number;
+}
+
+/** Result of an encode run. On success `draft` is the transformed draft
+ * whose audioPath values point at the encoded .mpc files in `outputDir`
+ * (kept until the package build; removed by `cleanupStaging`). */
+export interface EncodeResult {
+  ok: boolean;
+  cancelled?: boolean;
+  outputDir?: string;
+  tracks?: number;
+  draft?: Draft;
 }

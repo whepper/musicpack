@@ -98,6 +98,21 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'sonic_cancel', args: {} });
   });
 
+  it('encodes tracks, cancels and cleans staging', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    const d = draft();
+    await api.encodeTracks(d, '6.0');
+    await api.encodeCancel();
+    await api.cleanupStaging('/tmp/stage');
+    expect(calls[0]).toEqual({
+      cmd: 'encode_tracks',
+      args: { draftJson: JSON.stringify(d), quality: '6.0' },
+    });
+    expect(calls[1]).toEqual({ cmd: 'encode_cancel', args: {} });
+    expect(calls[2]).toEqual({ cmd: 'cleanup_staging', args: { path: '/tmp/stage' } });
+  });
+
   it('reports the sonic model status', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);
