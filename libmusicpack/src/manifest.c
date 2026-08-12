@@ -303,6 +303,10 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
     v = cJSON_GetObjectItemCaseSensitive(o, "audio");
     if (v == 0 || !parse_asset(v, &t->audio, status))
         return 0;
+    if (t->audio.sha256 == 0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
     return 1;
 }
 
@@ -346,15 +350,34 @@ static int
 check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
 {
     /* Collect every referenced asset path and reject duplicates. */
-    const char *paths[4096];
-    size_t count = 0;
+    const char **paths;
+    size_t count = m->artwork_count + m->booklet_count + m->lyrics_count +
+                   m->extras_count + m->analysis_count;
     size_t d, t, a;
 
-    if (m->disc_count * 4 + m->artwork_count + m->booklet_count +
-        m->lyrics_count + m->extras_count + m->analysis_count > 4096) {
+    if (count < m->artwork_count || count < m->booklet_count ||
+        count < m->lyrics_count || count < m->extras_count ||
+        count < m->analysis_count) {
+        *status = MUSICPACK_ERR_NOMEM;
+        return 0;
+    }
+    for (d = 0; d < m->disc_count; d++) {
+        if (m->discs[d].track_count > SIZE_MAX - count) {
+            *status = MUSICPACK_ERR_NOMEM;
+            return 0;
+        }
+        count += m->discs[d].track_count;
+    }
+    if (count > 4096) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
+    paths = (const char **) calloc(count, sizeof *paths);
+    if (paths == 0) {
+        *status = MUSICPACK_ERR_NOMEM;
+        return 0;
+    }
+    count = 0;
     for (d = 0; d < m->disc_count; d++)
         for (t = 0; t < m->discs[d].track_count; t++)
             paths[count++] = m->discs[d].tracks[t].audio.path;
@@ -369,10 +392,12 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
         for (b = a + 1; b < count; b++) {
             if (strcmp(paths[a], paths[b]) == 0) {
                 *status = MUSICPACK_ERR_INVALID;
+                free(paths);
                 return 0;
             }
         }
     }
+    free(paths);
     return 1;
 }
 

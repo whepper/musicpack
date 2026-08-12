@@ -145,6 +145,63 @@ test_parse_invalid(void)
               "\"sha256\":\"ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
               "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"}}]}]}", &s) == 0,
           "invalid sha256 rejected");
+    CHECK(musicpack_manifest_parse(
+              "{\"format\":\"musicpack\",\"version\":1,\"album\":{"
+              "\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+              "\"media\":[{\"disc\":1,\"tracks\":[{"
+              "\"track\":1,\"title\":\"T\",\"audio\":{\"path\":\"a.mpc\"}}]}]}",
+              &s) == 0 && s == MUSICPACK_ERR_INVALID,
+          "audio sha256 required");
+}
+
+static void
+test_large_track_paths(void)
+{
+    enum { TRACKS = 4097 };
+    char *json;
+    char *p;
+    size_t remaining;
+    int i;
+    musicpack_manifest *m;
+    musicpack_status s;
+
+    json = (char *) malloc(256 + (size_t) TRACKS * 160);
+    if (json == 0) {
+        CHECK(0, "allocate large manifest");
+        return;
+    }
+    p = json;
+    remaining = 256 + (size_t) TRACKS * 160;
+    p += snprintf(p, remaining,
+                  "{\"format\":\"musicpack\",\"version\":1,"
+                  "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+                  "\"media\":[{\"disc\":1,\"tracks\":[");
+    remaining = 256 + (size_t) TRACKS * 160 - (size_t) (p - json);
+    for (i = 1; i <= TRACKS; i++) {
+        int n = snprintf(p, remaining,
+                         "%s{\"track\":%d,\"title\":\"t\",\"audio\":{"
+                         "\"path\":\"audio/%04d.mpc\",\"sha256\":\""
+                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+                         i == 1 ? "" : ",", i, i);
+        p += n;
+        remaining -= (size_t) n;
+    }
+    snprintf(p, remaining, "]}]}");
+
+    m = musicpack_manifest_parse(json, &s);
+    CHECK(m == 0 && s == MUSICPACK_ERR_INVALID,
+          ">4096 referenced paths rejected before duplicate-path storage");
+    musicpack_manifest_free(m);
+
+    p = strstr(json, "\"path\":\"audio/4097.mpc\"");
+    CHECK(p != 0, "last large-track path found");
+    if (p != 0)
+        memcpy(p, "\"path\":\"audio/0001.mpc\"", strlen("\"path\":\"audio/4097.mpc\""));
+    m = musicpack_manifest_parse(json, &s);
+    CHECK(m == 0 && s == MUSICPACK_ERR_INVALID,
+           ">4096 track duplicate path rejected safely");
+    musicpack_manifest_free(m);
+    free(json);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1840,6 +1897,7 @@ int main(int argc, char **argv)
         metadir = argv[3];
     test_parse_valid();
     test_parse_invalid();
+    test_large_track_paths();
     test_unknown_field_roundtrip();
     test_manifest_add_new_fields();
     test_multidisc();

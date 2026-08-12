@@ -49,11 +49,13 @@
 
 #ifdef _WIN32
 # include <direct.h>
+# include <process.h>
 # include <sys/stat.h>
 # define mkdir_p_one(p) _mkdir(p)
 # define POPEN _popen
 # define POPEN_MODE "rb" /* binary mode matters on Windows */
 # define PCLOSE _pclose
+# define getpid _getpid
 #else
 # include <dirent.h>
 # include <signal.h>
@@ -76,6 +78,7 @@
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
+static void rm_rf(const char *path);
 
 static int usage_error(const char *msg)
 {
@@ -2408,6 +2411,89 @@ is_regular_path(const char *p)
 #endif
 }
 
+/* Resolve an existing path, or a prospective child of an existing parent.
+   This makes overlap checks work before the output directory is created. */
+static int
+canonical_path(const char *path, char *out, size_t cap)
+{
+    char parent[MUSICPACK_PATH_MAX + 2], *slash;
+#ifdef _WIN32
+    if (_fullpath(out, path, cap) != 0)
+        return 1;
+#else
+    if (realpath(path, out) != 0)
+        return 1;
+#endif
+    if (strlen(path) >= sizeof parent)
+        return 0;
+    snprintf(parent, sizeof parent, "%s", path);
+    slash = strrchr(parent, '/');
+    if (slash == 0)
+        return 0;
+    *slash = '\0';
+#ifdef _WIN32
+    if (_fullpath(out, parent[0] != '\0' ? parent : ".", cap) == 0)
+        return 0;
+#else
+    if (realpath(parent[0] != '\0' ? parent : ".", out) == 0)
+        return 0;
+#endif
+    if (strlen(out) + 1 + strlen(slash + 1) >= cap)
+        return 0;
+    strcat(out, "/");
+    strcat(out, slash + 1);
+    return 1;
+}
+
+static int
+paths_overlap(const char *a, const char *b)
+{
+    size_t n = strlen(a);
+    return strcmp(a, b) == 0 ||
+           (strncmp(a, b, n) == 0 && b[n] == '/') ||
+           (strncmp(b, a, strlen(b)) == 0 && a[strlen(b)] == '/');
+}
+
+static int
+reject_path_overlap(const char *source, const char *output, const char *what)
+{
+    char src[MUSICPACK_PATH_MAX + 2], dst[MUSICPACK_PATH_MAX + 2];
+    if (!canonical_path(source, src, sizeof src) ||
+        !canonical_path(output, dst, sizeof dst) || paths_overlap(src, dst)) {
+        fprintf(stderr, "%s: source and output directories overlap\n", what);
+        return 1;
+    }
+    return 0;
+}
+
+/* Preserve every asset even when source directories contain equal basenames. */
+static int
+unique_target(char *path, size_t cap)
+{
+    char original[MUSICPACK_PATH_MAX + 2], *dot, *slash;
+    unsigned n;
+    if (!is_regular_path(path))
+        return 1;
+    snprintf(original, sizeof original, "%s", path);
+    slash = strrchr(original, '/');
+    dot = strrchr(slash != 0 ? slash + 1 : original, '.');
+    for (n = 2; n < 1000000; n++) {
+        int written;
+        if (dot != 0) {
+            *dot = '\0';
+            written = snprintf(path, cap, "%s-%u%s", original, n, dot + 1);
+            *dot = '.';
+        } else {
+            written = snprintf(path, cap, "%s-%u", original, n);
+        }
+        if (written < 0 || (size_t) written >= cap)
+            return 0;
+        if (!is_regular_path(path))
+            return 1;
+    }
+    return 0;
+}
+
 static int
 file_is_regular_under(const char *root, const char *rel)
 {
@@ -3053,10 +3139,11 @@ usage_build_draft(void)
    Returns 1 on success. */
 static int
 extract_embedded_image(const char *srcpath, const char *role, const char *artdir,
-                       char *target, size_t target_cap)
+                        char *target, size_t target_cap)
 {
     const char *dot = strrchr(srcpath, '.');
     const unsigned char *img = 0;
+    unsigned char *owned = 0;
     size_t img_len = 0;
     char extbuf[8];
     const char *ext = extbuf;
@@ -3069,7 +3156,11 @@ extract_embedded_image(const char *srcpath, const char *role, const char *artdir
         if (musicpack_flac_read_metadata(srcpath, 0, &pics) == MUSICPACK_OK) {
             for (k = 0; k < pics.count; k++) {
                 if (strcmp(musicpack_meta_picture_role(pics.items[k].type), role) == 0) {
-                    img = pics.items[k].data;
+                    owned = (unsigned char *) malloc(pics.items[k].data_len);
+                    if (owned == 0)
+                        break;
+                    memcpy(owned, pics.items[k].data, pics.items[k].data_len);
+                    img = owned;
                     img_len = pics.items[k].data_len;
                     snprintf(extbuf, sizeof extbuf, "%s",
                              ext_for_mime(pics.items[k].mime));
@@ -3094,21 +3185,37 @@ extract_embedded_image(const char *srcpath, const char *role, const char *artdir
                 const char *fname = (const char *) cov->binary;
                 const char *fe = strrchr(fname, '.');
                 if (body_len > 0) {
-                    img = body;
-                    img_len = body_len;
-                    /* the extension lives inside the APE tag buffer, which is
-                       freed below; copy it into a local buffer */
-                    if (fe != 0 && *fe != '\0')
-                        snprintf(extbuf, sizeof extbuf, "%s", fe);
+                    owned = (unsigned char *) malloc(body_len);
+                    if (owned != 0) {
+                        memcpy(owned, body, body_len);
+                        img = owned;
+                        img_len = body_len;
+                        /* the extension lives inside the APE tag buffer, which is
+                           freed below; copy it into a local buffer */
+                        if (fe != 0 && *fe != '\0')
+                            snprintf(extbuf, sizeof extbuf, "%s", fe);
+                    }
                 }
             }
         }
         musicpack_tag_set_free(&tags);
     }
-    if (img == 0)
+    if (img == 0 ||
+        !((img_len >= 3 && img[0] == 0xff && img[1] == 0xd8 && img[2] == 0xff) ||
+          (img_len >= 8 && memcmp(img, "\x89PNG\r\n\x1a\n", 8) == 0))) {
+        free(owned);
         return 0;
+    }
+    if (img[0] == 0xff)
+        snprintf(extbuf, sizeof extbuf, ".jpg");
+    else
+        snprintf(extbuf, sizeof extbuf, ".png");
     snprintf(target, target_cap, "%s/%s%s", artdir, role, ext);
-    return write_bytes(target, img, img_len) == 0;
+    {
+        int ok = write_bytes(target, img, img_len) == 0;
+        free(owned);
+        return ok;
+    }
 }
 
 /* Extracts the first embedded picture matching `role` from a source audio
@@ -3239,6 +3346,8 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
     musicpack_manifest m;
     musicpack_meter *album_meter = 0;
     const char *source_root;
+    const char *final_out = out_dir;
+    char stage_dir[MUSICPACK_PATH_MAX + 2];
     char audio_dir[MUSICPACK_PATH_MAX + 2];
     char art_dir[MUSICPACK_PATH_MAX + 2];
     char lyr_dir[MUSICPACK_PATH_MAX + 2];
@@ -3290,6 +3399,26 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         cJSON_Delete(draft);
         return 1;
     }
+    if (is_dir_path(final_out) || is_regular_path(final_out)) {
+        if (json)
+            json_error_out("destination_exists", "output destination already exists");
+        else
+            fprintf(stderr, "build-draft: output destination already exists\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+    if (reject_path_overlap(source_root, final_out, "build-draft")) {
+        cJSON_Delete(draft);
+        return 1;
+    }
+    if (snprintf(stage_dir, sizeof stage_dir, "%s.build-%ld", final_out,
+                 (long) getpid()) >= (int) sizeof stage_dir ||
+        is_dir_path(stage_dir) || is_regular_path(stage_dir)) {
+        fprintf(stderr, "build-draft: cannot allocate staging directory\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+    out_dir = stage_dir;
 
     memset(&m, 0, sizeof m);
     if (!draft_to_manifest(draft, &m)) {
@@ -3381,6 +3510,11 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, a->asset.path);
         snprintf(target, sizeof target, "%s/%s%s", art_dir, a->role,
                  ext != 0 ? ext : ".jpg");
+        if (!unique_target(target, sizeof target)) {
+            snprintf(err, sizeof err, "cannot name artwork '%s'", a->asset.path);
+            bad = 1;
+            break;
+        }
         if (copy_file(srcpath, target) != 0) {
             snprintf(err, sizeof err, "cannot copy artwork '%s'", a->asset.path);
             bad = 1;
@@ -3421,7 +3555,8 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
             snprintf(target, sizeof target, "%s/%s", bok_dir,
                      strrchr(m.booklet[i].path, '/') != 0
                          ? strrchr(m.booklet[i].path, '/') + 1
-                         : m.booklet[i].path);
+                          : m.booklet[i].path);
+            if (!unique_target(target, sizeof target)) { bad = 1; break; }
             if (copy_file(srcpath, target) != 0) {
                 snprintf(err, sizeof err, "cannot copy booklet '%s'", m.booklet[i].path);
                 bad = 1;
@@ -3441,7 +3576,8 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
             snprintf(target, sizeof target, "%s/%s", lyr_dir,
                      strrchr(m.lyrics[i].path, '/') != 0
                          ? strrchr(m.lyrics[i].path, '/') + 1
-                         : m.lyrics[i].path);
+                          : m.lyrics[i].path);
+            if (!unique_target(target, sizeof target)) { bad = 1; break; }
             if (copy_file(srcpath, target) != 0) {
                 snprintf(err, sizeof err, "cannot copy lyrics '%s'", m.lyrics[i].path);
                 bad = 1;
@@ -3461,7 +3597,8 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
             snprintf(target, sizeof target, "%s/%s", ex_dir,
                      strrchr(m.extras[i].path, '/') != 0
                          ? strrchr(m.extras[i].path, '/') + 1
-                         : m.extras[i].path);
+                          : m.extras[i].path);
+            if (!unique_target(target, sizeof target)) { bad = 1; break; }
             if (copy_file(srcpath, target) != 0) {
                 snprintf(err, sizeof err, "cannot copy extra '%s'", m.extras[i].path);
                 bad = 1;
@@ -3532,10 +3669,17 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         }
     }
 
+    if (!bad && rename(out_dir, final_out) != 0) {
+        snprintf(err, sizeof err, "cannot finalize package directory '%s'", final_out);
+        bad = 1;
+    }
+
 done:
     musicpack_manifest_clear(&m);
     musicpack_meter_free(album_meter);
     cJSON_Delete(draft);
+    if (bad)
+        rm_rf(out_dir);
 
     if (json) {
         cJSON *root = cJSON_CreateObject();
@@ -3546,7 +3690,7 @@ done:
         } else {
             cJSON *v = cJSON_AddObjectToObject(root, "verify");
             cJSON_AddBoolToObject(root, "ok", 1);
-            cJSON_AddStringToObject(root, "outputPath", out_dir);
+            cJSON_AddStringToObject(root, "outputPath", final_out);
             cJSON_AddNumberToObject(v, "errors", (double) verr);
             cJSON_AddNumberToObject(v, "warnings", (double) vwarn);
             cJSON_AddBoolToObject(root, "sonic", sonic_included ? 1 : 0);
@@ -3564,7 +3708,7 @@ done:
             if (sonic_hint != 0)
                 fprintf(stderr, "build-draft: warning: %s\n", sonic_hint);
             printf("created package '%s' (%zu error(s), %zu warning(s))\n",
-                   out_dir, verr, vwarn);
+                   final_out, verr, vwarn);
         }
     }
     free(sonic_hint);
@@ -4112,12 +4256,14 @@ stage_artwork(cJSON *draft, const char *source_root, const char *art_dir)
             snprintf(src, sizeof src, "%s/%s", source_root, p);
             snprintf(target, sizeof target, "%s/%s%s", art_dir, role,
                      ext != 0 ? ext : ".img");
+            if (!unique_target(target, sizeof target))
+                return 0;
             if (copy_file(src, target) != 0)
                 return 0;
         } else if (sa != 0 && *sa != '\0') {
             snprintf(src, sizeof src, "%s/%s", source_root, sa);
             if (!extract_embedded_image(src, role, art_dir, target, sizeof target))
-                continue; /* referenced but absent: leave for build-draft to report */
+                return 0;
         } else {
             continue;
         }
@@ -4152,9 +4298,11 @@ stage_asset_dir(cJSON *draft, const char *key, const char *prefix,
         base = base != 0 ? base + 1 : p;
         snprintf(src, sizeof src, "%s/%s", source_root, p);
         snprintf(target, sizeof target, "%s/%s", dir, base);
+        if (!unique_target(target, sizeof target))
+            return 0;
         if (copy_file(src, target) != 0)
             return 0;
-        snprintf(rel, sizeof rel, "%s/%s", prefix, base);
+        snprintf(rel, sizeof rel, "%s/%s", prefix, strrchr(target, '/') + 1);
         cJSON_DeleteItemFromObject(it, "path");
         cJSON_AddStringToObject(it, "path", rel);
     }
@@ -4232,6 +4380,18 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
             json_error_out("invalid_draft", "draft has no sourceRoot");
         else
             fprintf(stderr, "encode-draft: draft has no sourceRoot\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+    if (is_dir_path(out_dir) || is_regular_path(out_dir)) {
+        if (json)
+            json_error_out("destination_exists", "staging destination already exists");
+        else
+            fprintf(stderr, "encode-draft: staging destination already exists\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+    if (reject_path_overlap(source_root, out_dir, "encode-draft")) {
         cJSON_Delete(draft);
         return 1;
     }

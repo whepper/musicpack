@@ -17,8 +17,7 @@
 #   - a missing mpcenc fails pre-flight with TOOL_MISSING
 #   - SIGTERM cancels cleanly (exit 130) and removes the staging directory
 #
-# Skipped (exit 0) when ffmpeg is unavailable; mpcenc is taken from $MPCENC,
-# the build tree, or PATH.
+# Requires ffmpeg; mpcenc is taken from $MPCENC, the build tree, or PATH.
 #
 # Usage: tests/run_encode.sh <musicpack-cmd>
 
@@ -31,8 +30,8 @@ PY=python3
 
 FFMPEG="${FFMPEG:-ffmpeg}"
 if ! command -v "$FFMPEG" >/dev/null 2>&1; then
-    echo "SKIP  run_encode.sh: ffmpeg not available"
-    exit 0
+    echo "FAIL  run_encode.sh: ffmpeg not available" >&2
+    exit 1
 fi
 
 MPCENC="${MPCENC:-}"
@@ -45,8 +44,8 @@ if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     fi
 fi
 if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
-    echo "SKIP  run_encode.sh: mpcenc not found (set MPCENC or build build/mpcenc)"
-    exit 0
+    echo "FAIL  run_encode.sh: mpcenc not found (set MPCENC or build build/mpcenc)" >&2
+    exit 1
 fi
 
 FFPROBE="${FFPROBE:-ffprobe}"
@@ -63,6 +62,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 ALBUM="$TMP/album"
 cp -R "$FIXTURE" "$ALBUM"
+shasum -a 256 "$ALBUM"/disc-*/*.flac "$ALBUM"/cover.jpg > "$TMP/source-before.sha"
 
 # 1. inspect the 2-disc fixture
 if "$MUSICPACK" inspect "$ALBUM" --json 2>/dev/null > "$TMP/draft.json" \
@@ -199,13 +199,38 @@ then
 else
     fail "build-draft assembles the package from the staged encode"
 fi
+
+# 3b. build-draft is transactional: never replace an existing destination and
+# does not permit a source/output overlap that could delete source media.
+mkdir -p "$TMP/existing.mpack"
+printf 'keep\n' > "$TMP/existing.mpack/sentinel"
+if ! "$MUSICPACK" build-draft --draft "$TMP/transformed.json" -o "$TMP/existing.mpack" \
+    --json >/dev/null 2>&1; then
+    if [ "$(cat "$TMP/existing.mpack/sentinel")" = keep ]; then
+    pass "build-draft refuses an existing destination without modifying it"
+    else
+        fail "build-draft refuses an existing destination without modifying it"
+    fi
+else
+    fail "build-draft refuses an existing destination without modifying it"
+fi
+if ! "$MUSICPACK" build-draft --draft "$TMP/transformed.json" -o "$STAGE/inside.mpack" \
+    --json >/dev/null 2>&1; then
+    if [ -f "$STAGE/audio/1-01 - Midnight Relay.mpc" ]; then
+    pass "build-draft rejects source/output overlap without deleting source"
+    else
+        fail "build-draft rejects source/output overlap without deleting source"
+    fi
+else
+    fail "build-draft rejects source/output overlap without deleting source"
+fi
 if "$MUSICPACK" verify "$TMP/out.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true'; then
     pass "encoded package passes verify"
 else
     fail "encoded package passes verify"
 fi
 if $PY - "$TMP/out.mpack/manifest.json" <<'EOF'
-import json, sys
+import hashlib, json, sys
 m = json.load(open(sys.argv[1]))
 assert m["release"]["edition"] == "2019 Original", "release preserved"
 assert m["media"][0]["tracks"][0]["sourceAudio"]["codec"] == "flac", "sourceAudio"
@@ -215,12 +240,24 @@ assert m["audio"] if False else True
 paths = [t["audio"]["path"] for me in m["media"] for t in me["tracks"]]
 assert len(set(paths)) == len(paths), "unique audio paths"
 assert any(a["role"] == "front" for a in m["artwork"]), "front artwork"
+root = sys.argv[1].rsplit("/", 1)[0]
+for a in m["artwork"]:
+    data = open(f"{root}/{a['path']}", "rb").read()
+    assert hashlib.sha256(data).hexdigest() == a["sha256"], "artwork hash"
+    assert data.startswith(b"\xff\xd8\xff") or data.startswith(b"\x89PNG\r\n\x1a\n"), \
+        "artwork has JPEG or PNG signature"
 print("ok")
 EOF
 then
     pass "built manifest preserves metadata, sourceAudio and unique audio"
 else
     fail "built manifest preserves metadata, sourceAudio and unique audio"
+fi
+shasum -a 256 "$ALBUM"/disc-*/*.flac "$ALBUM"/cover.jpg > "$TMP/source-after.sha"
+if cmp -s "$TMP/source-before.sha" "$TMP/source-after.sha"; then
+    pass "encode/build leave all source audio and artwork unchanged"
+else
+    fail "encode/build leave all source audio and artwork unchanged"
 fi
 
 # 4. unsupported sample rate fails encode and warns in validation
