@@ -260,7 +260,13 @@ handle_move(mp_library *lib, const char *dir, const musicpack_package *pkg,
     {
         struct stat st;
         /* A duplicate package must not take over an extant package's row. */
-        if (stat(row.path, &st) == 0 && S_ISDIR(st.st_mode))
+        if (stat(row.path, &st) == 0
+#ifdef _WIN32
+            && (st.st_mode & _S_IFDIR) != 0
+#else
+            && S_ISDIR(st.st_mode)
+#endif
+        )
             return 0;
     }
     determine_status(pkg, m, verify, &status, &verify_status,

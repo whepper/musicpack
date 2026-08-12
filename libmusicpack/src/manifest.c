@@ -96,7 +96,7 @@ get_req_int(cJSON *obj, const char *key, int *out, musicpack_status *status)
 
 static int
 get_opt_double(cJSON *obj, const char *key, int *present, double *out,
-               int (*validate)(double), musicpack_status *status)
+               musicpack_status (*validate)(double), musicpack_status *status)
 {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (v == 0) {

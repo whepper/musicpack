@@ -3971,8 +3971,10 @@ done:
 /* Musepack is a fixed-rate subband codec: only 32/37.8/44.1/48 kHz     */
 /* sources can be encoded. FLAC and WAV are the supported MVP sources.  */
 
+#if defined(_WIN32)
+static volatile int g_encode_cancelled = 0;
+#else
 static volatile sig_atomic_t g_encode_cancelled = 0;
-#if !defined(_WIN32)
 static volatile pid_t g_encode_child = 0;
 
 static void
