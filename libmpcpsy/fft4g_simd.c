@@ -18,6 +18,7 @@
  */
 
 #include "mpc_simd.h"
+#include "psy_profile.h"
 
 typedef mpc_f32x4 v4;
 
@@ -451,6 +452,9 @@ void
 rdft4 ( const int n, float* a, int* ip, float* w )
 {
     v4 xi;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     if ( n > 4 ) {
         bitrv2_4  ( n, ip + 2, a );
@@ -462,5 +466,7 @@ rdft4 ( const int n, float* a, int* ip, float* w )
     xi        = mpc_simd_sub (L4(a, 0), L4(a, 1));
     S4(a, 0, mpc_simd_add (L4(a, 0), L4(a, 1)));
     S4(a, 1, xi);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_fft (mpc_psy_profile_now () - profile_start);
+#endif
 }
-

@@ -93,10 +93,14 @@ main(int argc, char **argv)
         fprintf(stderr, "usage: synth_ab <fixture.mpc> [...]\n");
         return 2;
     }
+    if (!mpc_decoder_has_synth_simd()) {
+        fprintf(stderr, "synth_ab: SIMD kernel is not compiled in\n");
+        return 1;
+    }
 
     for (i = 1; i < argc; i++) {
         pcm_t a, b;
-        size_t n, over = 0;
+        size_t n, changed = 0, over = 0;
         float worst = 0.0f;
         size_t worst_at = 0;
 
@@ -105,27 +109,31 @@ main(int argc, char **argv)
 
         n = a.frames < b.frames ? a.frames : b.frames;
         if (a.frames != b.frames) {
-            fprintf(stderr, "WARN %s: frame count differs (%zu vs %zu)\n",
+            fprintf(stderr, "FAIL %s: frame count differs (%zu vs %zu)\n",
                     argv[i], a.frames, b.frames);
+            rc = 1;
         }
         for (size_t j = 0; j < n; j++) {
             float d = fabsf(a.pcm[j] - b.pcm[j]);
-            if (d > TOLERANCE) {
-                over++;
+            if (d > 0.0f) {
+                changed++;
                 if (d > worst) {
                     worst = d;
                     worst_at = j;
                 }
             }
+            if (d > TOLERANCE) {
+                over++;
+            }
         }
 
-        if (over == 0) {
+        if (changed == 0 && a.frames == b.frames) {
             printf("PASS %-28s identical (%zu frames, worst diff 0)\n",
-                   argv[i], n);
-        } else if (worst < TOLERANCE) {
-            printf("PASS %-28s %zu samples <= tolerance (worst %.3g at %zu)\n",
-                   argv[i], over, worst, worst_at);
-        } else {
+                    argv[i], n);
+        } else if (over == 0 && a.frames == b.frames) {
+            printf("PASS %-28s %zu samples differ within tolerance (worst %.3g at %zu)\n",
+                   argv[i], changed, worst, worst_at);
+        } else if (over != 0) {
             printf("FAIL %-28s %zu samples over tolerance (worst %.3g at %zu, "
                    "%.1f LSB)\n", argv[i], over, worst, worst_at,
                    worst * 32768.0);

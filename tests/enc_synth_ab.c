@@ -53,6 +53,11 @@ main ( void )
     mpc_encoder_t enc;
     int f, band, n, bad = 0;
 
+    if ( !mpc_enc_has_simd () ) {
+        fprintf ( stderr, "enc_synth_ab: SIMD kernel is not compiled in\n" );
+        return 1;
+    }
+
     fill_main (&Main);
     // Real init path: builds the coefficient tables and selects the analyser
     // (Klemm() runs inside mpc_encoder_init). mpc_enc_set_impl then forces

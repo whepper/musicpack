@@ -25,6 +25,7 @@
 #include <errno.h>
 
 #include "mpcenc.h"
+#include "psy_profile.h"
 #include <mpc/mpcmath.h>
 #include "../common/fileio.h"
 
@@ -903,6 +904,21 @@ EvalParameters (PsyModel * m, int argc, char** argv, char** InputFile, char** Ou
                 return -1;
             }
         }
+        else if ( 0 == strcmp ( arg, "psy-impl" ) ) {                                    // Phase 3 white-box A/B
+            if ( ++k >= argc ) { stderr_printf ( errmsg, arg ); return -1; }
+            if ( 0 == strcmp ( argv[k], "scalar" ) )
+                mpc_psy_set_impl (MPC_PSY_SCALAR);
+            else if ( 0 == strcmp ( argv[k], "simd" ) ) {
+                if ( !mpc_psy_has_simd () ) {
+                    stderr_printf ( "psychoacoustic SIMD implementation is unavailable\n" );
+                    return -1;
+                }
+                mpc_psy_set_impl (MPC_PSY_SIMD);
+            } else {
+                stderr_printf ( "unknown --psy-impl %s (scalar|simd)\n", argv[k] );
+                return -1;
+            }
+        }
         else if ( 0 == strcmp ( arg, "neveroverwrite") ) {                              // NeverOverWrite
             WriteMode = MODE_NEVER_OVERWRITE;
         }
@@ -1527,6 +1543,9 @@ static FILE * OpenStream(char * OutputName)
 static int
 mainloop ( int argc, char** argv )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_total_start = mpc_psy_profile_now ();
+#endif
     SMRTyp           SMR;                       // contains SMRs for the given frame
     PCMDataTyp       Main;                      // contains PCM data for 1600 samples
     SubbandFloatTyp  X [32];                    // Subbandsamples as float()
@@ -1554,6 +1573,10 @@ mainloop ( int argc, char** argv )
 	m.SCF_Index_R = e.SCF_Index_R;
 
 	Init_Psychoakustik (&m);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_reset ();
+    mpc_psy_profile_set_total_start (profile_total_start);
+#endif
 	Init_FPU ();
 
     // initialize PCM-data
@@ -1779,6 +1802,38 @@ mainloop ( int argc, char** argv )
 	}
 
     ShowProgress (&m, SamplesInWAVE, SamplesInWAVE, e.outputBits );
+
+#ifdef MPC_ENABLE_PSY_PROFILE
+    {
+        const char* profile_path = getenv ("MPC_PSY_PROFILE_OUT");
+        if ( profile_path != NULL && profile_path[0] != '\0' ) {
+            mpc_psy_profile_t p = mpc_psy_profile_get ();
+            FILE* profile_file = fopen (profile_path, "w");
+            if ( profile_file == NULL ) {
+                stderr_printf ( "cannot write psychoacoustic profile '%s'\n", profile_path );
+                return 1;
+            }
+            fprintf (profile_file,
+                     "{\"model_ns\":%llu,\"raise_smr_ns\":%llu,\"ns_analyse_ns\":%llu,"
+                     "\"fft_ns\":%llu,\"spectrum_ns\":%llu,\"spectrum_fft_ns\":%llu,\"model_calls\":%llu,"
+                     "\"raise_smr_calls\":%llu,\"ns_analyse_calls\":%llu,"
+                     "\"fft_calls\":%llu,\"spectrum_calls\":%llu,\"total_cpu_ns\":%llu}\n",
+                     (unsigned long long) p.model_ns,
+                     (unsigned long long) p.raise_smr_ns,
+                     (unsigned long long) p.ns_analyse_ns,
+                     (unsigned long long) p.fft_ns,
+                     (unsigned long long) p.spectrum_ns,
+                     (unsigned long long) p.spectrum_fft_ns,
+                     (unsigned long long) p.model_calls,
+                     (unsigned long long) p.raise_smr_calls,
+                     (unsigned long long) p.ns_analyse_calls,
+                     (unsigned long long) p.fft_calls,
+                     (unsigned long long) p.spectrum_calls,
+                     (unsigned long long) (mpc_psy_profile_now () - p.total_start_ns));
+            fclose (profile_file);
+        }
+    }
+#endif
 
     FinalizeTags ( e.outputFile, APE_Version, 0 );
     fclose ( e.outputFile );

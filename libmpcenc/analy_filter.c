@@ -187,16 +187,26 @@ mpc_enc_select_impl ( void )
 #ifdef MPC_ENABLE_ENC_SIMD_KERNEL
     const int want = (enc_impl_forced == MPC_ENC_SIMD)
                   || (enc_impl_forced == MPC_ENC_AUTO);
-#else
-    const int want = 0;
-#endif
     if ( want ) {
         vectoring_impl = mpc_vectoring_simd;
         matrixing_impl = mpc_matrixing_simd;
-    } else {
+        return;
+    }
+#endif
+    {
         vectoring_impl = Vectoring_scalar;
         matrixing_impl = Matrixing_scalar;
     }
+}
+
+int
+mpc_enc_has_simd ( void )
+{
+#ifdef MPC_ENABLE_ENC_SIMD_KERNEL
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 static void

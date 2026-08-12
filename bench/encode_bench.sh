@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Repeatable encoder benchmark (Phase 2).
+# Repeatable Phase 3 psychoacoustic encoder benchmark.
 #
 # Times the mpcenc CLI (wall clock) for each corpus WAV x quality, for both
-# the scalar and SIMD analyser implementations (--impl scalar|simd), and
+# the scalar and SIMD psychoacoustic implementations (--psy-impl), and
 # reports the realtime multiplier (audio_seconds / encode_wall_seconds) and
 # output size. Records full metadata (commit, compiler/version, arch, CPU,
 # flags) and appends a TSV to bench/results/.
@@ -10,8 +10,8 @@
 # Usage:
 #   encode_bench.sh <corpus-wav-dir> <mpcenc> [--qualities 5,6,7] [--runs N]
 #
-# Output rows: file quality impl audio_s wall_ms realtime_x bytes
-set -u
+# Output rows: file quality psy_impl audio_s median_wall_ms realtime_x bytes
+set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH="$ROOT/bench"
@@ -40,19 +40,20 @@ RESULTS="$RESULTS_DIR/enc-$STAMP.tsv"
   echo "# arch: $(uname -m)"
   echo "# qualities: $QUALITIES"
   echo "# runs: $RUNS"
-  echo "# columns: file quality impl audio_s wall_ms realtime_x bytes"
+  echo "# comparison: analyser=auto, psychoacoustics=scalar|simd"
+  echo "# statistic: median of runs"
+  echo "# columns: file quality psy_impl audio_s median_wall_ms realtime_x bytes speedup_vs_scalar_pct"
 } | tee "$RESULTS"
 
 # One python driver: reads the WAV duration, times each encode (best of RUNS),
 # and emits the TSV rows. Avoids per-call interpreter startup.
 QUALITIES="$QUALITIES" RUNS="$RUNS" MPCENC="$MPCENC" python3 - "$CORPUS" "$RESULTS" <<'PY'
-import os, subprocess, sys, time, wave
+import hashlib, os, statistics, subprocess, sys, tempfile, time, wave
 
 corpus, results = sys.argv[1], sys.argv[2]
 mpcenc = os.environ["MPCENC"]
 quals = [int(q) for q in os.environ["QUALITIES"].split(",")]
 runs = int(os.environ["RUNS"])
-outbase = "/tmp/encbench-%d.mpc"
 
 def dur(w):
     with wave.open(w, "rb") as f:
@@ -65,31 +66,50 @@ for wav in sorted(os.listdir(corpus)):
     w = os.path.join(corpus, wav)
     d = dur(w)
     for q in quals:
+        measurements = {}
+        hashes = {}
+        sizes = {}
         for impl in ("scalar", "simd"):
-            best = None
+            timings = []
             for run in range(runs):
-                out = outbase % run
+                out = os.path.join(tempfile.gettempdir(),
+                                   "encbench-%d-%d-%s-%d.mpc" % (os.getpid(), q, impl, run))
+                try:
+                    os.unlink(out)
+                except FileNotFoundError:
+                    pass
                 t0 = time.perf_counter()
-                subprocess.run([mpcenc, "--silent", "--overwrite", "--impl", impl,
-                                "--quality", str(q), w, out],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                result = subprocess.run([mpcenc, "--silent", "--overwrite", "--psy-impl", impl,
+                                         "--quality", str(q), w, out],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                 ms = (time.perf_counter() - t0) * 1000
-                if best is None or ms < best:
-                    best = ms
-            with open(outbase % 0, "rb") as f:
-                f.seek(0, 2)
-                sz = f.tell()
-            x = d * 1000 / best if best > 0 else 0
-            row = "%s\t%d\t%s\t%.3f\t%.1f\t%.1f\t%d" % (wav, q, impl, d, best, x, sz)
+                if result.returncode != 0:
+                    raise SystemExit("encode failed (%s q%d %s): %s" %
+                                     (wav, q, impl, result.stderr.strip()))
+                if not os.path.isfile(out) or os.path.getsize(out) == 0:
+                    raise SystemExit("encode produced no output (%s q%d %s)" % (wav, q, impl))
+                with open(out, "rb") as f:
+                    data = f.read()
+                digest = hashlib.sha256(data).hexdigest()
+                if impl in hashes and digest != hashes[impl]:
+                    raise SystemExit("non-deterministic output (%s q%d %s)" % (wav, q, impl))
+                hashes[impl] = digest
+                sizes[impl] = len(data)
+                timings.append(ms)
+                os.unlink(out)
+            measurements[impl] = statistics.median(timings)
+        if hashes["scalar"] != hashes["simd"]:
+            raise SystemExit("psy scalar/SIMD output differs (%s q%d)" % (wav, q))
+        scalar_ms = measurements["scalar"]
+        for impl in ("scalar", "simd"):
+            median_ms = measurements[impl]
+            x = d * 1000 / median_ms if median_ms > 0 else 0
+            speedup = 0.0 if impl == "scalar" else (scalar_ms / median_ms - 1.0) * 100.0
+            row = "%s\t%d\t%s\t%.3f\t%.1f\t%.1f\t%d\t%.2f" % (wav, q, impl, d, median_ms, x, sizes[impl], speedup)
             rows.append(row)
             print(row, flush=True)
 
 with open(results, "a") as f:
     f.write("\n".join(rows) + "\n")
-for run in range(runs):
-    try:
-        os.unlink(outbase % run)
-    except OSError:
-        pass
 PY
 echo "results appended to $RESULTS"

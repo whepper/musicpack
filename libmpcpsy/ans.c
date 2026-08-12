@@ -32,6 +32,7 @@
 
 #include "libmpcpsy.h"
 #include <mpc/mpcmath.h>
+#include "psy_profile.h"
 
 
 static float  InvFourier [MAX_NS_ORDER + 1] [16];
@@ -279,6 +280,9 @@ NS_Analyse ( PsyModel* m,
              const SMRTyp          smr,
              const int*            Transient )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     // for L or M, respectively
     memset ( m->FIR_L,      0, sizeof m->FIR_L      );         // reset FIR
@@ -290,6 +294,9 @@ NS_Analyse ( PsyModel* m,
 	memset ( m->NS_Order_R, 0, sizeof m->NS_Order_R );         // reset Flags
 	FindOptimalANS ( MaxBand, MSflag, m->state.ANSspec_R, m->state.ANSspec_S, m->NS_Order_R, m->SNR_comp_R, m->FIR_R, smr.R, smr.S, m->SCF_Index_R, Transient );
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_ns_analyse (mpc_psy_profile_now () - profile_start);
+#endif
     return;
 }
 

@@ -66,6 +66,15 @@ else
     fail "mpcdec -c"
 fi
 
+# Psychoacoustic scalar/SIMD selector must preserve the complete bitstream.
+if "$MPCENC" --silent --overwrite --psy-impl scalar --quality 6 "$SRC" "$TMP/psy-scalar.mpc" >/dev/null 2>&1 &&
+   "$MPCENC" --silent --overwrite --psy-impl simd --quality 6 "$SRC" "$TMP/psy-simd.mpc" >/dev/null 2>&1 &&
+   cmp -s "$TMP/psy-scalar.mpc" "$TMP/psy-simd.mpc"; then
+    pass "psy scalar/SIMD bitstream identity"
+else
+    fail "psy scalar/SIMD bitstream identity"
+fi
+
 # 3. Info
 if "$MPCDEC" -i "$OUT" 2>&1 | grep -q "stream version 8"; then
     pass "mpcdec -i"

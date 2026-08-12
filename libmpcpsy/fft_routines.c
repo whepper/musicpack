@@ -22,6 +22,7 @@
 
 #include "libmpcpsy.h"
 #include <mpc/mpcmath.h>
+#include "psy_profile.h"
 
 #define CX0     -1.
 #define CX1      0.5
@@ -81,6 +82,7 @@ float  a  [4096];   // holds real input for FFT (shared with the SIMD kernels)
 float  Hann_256  [ 256];
 float  Hann_1024 [1024];
 float  Hann_1600 [1600];
+extern float partLtq [PART_LONG];
 
 void   Generate_FFT_Tables ( const int, int*, float* );
 void   rdft                ( const int, float*, int*, float* );
@@ -344,39 +346,85 @@ mpc_psy_set_impl ( int impl )
     polarspec1024_2_impl = PolarSpec1024_2_scalar;
 }
 
+int
+mpc_psy_has_simd ( void )
+{
+#ifdef MPC_ENABLE_PSY_SIMD_KERNEL
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 void
 PowSpec256_4 ( const float* x0, const float* x1, const float* x2, const float* x3,
                float* e0, float* e1, float* e2, float* e3 )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+    mpc_psy_profile_spectrum_enter ();
+#endif
     powspec256_4_impl (x0, x1, x2, x3, e0, e1, e2, e3);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_spectrum_leave (mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 void
 PowSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1 )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+    mpc_psy_profile_spectrum_enter ();
+#endif
     powspec1024_2_impl (x0, x1, e0, e1);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_spectrum_leave (mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 void
 PowSpec2048_2 ( const float* x0, const float* x1, float* e0, float* e1 )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+    mpc_psy_profile_spectrum_enter ();
+#endif
     powspec2048_2_impl (x0, x1, e0, e1);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_spectrum_leave (mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 void
 PolarSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+    mpc_psy_profile_spectrum_enter ();
+#endif
     polarspec1024_2_impl (x0, x1, e0, e1, p0, p1);
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_spectrum_leave (mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 void
 mpc_psy_reset_state ( PsyModel* m )
 {
+    int i;
+
     // Restore every mutable value that can influence later psychoacoustic
     // output: temporal-masking integrators, FFT history, transient/preecho
     // state, vocal/cepstrum state and loudness tracking. Immutable config and
     // tables are untouched.
     memset ( &m->state, 0, sizeof m->state );
+    for ( i = 0; i < PART_LONG; i++ ) {
+        m->state.PreThr_L[i] = m->state.PreThr_R[i] = partLtq[i];
+        m->state.tmp_Mask_L[i] = m->state.tmp_Mask_R[i] = partLtq[i];
+        m->state.pre_erg_L[0][i / 3] = m->state.pre_erg_R[0][i / 3] = partLtq[i];
+        m->state.pre_erg_L[1][i / 3] = m->state.pre_erg_R[1][i / 3] = partLtq[i];
+    }
 }
 
 void

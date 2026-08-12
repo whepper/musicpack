@@ -133,6 +133,15 @@ void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl)
 	}
 }
 
+int mpc_decoder_has_synth_simd(void)
+{
+#ifdef MPC_ENABLE_SIMD_KERNEL
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 void mpc_decoder_set_streaminfo(mpc_decoder *d, mpc_streaminfo *si)
 {
 	d->stream_version     = si->stream_version;
@@ -710,4 +719,3 @@ void mpc_decoder_read_bitstream_sv8(mpc_decoder * d, mpc_bits_reader * r, mpc_bo
 		} while (q == d->Q[n].L && (q = d->Q[n].R));
 	}
 }
-

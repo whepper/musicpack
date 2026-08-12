@@ -24,3 +24,11 @@ add_test(NAME bench
          COMMAND ${CMAKE_COMMAND} -E echo
                  "bench: use bench/run_bench.sh with $<TARGET_FILE:mpc_bench>")
 set_tests_properties(bench PROPERTIES RUN_SERIAL TRUE)
+
+add_executable(mpc_psy_fft_bench psy_fft_bench.c)
+set_target_properties(mpc_psy_fft_bench PROPERTIES OUTPUT_NAME psy_fft_bench)
+target_link_libraries(mpc_psy_fft_bench PRIVATE mpcpsy)
+target_include_directories(mpc_psy_fft_bench PRIVATE ${PROJECT_SOURCE_DIR}/libmpcpsy)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_psy_fft_bench PRIVATE m)
+endif()

@@ -1,4 +1,4 @@
-# Decoder benchmarks
+# Codec benchmarks
 
 Repeatable measurements for the libmusepack decoder, used by the SIMD
 optimization milestone. Every number in the milestone report is reproducible
@@ -12,6 +12,9 @@ with the commands below.
 | `make_corpus.sh`  | generate WAV corpus + encode to SV8 `.mpc`           |
 | `run_bench.sh`    | run native bench, record metadata + results CSV      |
 | `wasm_bench.mjs`  | Node WASM benchmark (block-size A/B)                 |
+| `encode_bench.sh` | end-to-end scalar/SIMD psychoacoustic encoder A/B    |
+| `psy_fft_bench.c` | isolated scalar/SIMD spectrum/FFT production mix     |
+| `profile_psy.py`  | q5/q6/q7 libmpcpsy CPU-share evidence collector      |
 | `results/`        | timestamped TSV records (gitignored)                 |
 
 ## Build
@@ -24,7 +27,43 @@ cmake --build build -j --target mpc_bench
 ```
 
 A `Release`/`-O3` build type is required for meaningful numbers; the repo
-default CI configure does not set one (Linux/macOS would build unoptimized).
+CI and benchmark workflows configure this explicitly.
+
+## Phase 3 psychoacoustic benchmarks
+
+`mpcenc --psy-impl scalar|simd` selects only psychoacoustic spectrum/FFT
+dispatch. The analyser remains AUTO in both arms. SIMD selection fails when
+the optimized kernels are unavailable.
+
+```sh
+python3 tests/generate_encoder_corpus.py /tmp/enc-corpus
+bench/encode_bench.sh /tmp/enc-corpus build/mpcenc/mpcenc 5,6,7 5
+MPC_PSY_FFT_BENCH="$PWD/build/bench/psy_fft_bench" bench/run_psy_fft_bench.sh 1000
+```
+
+The encoder benchmark checks every process result and requires scalar/SIMD
+MPC output bytes to match before reporting median wall time and realtime-x.
+The kernel benchmark measures the production q5/q6/q7 mix plus each retained
+batch kernel separately.
+
+For CPU-share evidence, configure the opt-in counters. They are not present
+in normal builds:
+
+```sh
+cmake -S . -B build-profile -DCMAKE_BUILD_TYPE=Release \
+  -DMPC_ENABLE_PSY_PROFILE=ON -DMPC_BUILD_TESTS=ON \
+  -DMPC_BUILD_MPCGAIN=OFF -DMPC_BUILD_MPCCHAP=OFF
+cmake --build build-profile -j --target mpcenc
+python3 bench/profile_psy.py --mpcenc build-profile/mpcenc/mpcenc \
+  --input /tmp/enc-corpus/long_60s_44100.wav --impl scalar \
+  --qualities 5,6,7 --warmup 1 --runs 5 \
+  --output bench/results/psy-profile.json
+```
+
+The reported categories use process CPU time: FFT is time in `rdft`/`rdft4`;
+PowSpec/windowing is spectrum-dispatch time minus nested FFT; total psy is
+`Psychoakustisches_Modell + RaiseSMR + NS_Analyse`; other psy is the
+remainder. Native sampling is retained separately for libm attribution.
 
 ## Corpus
 

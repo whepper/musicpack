@@ -65,7 +65,11 @@ if [ -n "$REF_MPCENC" ]; then
         [ -e "$wav" ] || continue
         name="$(basename "$wav")"
         for q in $QUALITIES; do
-            "$REF_MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/ref.mpc" >/dev/null 2>&1
+            rm -f "$TMP/ref.mpc"
+            if ! "$REF_MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/ref.mpc" >/dev/null 2>&1; then
+                echo "ERROR: reference encode failed for $name q=$q" >&2
+                exit 1
+            fi
             echo "$name $q $(sha256 "$TMP/ref.mpc")" >> "$EXPECTED"
         done
     done
@@ -80,11 +84,13 @@ for wav in "$CORPUS_DIR"/*.wav; do
     [ -e "$wav" ] || continue
     name="$(basename "$wav")"
     for q in $QUALITIES; do
+        TOTAL=$((TOTAL + 1))
         expected="$(awk -v n="$name" -v qq="$q" '$1==n && $2==qq {print $3; exit}' "$EXPECTED")"
         if [ -z "$expected" ]; then
+            echo "FAIL  $name q=$q (missing reference hash)"
+            FAILED=$((FAILED + 1))
             continue
         fi
-        TOTAL=$((TOTAL + 1))
         "$MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/out.mpc" >/dev/null 2>&1
         if [ $? -ne 0 ]; then
             echo "FAIL  $name q=$q (encode returned non-zero)"
@@ -103,4 +109,4 @@ done
 
 echo
 echo "== $((TOTAL - FAILED))/$TOTAL outputs match the reference encoder =="
-[ "$FAILED" -eq 0 ]
+[ "$TOTAL" -gt 0 ] && [ "$FAILED" -eq 0 ]

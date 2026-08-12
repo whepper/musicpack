@@ -5,6 +5,7 @@ add_library(mpcpsy STATIC
     fft_routines.c
     profile.c
     psy.c
+    psy_profile.c
     psy_tab.c
     ${PROJECT_SOURCE_DIR}/common/fastmath.c)
 
@@ -30,6 +31,9 @@ target_link_libraries(mpcpsy PUBLIC mpc_headers)
 # Optimized math tables + CVD fast log. Must stay consistent with mpcenc,
 # which also uses the FAST_MATH path.
 target_compile_definitions(mpcpsy PUBLIC FAST_MATH CVD_FASTLOG)
+if(MPC_ENABLE_PSY_PROFILE)
+  target_compile_definitions(mpcpsy PUBLIC MPC_ENABLE_PSY_PROFILE)
+endif()
 
 # Bit-exact encoder: disable FP contraction (see CMakeLists.txt helper).
 mpc_pin_encoder_fp(mpcpsy)

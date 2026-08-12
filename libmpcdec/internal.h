@@ -107,6 +107,7 @@ enum {
     MPC_SYNTH_SIMD   = 2, ///< force the SIMD path (no-op if not compiled in)
 };
 void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
+int mpc_decoder_has_synth_simd(void);
 
 #define MPC_IS_FAILURE(X) ((int)(X) < (int)MPC_STATUS_OK)
 #define MPC_AUTO_FAIL(X) { mpc_status s = (X); if (MPC_IS_FAILURE(s)) return s; }

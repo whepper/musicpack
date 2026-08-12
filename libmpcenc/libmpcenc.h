@@ -47,6 +47,7 @@ enum {
 
 void mpc_enc_set_impl ( int impl );
 void mpc_enc_select_impl ( void );
+int mpc_enc_has_simd ( void );
 void mpc_enc_reset_filter ( void );
 
 // Analysis filterbank (analyz_filter.c).
@@ -148,5 +149,4 @@ typedef struct {
  unsigned int encodeSize(mpc_uint64_t, char *, mpc_bool_t);
  void encodeEnum(mpc_encoder_t * e, const mpc_uint32_t bits, const mpc_uint_t N);
  void encodeLog(mpc_encoder_t * e, mpc_uint32_t value, mpc_uint32_t max);
-
 

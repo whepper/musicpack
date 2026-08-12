@@ -137,6 +137,7 @@ enum {
 };
 
 void mpc_psy_set_impl ( int impl );
+int mpc_psy_has_simd ( void );
 void mpc_psy_reset_state ( PsyModel* m );
 
 // Spectrum/FFT kernels (fft_routines.c; dispatchers for the psy A/B).
@@ -170,4 +171,3 @@ void mpc_powspec2048_2_simd  ( const float* x0, const float* x1, float* e0, floa
 void mpc_polarspec1024_2_simd ( const float* x0, const float* x1,
                                 float* e0, float* e1, float* p0, float* p1 );
 #endif
-

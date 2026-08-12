@@ -115,8 +115,8 @@ python3 tests/generate_corpus.py /tmp/corpus
 it keeps only the encoder subdirs (`libmpcpsy`/`libmpcenc`/`mpcenc`/`include`),
 because `mpcgain`/`mpcchap` hard-fail without libreplaygain/libcuefile and
 `mpcdec`/`mpc2sv8`/`mpccut` declare duplicate `add_executable` targets under
-MSVC. It also rewrites the reference's hardcoded `-O3` CFLAGS to `-O0`
-(matching the default CI build) and adds `-Wno-error=incompatible-pointer-types`
+MSVC. It keeps the reference's hardcoded `-O3` optimization (matching the
+Unix Release CI build) and adds `-Wno-error=incompatible-pointer-types`
 for GCC 14+. For MSVC it applies two source fixes the modernized tree also
 made: renames the `log2`/`log2_lost` tables in `libmpcenc/bitstream.c` to
 `mpc_log2`/`mpc_log2_lost` (collides with C99 `log2()`) and removes the

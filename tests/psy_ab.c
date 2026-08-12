@@ -84,8 +84,14 @@ main ( void )
     float ph_a[512], ph_b[512];
     float x[2048];
     static SMRTyp Sm_a[FRAMES], Sm_b[FRAMES];
-    int trans_a[PART_SHORT], trans_b[PART_SHORT];
-    int f, i;
+    static int trans_a[FRAMES][2][PART_SHORT];
+    static int trans_b[FRAMES][2][PART_SHORT];
+    int f, i, q;
+
+    if ( !mpc_psy_has_simd () ) {
+        fprintf ( stderr, "psy_ab: SIMD kernels are not compiled in\n" );
+        return 1;
+    }
 
     // Deterministic input. NOTE: a pure sine-mix can produce FFT bins whose
     // real part is ~0, making fastmath my_atan2's table index go out of
@@ -134,6 +140,7 @@ main ( void )
         static float w4a[4][128], w4b[4][128];
         static float p2a[2][512],  p2b[2][512];
         static float p4a[2][1024], p4b[2][1024];
+        static float pea[2][512],  peb[2][512];
         static float poa[2][512],  pob[2][512];
         int l;
 
@@ -141,21 +148,25 @@ main ( void )
         PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
         PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
         PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
-        PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
+        PolarSpec1024_2 (x, x + 576, pea[0], pea[1], poa[0], poa[1]);
         mpc_psy_set_impl (MPC_PSY_SIMD);
         PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
         PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
         PowSpec2048_2 (x, x,       p4b[0], p4b[1]);
-        PolarSpec1024_2 (x, x + 576, p2b[0], p2b[1], pob[0], pob[1]);
+        PolarSpec1024_2 (x, x + 576, peb[0], peb[1], pob[0], pob[1]);
 
         for ( l = 0; l < 4 && !failures; l++ )
             for ( i = 0; i < 128 && !failures; i++ )
                 if ( !same_bits (w4a[l][i], w4b[l][i]) ) report_div ("PowSpec256_4", l * 128 + i, w4a[l][i], w4b[l][i]);
-        for ( i = 0; i < 512 && !failures; i++ ) {
-            if ( !same_bits (p2a[0][i], p2b[0][i]) ) report_div ("PowSpec1024_2", i, p2a[0][i], p2b[0][i]);
-            if ( !same_bits (p4a[0][i], p4b[0][i]) ) report_div ("PowSpec2048_2", i, p4a[0][i], p4b[0][i]);
-            if ( !same_bits (poa[0][i], pob[0][i]) ) report_div ("PolarSpec1024_2.p", i, poa[0][i], pob[0][i]);
-        }
+        for ( l = 0; l < 2 && !failures; l++ )
+            for ( i = 0; i < 512 && !failures; i++ ) {
+                if ( !same_bits (p2a[l][i], p2b[l][i]) ) report_div ("PowSpec1024_2", l * 512 + i, p2a[l][i], p2b[l][i]);
+                if ( !same_bits (pea[l][i], peb[l][i]) ) report_div ("PolarSpec1024_2.e", l * 512 + i, pea[l][i], peb[l][i]);
+                if ( !same_bits (poa[l][i], pob[l][i]) ) report_div ("PolarSpec1024_2.p", l * 512 + i, poa[l][i], pob[l][i]);
+            }
+        for ( l = 0; l < 2 && !failures; l++ )
+            for ( i = 0; i < 1024 && !failures; i++ )
+                if ( !same_bits (p4a[l][i], p4b[l][i]) ) report_div ("PowSpec2048_2", l * 1024 + i, p4a[l][i], p4b[l][i]);
     }
 
     if ( failures ) {
@@ -164,33 +175,61 @@ main ( void )
     }
     printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
-    // ---- model level (evolving state) ------------------------------------
-    mpc_psy_set_impl (MPC_PSY_SCALAR);
-    mpc_psy_reset_state (&m);
-    for ( f = 0; f < FRAMES; f++ ) {
+    // ---- model level (evolving state, q5/q6/q7) ---------------------------
+    for ( q = 5; q <= 7 && !failures; q++ ) {
+        PsyModel initial;
+
+        memset ( &m, 0, sizeof m );
+        SetQualityParams (&m, (float) q);
+        Init_Psychoakustik (&m);
+        m.SampleFreq = 44100.f;
+        SetQualityParams (&m, (float) q);
+        Init_Psychoakustiktabellen (&m);
+        m.Max_Band = 31;
+        initial = m;
+
+        mpc_psy_set_impl (MPC_PSY_SCALAR);
+        m = initial;
         memset ( trans_a, 0, sizeof trans_a );
-        Sm_a[f] = Psychoakustisches_Modell (&m, 31, &Main, trans_a, trans_a);
-    }
+        for ( f = 0; f < FRAMES; f++ )
+            Sm_a[f] = Psychoakustisches_Modell (&m, 31, &Main,
+                                                trans_a[f][0], trans_a[f][1]);
 
-    mpc_psy_set_impl (MPC_PSY_SIMD);
-    mpc_psy_reset_state (&m);
-    for ( f = 0; f < FRAMES; f++ ) {
+        mpc_psy_set_impl (MPC_PSY_SIMD);
+        m = initial;
         memset ( trans_b, 0, sizeof trans_b );
-        Sm_b[f] = Psychoakustisches_Modell (&m, 31, &Main, trans_b, trans_b);
-    }
+        for ( f = 0; f < FRAMES; f++ )
+            Sm_b[f] = Psychoakustisches_Modell (&m, 31, &Main,
+                                                trans_b[f][0], trans_b[f][1]);
 
-    for ( f = 0; f < FRAMES && !failures; f++ ) {
-        for ( i = 0; i < 32; i++ ) {
-            if ( !same_bits (Sm_a[f].L[i], Sm_b[f].L[i]) ) { report_div ("SMR.L", f*32+i, Sm_a[f].L[i], Sm_b[f].L[i]); break; }
-            if ( !same_bits (Sm_a[f].R[i], Sm_b[f].R[i]) ) { report_div ("SMR.R", f*32+i, Sm_a[f].R[i], Sm_b[f].R[i]); break; }
+        for ( f = 0; f < FRAMES && !failures; f++ ) {
+            const float* channels_a[] = { Sm_a[f].L, Sm_a[f].R, Sm_a[f].M, Sm_a[f].S };
+            const float* channels_b[] = { Sm_b[f].L, Sm_b[f].R, Sm_b[f].M, Sm_b[f].S };
+            const char* names[] = { "SMR.L", "SMR.R", "SMR.M", "SMR.S" };
+            int channel;
+
+            for ( channel = 0; channel < 4 && !failures; channel++ )
+                for ( i = 0; i < 32; i++ )
+                    if ( !same_bits (channels_a[channel][i], channels_b[channel][i]) ) {
+                        report_div (names[channel], (q - 5) * FRAMES * 32 + f * 32 + i,
+                                    channels_a[channel][i], channels_b[channel][i]);
+                        break;
+                    }
+            for ( channel = 0; channel < 2 && !failures; channel++ )
+                for ( i = 0; i < PART_SHORT; i++ )
+                    if ( trans_a[f][channel][i] != trans_b[f][channel][i] ) {
+                        report_div (channel == 0 ? "Transient.L" : "Transient.R",
+                                    (q - 5) * FRAMES * PART_SHORT + f * PART_SHORT + i,
+                                    (float) trans_a[f][channel][i], (float) trans_b[f][channel][i]);
+                        break;
+                    }
         }
-        if ( trans_a[0] != trans_b[0] ) { report_div ("Transient", f, (float)trans_a[0], (float)trans_b[0]); break; }
     }
 
     if ( failures ) {
         printf ( "psy_ab: model-level divergence\n" );
         return 1;
     }
-    printf ( "psy_ab: model level bit-identical (%d frames, SMR + transients)\n", FRAMES );
+    printf ( "psy_ab: model level bit-identical (q5/q6/q7, %d frames, L/R/M/S SMR + transients)\n", FRAMES );
     return 0;
 }

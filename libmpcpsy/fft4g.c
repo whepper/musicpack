@@ -20,6 +20,7 @@
 
 #include "libmpcpsy.h"
 #include <mpc/mpcmath.h>
+#include "psy_profile.h"
 
 /* F U N C T I O N S */
 static          void  makewt       ( const int nw, int* ip, float* w );
@@ -474,6 +475,9 @@ void
 rdft ( const int n, float* a, int* ip, float* w )
 {
     float  xi;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     if ( n > 4) {
         bitrv2  ( n, ip + 2, a );
@@ -486,6 +490,9 @@ rdft ( const int n, float* a, int* ip, float* w )
     xi    = a[0] - a[1];
     a[0] += a[1];
     a[1]  = xi;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_fft (mpc_psy_profile_now () - profile_start);
+#endif
     return;
 }
 

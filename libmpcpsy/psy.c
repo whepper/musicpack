@@ -58,6 +58,7 @@ CVS+
 #include <mpc/datatypes.h>
 #include <mpc/minimax.h>
 #include <mpc/mpcmath.h>
+#include "psy_profile.h"
 
 // psy_tab.c
 extern const float  iw        [PART_LONG];      // inverse partition-width for long
@@ -178,12 +179,18 @@ RaiseSMR_Signal ( const int MaxBand, float* signal, float tmp )
 void RaiseSMR (PsyModel* m, const int MaxBand, SMRTyp* smr )
 {
     float  tmp = POW10 ( 0.1 * m->minSMR );
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     RaiseSMR_Signal ( MaxBand, smr->L, tmp );
     RaiseSMR_Signal ( MaxBand, smr->R, tmp );
     RaiseSMR_Signal ( MaxBand, smr->M, tmp );
     RaiseSMR_Signal ( MaxBand, smr->S, 0.5 * tmp );
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_raise_smr (mpc_psy_profile_now () - profile_start);
+#endif
     return;
 }
 
@@ -931,6 +938,9 @@ Psychoakustisches_Modell ( PsyModel* m,
 						   int* TransientL,
 						   int* TransientR )
 {
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
     float      Xi_L[32],     Xi_R[32];                          // acoustic pressure per Subband L/R
     float      Xi_M[32],     Xi_S[32];                          // acoustic pressure per Subband M/S
     float     cw_L[512],    cw_R[512];                          // unpredictability (only L/R)
@@ -1231,5 +1241,8 @@ Psychoakustisches_Modell ( PsyModel* m,
         SMR0.M[n] = maxf ( SMR0.M[n], SMR1.M[n] );
         SMR0.S[n] = maxf ( SMR0.S[n], SMR1.S[n] );
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_model (mpc_psy_profile_now () - profile_start);
+#endif
     return SMR0;
 }
