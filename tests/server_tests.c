@@ -1027,11 +1027,13 @@ test_scan_fail_closed(void)
     snprintf(lib, sizeof lib, "%s/deeplib", g_tmpdir);
     snprintf(dbpath, sizeof dbpath, "%s/deep.db", g_tmpdir);
     make_dir(lib);
-    /* Create a directory tree deeper than MAX_SCAN_DEPTH (64). */
+    /* Create a directory tree deeper than MAX_SCAN_DEPTH (64). Each level
+       uses a single-character name so the total path stays under Windows'
+       MAX_PATH limit (which otherwise truncates d0/d1/... style trees). */
     snprintf(deep, sizeof deep, "%s", lib);
     for (i = 0; i < 70; i++) {
         char next[4200];
-        snprintf(next, sizeof next, "%s/d%d", deep, i);
+        snprintf(next, sizeof next, "%s/d", deep);
         make_dir(next);
         snprintf(deep, sizeof deep, "%s", next);
     }
