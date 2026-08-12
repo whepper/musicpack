@@ -104,10 +104,14 @@ main ( void )
 
     // ---- kernel level ----------------------------------------------------
     mpc_psy_set_impl (MPC_PSY_SCALAR);
+    fprintf (stderr, "c0\n");
     check_kernel ("PowSpec256",   x, PowSpec256,  PowSpec256,  F_a, F_b, 128);
+    fprintf (stderr, "c1\n");
     check_kernel ("PowSpec1024",  x, PowSpec1024, PowSpec1024, F_a, F_b, 512);
+    fprintf (stderr, "c2\n");
     check_kernel ("PowSpec2048",  x, PowSpec2048, PowSpec2048, F_a, F_b, 1024);
     // PolarSpec1024 (3-arg): compare erg and phs separately.
+    fprintf (stderr, "c3\n");
     mpc_psy_set_impl (MPC_PSY_SCALAR); PolarSpec1024 (x, F_a, ph_a);
     mpc_psy_set_impl (MPC_PSY_SIMD);   PolarSpec1024 (x, F_b, ph_b);
     for ( i = 0; i < 512; i++ )
@@ -115,6 +119,7 @@ main ( void )
     for ( i = 0; i < 512; i++ )
         if ( !same_bits (ph_a[i], ph_b[i]) ) { report_div ("PolarSpec1024.phs", i, ph_a[i], ph_b[i]); break; }
 
+    fprintf (stderr, "c4\n");
     // ---- batch level (lane-parallel FFT) ---------------------------------
     {
         static float w4a[4][128], w4b[4][128];
@@ -123,11 +128,13 @@ main ( void )
         static float poa[2][512],  pob[2][512];
         int l;
 
+        fprintf (stderr, "c5\n");
         mpc_psy_set_impl (MPC_PSY_SCALAR);
             PowSpec256_4 (x, x + 576, x, x + 576, w4a[0], w4a[1], w4a[2], w4a[3]);
             PowSpec1024_2 (x, x + 576, p2a[0], p2a[1]);
             PowSpec2048_2 (x, x,       p4a[0], p4a[1]);
             PolarSpec1024_2 (x, x + 576, p2a[0], p2a[1], poa[0], poa[1]);
+            fprintf (stderr, "c6\n");
             mpc_psy_set_impl (MPC_PSY_SIMD);
                 PowSpec256_4 (x, x + 576, x, x + 576, w4b[0], w4b[1], w4b[2], w4b[3]);
             PowSpec1024_2 (x, x + 576, p2b[0], p2b[1]);
@@ -150,6 +157,8 @@ main ( void )
     }
     printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
 
+    fprintf (stderr, "c7\n");
+    fprintf (stderr, "c7\n");
     // ---- model level (evolving state) ------------------------------------
     memset ( &m, 0, sizeof m );
     SetQualityParams (&m, 6.0f);        // q6 profile
