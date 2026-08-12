@@ -62,13 +62,13 @@ multi-config generators.
 
 ## Hosted validation
 
-The finalized workflow behavior was validated at commit
-`f174dfb0106a1728b3feb1495aa43ac837c5175e`.
+The configuration enforcement and complete benchmark provenance were validated
+at commit `a69b08cabef3e748e4d82e897047649da8adb31c`.
 
 | Workflow | Run | Result |
 |---|---|---|
-| CI | [31596589613](https://github.com/whepper/musicpack/actions/runs/31596589613) | PASS: Linux GCC/Clang, macOS ARM64 Apple Clang, Windows x64 MSVC, Linux SIMD-off, and Wasm/Node |
-| Benchmark | [31596605459](https://github.com/whepper/musicpack/actions/runs/31596605459) | PASS: native x86-64 plus scalar/autovec/explicit-SIMD Wasm measurements and artifacts |
+| CI | [31602163181](https://github.com/whepper/musicpack/actions/runs/31602163181) | PASS: Linux GCC/Clang, macOS ARM64 Apple Clang, Windows x64 MSVC, Linux SIMD-off, and Wasm/Node |
+| Benchmark | [31602163199](https://github.com/whepper/musicpack/actions/runs/31602163199) | PASS: native x86-64 plus scalar/autovec/explicit-SIMD Wasm measurements and artifacts |
 
 All native jobs logged the claimed platform/compiler/configuration and ran
 `synth_ab`, `enc_ab`, `psy_ab`, and live `enc_compat`. The scalar-only job
