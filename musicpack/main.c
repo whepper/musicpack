@@ -56,7 +56,10 @@
 # define PCLOSE _pclose
 #else
 # include <dirent.h>
+# include <signal.h>
 # include <sys/stat.h>
+# include <sys/wait.h>
+# include <unistd.h>
 # define mkdir_p_one(p) mkdir(p, 0755)
 # define POPEN popen
 # define POPEN_MODE "r"  /* POSIX popen only accepts "r"/"w"; "rb" fails on macOS */
@@ -68,8 +71,8 @@
 /* Version of the JSON authoring surface consumed by MusicPack Author. The
    GUI refuses to talk to a backend whose authorApi does not match, so the
    CLI and the GUI can evolve independently without coupling to exact patch
-   versions. */
-#define MUSICPACK_AUTHOR_API 1
+   versions. Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage). */
+#define MUSICPACK_AUTHOR_API 2
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
@@ -1627,23 +1630,30 @@ probe_stream(const char *path, mpc_stream_info *out)
         if (out->codec[0] == '\0')
             snprintf(out->codec, sizeof out->codec, "musepack");
     } else if (dot != 0 && strcmp(dot, ".flac") == 0) {
-        /* minimal STREAMINFO parse (first metadata block, 34 bytes) */
+        /* minimal STREAMINFO parse (first metadata block, 34 bytes). The
+           block header occupies bytes 4..7; the STREAMINFO body starts at
+           byte 8: min/max block size (16+16), min/max frame size (24+24),
+           sample rate (20), channels-1 (3), bits per sample-1 (5), total
+           samples (36), then the MD5. */
         unsigned char h[42];
         FILE *f = fopen(path, "rb");
         if (f != 0) {
             size_t got = fread(h, 1, sizeof h, f);
             fclose(f);
             if (got >= 42 && memcmp(h, "fLaC", 4) == 0 && (h[4] & 0x7f) == 0) {
-                long rate = ((long) h[10] << 12) | ((long) h[11] << 4) | (h[12] >> 4);
-                long ch = ((h[12] & 0x0e) >> 1) + 1;
-                uint64_t samples = ((uint64_t) (h[13] & 0x0f) << 32) |
-                                   ((uint64_t) h[14] << 24) |
-                                   ((uint64_t) h[15] << 16) |
-                                   ((uint64_t) h[16] << 8) | h[17];
+                long rate = ((long) h[18] << 12) | ((long) h[19] << 4) | (h[20] >> 4);
+                long ch = ((h[20] & 0x0e) >> 1) + 1;
+                long bits = ((h[20] & 0x01) << 4) | (h[21] >> 4);
+                bits += 1;
+                uint64_t samples = ((uint64_t) (h[21] & 0x0f) << 32) |
+                                   ((uint64_t) h[22] << 24) |
+                                   ((uint64_t) h[23] << 16) |
+                                   ((uint64_t) h[24] << 8) | h[25];
                 snprintf(out->codec, sizeof out->codec, "flac");
                 if (rate > 0) {
                     out->sample_rate = rate;
                     out->channels = ch;
+                    out->bits = bits;
                     out->duration = (double) samples / (double) rate;
                 }
             }
@@ -2567,6 +2577,39 @@ draft_validate(cJSON *draft, char ***errors, size_t *ecount,
                         ok = 0;
                     }
                 }
+                /* encodability hints (warnings only; the .mpack spec does not
+                   require a codec, so these never block a build) */
+                {
+                    const char *cd = djstr(tr, "codec");
+                    const char *dot = strrchr(ap != 0 ? ap : "", '.');
+                    const char *ext = dot != 0 ? dot : cd;
+                    int is_mpc = (dot != 0 && strcmp(dot, ".mpc") == 0) ||
+                                 (cd != 0 && strncmp(cd, "musepack", 8) == 0);
+                    int encodable = ext != 0 &&
+                                    (strcmp(ext, ".flac") == 0 ||
+                                     strcmp(ext, ".wav") == 0);
+                    if (!is_mpc && !encodable && ext != 0) {
+                        char msg[200];
+                        snprintf(msg, sizeof msg,
+                                 "track %d on disc %d (%s) cannot be encoded to "
+                                 "Musepack; only FLAC and WAV sources are supported",
+                                 num, disc, ext);
+                        vec_push(warnings, wcount, msg);
+                    } else if (!is_mpc && encodable) {
+                        int rate = 0;
+                        djnum(tr, "sampleRate", &rate);
+                        if (rate > 0 && rate != 32000 && rate != 37800 &&
+                            rate != 44100 && rate != 48000) {
+                            char msg[200];
+                            snprintf(msg, sizeof msg,
+                                     "track %d on disc %d — sample rate %d Hz is not "
+                                     "supported by Musepack encoding (supported: "
+                                     "32/37.8/44.1/48 kHz)",
+                                     num, disc, rate);
+                            vec_push(warnings, wcount, msg);
+                        }
+                    }
+                }
             }
             }
         }
@@ -3005,18 +3048,18 @@ usage_build_draft(void)
 }
 
 /* Extracts the first embedded picture matching `role` from a source audio
-   file (FLAC PICTURE blocks, or the APEv2 front cover) into `artdir` and
-   adds it to the manifest. Returns 1 on success. */
+   file (FLAC PICTURE blocks, or the APEv2 front cover) into
+   `artdir/<role><ext>` and writes the resulting absolute path into \p target.
+   Returns 1 on success. */
 static int
-extract_embedded_artwork(const char *srcpath, const char *role, const char *artdir,
-                         musicpack_manifest *m, char *err, size_t err_cap)
+extract_embedded_image(const char *srcpath, const char *role, const char *artdir,
+                       char *target, size_t target_cap)
 {
     const char *dot = strrchr(srcpath, '.');
     const unsigned char *img = 0;
     size_t img_len = 0;
     char extbuf[8];
     const char *ext = extbuf;
-    char target[MUSICPACK_PATH_MAX + 2];
 
     snprintf(extbuf, sizeof extbuf, ".jpg");
     if (dot != 0 && strcmp(dot, ".flac") == 0) {
@@ -3062,19 +3105,29 @@ extract_embedded_artwork(const char *srcpath, const char *role, const char *artd
         }
         musicpack_tag_set_free(&tags);
     }
-    if (img == 0) {
-        snprintf(err, err_cap, "no embedded '%s' artwork in '%s'", role, srcpath);
+    if (img == 0)
         return 0;
-    }
-    snprintf(target, sizeof target, "%s/%s%s", artdir, role, ext);
-    if (write_bytes(target, img, img_len) != 0) {
-        snprintf(err, err_cap, "cannot write artwork");
+    snprintf(target, target_cap, "%s/%s%s", artdir, role, ext);
+    return write_bytes(target, img, img_len) == 0;
+}
+
+/* Extracts the first embedded picture matching `role` from a source audio
+   file (FLAC PICTURE blocks, or the APEv2 front cover) into `artdir` and
+   adds it to the manifest. Returns 1 on success. */
+static int
+extract_embedded_artwork(const char *srcpath, const char *role, const char *artdir,
+                         musicpack_manifest *m, char *err, size_t err_cap)
+{
+    char target[MUSICPACK_PATH_MAX + 2];
+
+    if (!extract_embedded_image(srcpath, role, artdir, target, sizeof target)) {
+        snprintf(err, err_cap, "no embedded '%s' artwork in '%s'", role, srcpath);
         return 0;
     }
     {
         char hex[MUSICPACK_SHA256_HEX_SIZE];
         char rel[MUSICPACK_PATH_MAX + 2];
-        snprintf(rel, sizeof rel, "artwork/%s%s", role, ext);
+        snprintf(rel, sizeof rel, "artwork/%s", strrchr(target, '/') + 1);
         if (manifest_add_artwork(m, role, rel,
                                  musicpack_sha256_file(target, hex, sizeof hex) ==
                                          MUSICPACK_OK
@@ -3280,8 +3333,15 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
             dot = strrchr(base, '.');
             snprintf(fname, sizeof fname, "%s", tr->title != 0 ? tr->title : "");
             sanitize_component(fname);
-            snprintf(target, sizeof target, "%s/%02d - %s%s", audio_dir, tr->number,
-                     fname, dot != 0 ? dot : "");
+            /* object paths must be unique across the package, so a multi-disc
+               album prefixes the disc number; a single disc keeps the flat
+               "NN - Title.ext" name. */
+            if (m.disc_count > 1)
+                snprintf(target, sizeof target, "%s/%d-%02d - %s%s", audio_dir,
+                         m.discs[d].disc, tr->number, fname, dot != 0 ? dot : "");
+            else
+                snprintf(target, sizeof target, "%s/%02d - %s%s", audio_dir, tr->number,
+                         fname, dot != 0 ? dot : "");
             if (copy_file(srcpath, target) != 0) {
                 snprintf(err, sizeof err, "cannot copy '%s'", srcpath);
                 bad = 1;
@@ -3653,6 +3713,851 @@ done:
     return rc;
 }
 
+/* ------------------------------------------------------------------ */
+/* command: encode-draft (FLAC/WAV -> Musepack q6 stage)               */
+/* ------------------------------------------------------------------ */
+/*                                                                      */
+/* The encode stage turns lossless source tracks into tagged Musepack   */
+/* SV8 files in a staging directory and returns a transformed draft     */
+/* whose audioPath values point at the encoded files. `build-draft`     */
+/* then assembles the package from that staging area untouched.         */
+/*                                                                      */
+/* Progress protocol (one JSON object per line on stdout):              */
+/*   {"event":"stage","stage":"decoding|encoding|tagging","done":i,     */
+/*    "total":n,"disc":d,"track":t,"title":"..."}                       */
+/*   {"event":"track","done":i,"total":n,"disc":d,"track":t,            */
+/*    "title":"...","status":"ok","sha256":"...","duration":...}        */
+/*   {"event":"done","ok":true,"outputDir":"...","tracks":n,            */
+/*    "draft":{...transformed draft...}}                                */
+/*   {"event":"error","code":"...","message":"...","disc":d,"track":t}  */
+/*   {"event":"cancelled"}                       // SIGTERM, exit 130   */
+/*                                                                      */
+/* Musepack is a fixed-rate subband codec: only 32/37.8/44.1/48 kHz     */
+/* sources can be encoded. FLAC and WAV are the supported MVP sources.  */
+
+static volatile sig_atomic_t g_encode_cancelled = 0;
+#if !defined(_WIN32)
+static volatile pid_t g_encode_child = 0;
+
+static void
+on_encode_sigterm(int sig)
+{
+    (void) sig;
+    g_encode_cancelled = 1;
+    if (g_encode_child > 0)
+        kill((pid_t) g_encode_child, SIGTERM);
+}
+#endif
+
+static int
+encode_supported_rate(long rate)
+{
+    return rate == 32000 || rate == 37800 || rate == 44100 || rate == 48000;
+}
+
+static void
+emit_encode_json(cJSON *o)
+{
+    char *s = cJSON_PrintUnformatted(o);
+    if (s != 0) {
+        printf("%s\n", s);
+        free(s);
+        fflush(stdout);
+    }
+}
+
+static void
+emit_encode_stage(const char *stage, int done, int total, int disc, int track,
+                  const char *title)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "event", "stage");
+    cJSON_AddStringToObject(o, "stage", stage);
+    cJSON_AddNumberToObject(o, "done", done);
+    cJSON_AddNumberToObject(o, "total", total);
+    cJSON_AddNumberToObject(o, "disc", disc);
+    cJSON_AddNumberToObject(o, "track", track);
+    cJSON_AddStringToObject(o, "title", title != 0 ? title : "");
+    emit_encode_json(o);
+    cJSON_Delete(o);
+}
+
+static void
+emit_encode_track(int done, int total, int disc, int track, const char *title,
+                  const char *status, const char *sha256, double duration)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "event", "track");
+    cJSON_AddNumberToObject(o, "done", done);
+    cJSON_AddNumberToObject(o, "total", total);
+    cJSON_AddNumberToObject(o, "disc", disc);
+    cJSON_AddNumberToObject(o, "track", track);
+    cJSON_AddStringToObject(o, "title", title != 0 ? title : "");
+    cJSON_AddStringToObject(o, "status", status);
+    if (sha256 != 0)
+        cJSON_AddStringToObject(o, "sha256", sha256);
+    if (duration > 0)
+        cJSON_AddNumberToObject(o, "duration", duration);
+    emit_encode_json(o);
+    cJSON_Delete(o);
+}
+
+static void
+emit_encode_error(const char *code, const char *message, int disc, int track)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "event", "error");
+    cJSON_AddStringToObject(o, "code", code);
+    cJSON_AddStringToObject(o, "message", message);
+    if (disc > 0)
+        cJSON_AddNumberToObject(o, "disc", disc);
+    if (track > 0)
+        cJSON_AddNumberToObject(o, "track", track);
+    emit_encode_json(o);
+    cJSON_Delete(o);
+}
+
+/* Runs argv[0..] to completion and returns its exit status, or -1 when the
+   process could not be spawned. On POSIX the child pid is tracked so SIGTERM
+   can kill the active tool (which is what makes cancellation land fast). */
+static int
+run_command(char *const argv[])
+{
+#if defined(_WIN32)
+    char cmd[16384];
+    size_t n = 0, i, k;
+    cmd[0] = '\0';
+    for (i = 0; argv[i] != 0; i++) {
+        const char *arg = argv[i];
+        size_t len = strlen(arg);
+        if (n + len + 8 >= sizeof cmd)
+            return -1;
+        if (i > 0)
+            cmd[n++] = ' ';
+        if (strchr(arg, ' ') != 0) {
+            cmd[n++] = '"';
+            for (k = 0; arg[k] != '\0'; k++) {
+                if (arg[k] == '"')
+                    cmd[n++] = '"';
+                cmd[n++] = arg[k];
+            }
+            cmd[n++] = '"';
+        } else {
+            for (k = 0; arg[k] != '\0'; k++)
+                cmd[n++] = arg[k];
+        }
+        cmd[n] = '\0';
+    }
+    {
+        FILE *p = POPEN(cmd, "w");
+        if (p == 0)
+            return -1;
+        return PCLOSE(p);
+    }
+#else
+    pid_t pid = fork();
+    int status = 0;
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    g_encode_child = pid;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR)
+            return -1;
+    }
+    g_encode_child = 0;
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    if (WIFSIGNALED(status))
+        return 128 + WTERMSIG(status);
+    return -1;
+#endif
+}
+
+#ifndef X_OK
+# define X_OK 0
+#endif
+
+/* Locates an executable on PATH (or returns it directly when it contains a
+   path separator). Returns an owned string, or NULL. */
+static char *
+find_executable(const char *name)
+{
+    char buf[MUSICPACK_PATH_MAX + 2];
+    const char *path;
+    const char *p;
+
+    if (name == 0 || *name == '\0')
+        return 0;
+    if (strchr(name, '/') != 0 || strchr(name, '\\') != 0)
+        return access(name, X_OK) == 0 ? strdup(name) : 0;
+    path = getenv("PATH");
+    if (path == 0)
+        return 0;
+    p = path;
+    while (*p != '\0') {
+        const char *colon = strchr(p, ':');
+        size_t len = colon != 0 ? (size_t) (colon - p) : strlen(p);
+        if (len > 0 && len + 2 < sizeof buf) {
+            memcpy(buf, p, len);
+            buf[len] = '\0';
+            snprintf(buf + len, sizeof buf - len, "/%s", name);
+            if (access(buf, X_OK) == 0)
+                return strdup(buf);
+        }
+        if (colon == 0)
+            break;
+        p = colon + 1;
+    }
+    return 0;
+}
+
+/* Resolves an explicit binary path or a PATH lookup into \p buf. Returns the
+   resolved string (either \p buf or the explicit argument). */
+static const char *
+resolve_bin(const char *explicit, const char *name, char *buf, size_t cap)
+{
+    if (explicit != 0 && *explicit != '\0') {
+        snprintf(buf, cap, "%s", explicit);
+        return buf;
+    }
+    {
+        char *found = find_executable(name);
+        if (found != 0) {
+            snprintf(buf, cap, "%s", found);
+            free(found);
+            return buf;
+        }
+    }
+    snprintf(buf, cap, "%s", name);
+    return buf;
+}
+
+/* Returns 1 when \p resolved (from resolve_bin) is usable. */
+static int
+bin_available(const char *resolved)
+{
+    if (resolved == 0 || *resolved == '\0')
+        return 0;
+    if (strchr(resolved, '/') != 0 || strchr(resolved, '\\') != 0)
+        return access(resolved, X_OK) == 0;
+    return find_executable(resolved) != 0;
+}
+
+/* Sample rate from a minimal RIFF/WAVE header parse (0 when unknown). */
+static long
+wav_sample_rate(const char *path)
+{
+    unsigned char h[128];
+    FILE *f = fopen(path, "rb");
+    size_t got;
+    long rate = 0;
+    if (f == 0)
+        return 0;
+    got = fread(h, 1, sizeof h, f);
+    fclose(f);
+    if (got < 12 || memcmp(h, "RIFF", 4) != 0 || memcmp(h + 8, "WAVE", 4) != 0)
+        return 0;
+    {
+        unsigned int pos = 12;
+        while (pos + 8 <= got) {
+            unsigned int clen = (unsigned int) h[pos + 4] |
+                                ((unsigned int) h[pos + 5] << 8) |
+                                ((unsigned int) h[pos + 6] << 16) |
+                                ((unsigned int) h[pos + 7] << 24);
+            if (memcmp(h + pos, "fmt ", 4) == 0 && pos + 16 <= got) {
+                rate = (long) h[pos + 12] | ((long) h[pos + 13] << 8) |
+                       ((long) h[pos + 14] << 16) | ((long) h[pos + 15] << 24);
+                break;
+            }
+            pos += 8 + clen;
+        }
+    }
+    return rate;
+}
+
+/* Recursively removes a directory tree (staging cleanup only). */
+static void
+rm_rf(const char *path)
+{
+#if defined(_WIN32)
+    char pat[MUSICPACK_PATH_MAX + 2];
+    finddata_t fd;
+    intptr_t h;
+    snprintf(pat, sizeof pat, "%s/*", path);
+    h = _findfirst(pat, &fd);
+    if (h != -1) {
+        do {
+            char next[MUSICPACK_PATH_MAX + 2];
+            if (strcmp(fd.name, ".") == 0 || strcmp(fd.name, "..") == 0)
+                continue;
+            snprintf(next, sizeof next, "%s/%s", path, fd.name);
+            if (fd.attrib & _A_SUBDIR)
+                rm_rf(next);
+            else
+                remove(next);
+        } while (_findnext(h, &fd) == 0);
+        _findclose(h);
+    }
+    _rmdir(path);
+#else
+    DIR *d = opendir(path);
+    struct dirent *e;
+    if (d == 0)
+        return;
+    while ((e = readdir(d)) != 0) {
+        struct stat st;
+        char next[MUSICPACK_PATH_MAX + 2];
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        snprintf(next, sizeof next, "%s/%s", path, e->d_name);
+        if (lstat(next, &st) != 0)
+            continue;
+        if (S_ISDIR(st.st_mode))
+            rm_rf(next);
+        else
+            remove(next);
+    }
+    closedir(d);
+    rmdir(path);
+#endif
+}
+
+/* Canonical APE/Vorbis keys handled by the manifest projection or by the
+   MusicPack loudness rules. Anything else in a source tag set is passed
+   through verbatim so unknown metadata is preserved rather than dropped. */
+static const char *const APE_CANONICAL_KEYS[] = {
+    "ALBUM", "ALBUMARTIST", "ALBUM ARTIST", "TITLE", "ARTIST",
+    "TRACKNUMBER", "TRACK", "TRACKTOTAL", "TOTALTRACKS",
+    "DISCNUMBER", "DISC", "DISCTOTAL", "TOTALDISCS",
+    "DATE", "YEAR", "ORIGINALDATE", "ORIGINAL YEAR",
+    "GENRE", "PUBLISHER", "LABEL", "ORGANIZATION",
+    "CATALOGNUMBER", "CATALOGUENUMBER", "CATALOG #", "BARCODE",
+    "ISRC", "COMPOSER", "PERFORMER", "CONDUCTOR", "REMIXER", "AUTHOR",
+    "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_RELEASEID", "MUSICBRAINZ ALBUM ID",
+    "MUSICBRAINZ_RELEASEGROUPID", "RELEASEGROUPID",
+    "MUSICBRAINZ RELEASE GROUP ID",
+    "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ RECORDING ID",
+    "MUSICBRAINZ_TRACKID", "MUSICBRAINZ TRACK ID",
+    "MUSICBRAINZ_RELEASETRACKID", "MUSICBRAINZ RELEASE TRACK ID",
+    "MUSICBRAINZ_ALBUMTYPE", "RELEASETYPE", "MUSICBRAINZ ALBUM TYPE",
+    "MUSICBRAINZ_ALBUMCOUNTRY", "RELEASECOUNTRY", "MUSICBRAINZ ALBUM COUNTRY",
+    "SOURCE", "SOURCEID",
+    "REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_ALBUM_GAIN",
+    "REPLAYGAIN_ALBUM_PEAK", "REPLAYGAIN_REFERENCE_LOUDNESS",
+    "R128_TRACK_GAIN", "R128_ALBUM_GAIN", "R128_TRACK_PEAK", "R128_ALBUM_PEAK",
+    "COVER ART (FRONT)",
+};
+
+static int
+ape_key_is_canonical(const char *key)
+{
+    char upper[256];
+    size_t i, n = strlen(key), k;
+    if (n == 0 || n >= sizeof upper)
+        return 0;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char) key[i];
+        upper[i] = (c >= 'a' && c <= 'z') ? (char) (c - 'a' + 'A') : (char) c;
+    }
+    upper[n] = '\0';
+    for (k = 0; k < sizeof APE_CANONICAL_KEYS / sizeof *APE_CANONICAL_KEYS; k++)
+        if (strcmp(upper, APE_CANONICAL_KEYS[k]) == 0)
+            return 1;
+    return 0;
+}
+
+/* Copies source text tags that the canonical mapping does not handle into the
+   target APE set verbatim (semantic passthrough, mirroring flac2mpc). */
+static void
+merge_passthrough_tags(const musicpack_tag_set *src, musicpack_tag_set *ape)
+{
+    size_t i;
+    if (src == 0)
+        return;
+    for (i = 0; i < src->count; i++) {
+        const musicpack_tag *t = &src->items[i];
+        if (t->is_binary || t->value == 0 || *t->value == '\0')
+            continue;
+        if (ape_key_is_canonical(t->key))
+            continue;
+        musicpack_tag_set_add(ape, t->key, t->value, t->value_len);
+    }
+}
+
+/* Copies/extracts every artwork entry into the staging artwork directory and
+   rewrites the draft's artwork entries to be file-based under it. Returns 1
+   on success. */
+static int
+stage_artwork(cJSON *draft, const char *source_root, const char *art_dir)
+{
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(draft, "artwork");
+    cJSON *a;
+    if (!cJSON_IsArray(arr))
+        return 1;
+    cJSON_ArrayForEach(a, arr) {
+        const char *role = djstr(a, "role");
+        const char *p = djstr(a, "path");
+        const char *sa = djstr(a, "sourceAudio");
+        char src[MUSICPACK_PATH_MAX + 2];
+        char target[MUSICPACK_PATH_MAX + 2];
+        char rel[MUSICPACK_PATH_MAX + 2];
+        if (role == 0 || *role == '\0')
+            continue;
+        if (p != 0 && *p != '\0') {
+            const char *ext = strrchr(p, '.');
+            snprintf(src, sizeof src, "%s/%s", source_root, p);
+            snprintf(target, sizeof target, "%s/%s%s", art_dir, role,
+                     ext != 0 ? ext : ".img");
+            if (copy_file(src, target) != 0)
+                return 0;
+        } else if (sa != 0 && *sa != '\0') {
+            snprintf(src, sizeof src, "%s/%s", source_root, sa);
+            if (!extract_embedded_image(src, role, art_dir, target, sizeof target))
+                continue; /* referenced but absent: leave for build-draft to report */
+        } else {
+            continue;
+        }
+        snprintf(rel, sizeof rel, "artwork/%s", strrchr(target, '/') + 1);
+        cJSON_DeleteItemFromObject(a, "path");
+        cJSON_DeleteItemFromObject(a, "embedded");
+        cJSON_DeleteItemFromObject(a, "sourceAudio");
+        cJSON_AddStringToObject(a, "path", rel);
+    }
+    return 1;
+}
+
+/* Copies a booklet/lyrics/extras array into its staging directory and rewrites
+   each entry's path to be staging-relative. */
+static int
+stage_asset_dir(cJSON *draft, const char *key, const char *prefix,
+                const char *source_root, const char *dir)
+{
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(draft, key);
+    cJSON *it;
+    if (!cJSON_IsArray(arr))
+        return 1;
+    cJSON_ArrayForEach(it, arr) {
+        const char *p = djstr(it, "path");
+        const char *base;
+        char src[MUSICPACK_PATH_MAX + 2];
+        char target[MUSICPACK_PATH_MAX + 2];
+        char rel[MUSICPACK_PATH_MAX + 2];
+        if (p == 0 || *p == '\0')
+            continue;
+        base = strrchr(p, '/');
+        base = base != 0 ? base + 1 : p;
+        snprintf(src, sizeof src, "%s/%s", source_root, p);
+        snprintf(target, sizeof target, "%s/%s", dir, base);
+        if (copy_file(src, target) != 0)
+            return 0;
+        snprintf(rel, sizeof rel, "%s/%s", prefix, base);
+        cJSON_DeleteItemFromObject(it, "path");
+        cJSON_AddStringToObject(it, "path", rel);
+    }
+    return 1;
+}
+
+static void
+usage_encode_draft(void)
+{
+    fprintf(stderr,
+        "usage: musicpack encode-draft --draft FILE -o STAGING_DIR\n"
+        "       [--quality 6.0] [--ffmpeg BIN] [--mpcenc BIN] [--json]\n");
+}
+
+static int
+cmd_encode_draft(const char *draft_path, const char *out_dir, const char *quality,
+                 const char *ffmpeg_arg, const char *mpcenc_arg, int json)
+{
+    cJSON *draft;
+    char err[512];
+    char **errors = 0, **warnings = 0;
+    size_t ecount = 0, wcount = 0;
+    musicpack_manifest m;
+    const char *source_root;
+    char audio_dir[MUSICPACK_PATH_MAX + 2];
+    char art_dir[MUSICPACK_PATH_MAX + 2];
+    char bok_dir[MUSICPACK_PATH_MAX + 2];
+    char lyr_dir[MUSICPACK_PATH_MAX + 2];
+    char ex_dir[MUSICPACK_PATH_MAX + 2];
+    char ffmpeg_buf[MUSICPACK_PATH_MAX + 2];
+    char mpcenc_buf[MUSICPACK_PATH_MAX + 2];
+    const char *ffmpeg_bin;
+    const char *mpcenc_bin;
+    char srcpath[MUSICPACK_PATH_MAX + 2];
+    char wavpath[MUSICPACK_PATH_MAX + 2];
+    char hex[MUSICPACK_SHA256_HEX_SIZE];
+    size_t d, t, i, total = 0;
+    int done_count = 0;
+    int bad = 0;
+    char qbuf[32];
+
+    draft = draft_read_json(draft_path, err, sizeof err);
+    if (draft == 0) {
+        if (json)
+            json_error_out("invalid_draft", err);
+        else
+            fprintf(stderr, "encode-draft: %s\n", err);
+        return 1;
+    }
+
+    /* never encode a draft that fails its own validation */
+    if (!draft_validate(draft, &errors, &ecount, &warnings, &wcount)) {
+        if (json) {
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddBoolToObject(root, "ok", 0);
+            add_string_array(root, "errors", errors, ecount);
+            add_string_array(root, "warnings", warnings, wcount);
+            draft_print(root);
+            cJSON_Delete(root);
+        } else {
+            for (i = 0; i < ecount; i++)
+                fprintf(stderr, "error: %s\n", errors[i]);
+        }
+        free_vec(errors, ecount);
+        free_vec(warnings, wcount);
+        cJSON_Delete(draft);
+        return 1;
+    }
+    free_vec(errors, ecount);
+    free_vec(warnings, wcount);
+
+    source_root = djstr(draft, "sourceRoot");
+    if (source_root == 0 || *source_root == '\0') {
+        if (json)
+            json_error_out("invalid_draft", "draft has no sourceRoot");
+        else
+            fprintf(stderr, "encode-draft: draft has no sourceRoot\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    memset(&m, 0, sizeof m);
+    if (!draft_to_manifest(draft, &m)) {
+        if (json)
+            json_error_out("invalid_draft", "cannot interpret draft");
+        else
+            fprintf(stderr, "encode-draft: cannot interpret draft\n");
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    for (d = 0; d < m.disc_count; d++)
+        total += m.discs[d].track_count;
+    if (total == 0) {
+        if (json)
+            json_error_out("invalid_draft", "the draft has no tracks");
+        else
+            fprintf(stderr, "encode-draft: the draft has no tracks\n");
+        musicpack_manifest_clear(&m);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    ffmpeg_bin = resolve_bin(ffmpeg_arg, "ffmpeg", ffmpeg_buf, sizeof ffmpeg_buf);
+    mpcenc_bin = resolve_bin(mpcenc_arg, "mpcenc", mpcenc_buf, sizeof mpcenc_buf);
+
+    /* pre-flight: every source must be encodable (FLAC/WAV at a supported
+       rate) and the toolchain must be available before any encoding starts */
+    for (d = 0; d < m.disc_count && !bad; d++) {
+        for (t = 0; t < m.discs[d].track_count && !bad; t++) {
+            const musicpack_track *tr = &m.discs[d].tracks[t];
+            const char *rel = tr->audio.path != 0 ? tr->audio.path : "";
+            const char *ext = strrchr(rel, '.');
+            mpc_stream_info si;
+            long rate = 0;
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, rel);
+            if (ext == 0 || (strcmp(ext, ".flac") != 0 && strcmp(ext, ".wav") != 0)) {
+                char msg[512];
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d ('%s') cannot be encoded to Musepack: "
+                         "only FLAC and WAV sources are supported",
+                         tr->number, m.discs[d].disc, rel);
+                emit_encode_error("UNSUPPORTED_SOURCE", msg, m.discs[d].disc, tr->number);
+                bad = 1;
+                break;
+            }
+            memset(&si, 0, sizeof si);
+            probe_stream(srcpath, &si);
+            rate = si.sample_rate;
+            if (rate == 0 && strcmp(ext, ".wav") == 0)
+                rate = wav_sample_rate(srcpath);
+            if (rate > 0 && !encode_supported_rate(rate)) {
+                char msg[512];
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d ('%s') — sample rate %ld Hz is not "
+                         "supported by Musepack (supported: 32/37.8/44.1/48 kHz)",
+                         tr->number, m.discs[d].disc, rel, rate);
+                emit_encode_error("UNSUPPORTED_SAMPLE_RATE", msg, m.discs[d].disc,
+                                  tr->number);
+                bad = 1;
+            }
+        }
+    }
+    if (!bad && !bin_available(ffmpeg_bin)) {
+        char msg[512];
+        snprintf(msg, sizeof msg,
+                 "ffmpeg is required to decode FLAC/WAV but was not found "
+                 "('%s'); install ffmpeg or pass --ffmpeg", ffmpeg_bin);
+        emit_encode_error("TOOL_MISSING", msg, 0, 0);
+        bad = 1;
+    }
+    if (!bad && !bin_available(mpcenc_bin)) {
+        char msg[512];
+        snprintf(msg, sizeof msg,
+                 "mpcenc is required to encode Musepack but was not found "
+                 "('%s'); build it or pass --mpcenc", mpcenc_bin);
+        emit_encode_error("TOOL_MISSING", msg, 0, 0);
+        bad = 1;
+    }
+    if (bad) {
+        musicpack_manifest_clear(&m);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    /* the staging area mirrors the package layout; the GUI owns `out_dir` */
+    snprintf(audio_dir, sizeof audio_dir, "%s/audio", out_dir);
+    snprintf(art_dir, sizeof art_dir, "%s/artwork", out_dir);
+    snprintf(bok_dir, sizeof bok_dir, "%s/booklet", out_dir);
+    snprintf(lyr_dir, sizeof lyr_dir, "%s/lyrics", out_dir);
+    snprintf(ex_dir, sizeof ex_dir, "%s/extras", out_dir);
+    if (mkdir_p(audio_dir) != 0 || mkdir_p(art_dir) != 0 || mkdir_p(bok_dir) != 0 ||
+        mkdir_p(lyr_dir) != 0 || mkdir_p(ex_dir) != 0) {
+        if (json)
+            json_error_out("encode_failed", "cannot create staging directory");
+        else
+            fprintf(stderr, "encode-draft: cannot create staging directory\n");
+        musicpack_manifest_clear(&m);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+#if !defined(_WIN32)
+    signal(SIGTERM, on_encode_sigterm);
+# ifdef SIGINT
+    signal(SIGINT, on_encode_sigterm);
+# endif
+#endif
+
+    snprintf(qbuf, sizeof qbuf, "%s", quality != 0 && *quality != '\0' ? quality : "6.0");
+
+    for (d = 0; d < m.disc_count && !bad && !g_encode_cancelled; d++) {
+        for (t = 0; t < m.discs[d].track_count && !bad && !g_encode_cancelled; t++) {
+            musicpack_track *tr = &m.discs[d].tracks[t];
+            const char *rel = tr->audio.path != 0 ? tr->audio.path : "";
+            const char *ext = strrchr(rel, '.');
+            char fname[MUSICPACK_PATH_MAX + 2];
+            char target[MUSICPACK_PATH_MAX + 2];
+            char *wav = 0;
+            char *argv_dec[16];
+            char *argv_enc[16];
+            int src_codec; /* 0 flac, 1 wav */
+            mpc_stream_info si;
+            musicpack_tag_set tags, ape;
+            int rc;
+
+            snprintf(fname, sizeof fname, "%s", tr->title != 0 ? tr->title : "");
+            sanitize_component(fname);
+            if (m.disc_count > 1)
+                snprintf(target, sizeof target, "%s/%d-%02d - %s.mpc", audio_dir,
+                         m.discs[d].disc, tr->number, fname);
+            else
+                snprintf(target, sizeof target, "%s/%02d - %s.mpc", audio_dir,
+                         tr->number, fname);
+
+            snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, rel);
+            src_codec = (ext != 0 && strcmp(ext, ".wav") == 0);
+            snprintf(wavpath, sizeof wavpath, "%s/track-%zu.wav", out_dir, t + 1);
+            wav = wavpath;
+
+            emit_encode_stage("decoding", done_count + 1, (int) total,
+                              m.discs[d].disc, tr->number, tr->title);
+            argv_dec[0] = (char *) ffmpeg_bin;
+            argv_dec[1] = "-v"; argv_dec[2] = "error";
+            argv_dec[3] = "-y";
+            argv_dec[4] = "-i"; argv_dec[5] = (char *) srcpath;
+            argv_dec[6] = "-vn";
+            argv_dec[7] = "-f"; argv_dec[8] = "wav";
+            argv_dec[9] = wav;
+            argv_dec[10] = 0;
+            rc = run_command(argv_dec);
+            if (rc != 0 || !is_regular_path(wav)) {
+                char msg[640];
+                if (rc == 127)
+                    snprintf(msg, sizeof msg,
+                             "track %d on disc %d — ffmpeg ('%s') could not be run",
+                             tr->number, m.discs[d].disc, ffmpeg_bin);
+                else
+                    snprintf(msg, sizeof msg,
+                             "track %d on disc %d — decoding '%s' failed (ffmpeg "
+                             "exit %d)",
+                             tr->number, m.discs[d].disc, rel, rc);
+                emit_encode_error("DECODE_FAILED", msg, m.discs[d].disc, tr->number);
+                bad = 1;
+                break;
+            }
+
+            emit_encode_stage("encoding", done_count + 1, (int) total,
+                              m.discs[d].disc, tr->number, tr->title);
+            argv_enc[0] = (char *) mpcenc_bin;
+            argv_enc[1] = "--quality"; argv_enc[2] = qbuf;
+            argv_enc[3] = "--overwrite";
+            argv_enc[4] = "--silent";
+            argv_enc[5] = wav;
+            argv_enc[6] = (char *) target;
+            argv_enc[7] = 0;
+            rc = run_command(argv_enc);
+            remove(wav);
+            if (rc != 0 || !is_regular_path(target)) {
+                char msg[640];
+                remove(target);
+                if (rc == 127)
+                    snprintf(msg, sizeof msg,
+                             "track %d on disc %d — mpcenc ('%s') could not be run",
+                             tr->number, m.discs[d].disc, mpcenc_bin);
+                else
+                    snprintf(msg, sizeof msg,
+                             "track %d on disc %d — encoding '%s' failed (mpcenc "
+                             "exit %d)",
+                             tr->number, m.discs[d].disc, rel, rc);
+                emit_encode_error("ENCODE_FAILED", msg, m.discs[d].disc, tr->number);
+                bad = 1;
+                break;
+            }
+
+            emit_encode_stage("tagging", done_count + 1, (int) total,
+                              m.discs[d].disc, tr->number, tr->title);
+            memset(&tags, 0, sizeof tags);
+            if (src_codec == 0)
+                musicpack_flac_read_metadata(srcpath, &tags, 0);
+            memset(&ape, 0, sizeof ape);
+            if (musicpack_manifest_to_ape_tags(&m, tr, m.discs[d].disc,
+                                               (int) m.disc_count,
+                                               (int) m.discs[d].track_count,
+                                               &ape) == MUSICPACK_OK) {
+                merge_passthrough_tags(&tags, &ape);
+                if (musicpack_ape_write(target, &ape) != MUSICPACK_OK) {
+                    char msg[640];
+                    snprintf(msg, sizeof msg,
+                             "track %d on disc %d — cannot write APEv2 tags on '%s'",
+                             tr->number, m.discs[d].disc, tr->title);
+                    emit_encode_error("TAG_WRITE_FAILED", msg, m.discs[d].disc,
+                                      tr->number);
+                    bad = 1;
+                }
+                musicpack_tag_set_free(&ape);
+            }
+            musicpack_tag_set_free(&tags);
+            if (bad)
+                break;
+
+            if (musicpack_sha256_file(target, hex, sizeof hex) != MUSICPACK_OK) {
+                char msg[512];
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d — cannot hash encoded file",
+                         tr->number, m.discs[d].disc);
+                emit_encode_error("HASH_FAILED", msg, m.discs[d].disc, tr->number);
+                bad = 1;
+                break;
+            }
+
+            /* display data for the transformed draft */
+            memset(&si, 0, sizeof si);
+            probe_stream(target, &si);
+
+            /* rewrite the draft's track entry in place */
+            {
+                cJSON *media = cJSON_GetObjectItemCaseSensitive(draft, "media");
+                cJSON *mi = cJSON_GetArrayItem(media, (int) d);
+                cJSON *trk = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(mi, "tracks"), (int) t);
+                cJSON *sa;
+                char dur[64];
+                const char *relpath = target + strlen(out_dir) + 1;
+                cJSON_DeleteItemFromObject(trk, "audioPath");
+                cJSON_AddStringToObject(trk, "audioPath", relpath);
+                cJSON_DeleteItemFromObject(trk, "codec");
+                cJSON_AddStringToObject(trk, "codec", "musepack-sv8");
+                cJSON_DeleteItemFromObject(trk, "streamVersion");
+                cJSON_AddNumberToObject(trk, "streamVersion", 8);
+                if (si.sample_rate > 0) {
+                    cJSON_DeleteItemFromObject(trk, "sampleRate");
+                    cJSON_AddNumberToObject(trk, "sampleRate", (double) si.sample_rate);
+                }
+                if (si.channels > 0) {
+                    cJSON_DeleteItemFromObject(trk, "channels");
+                    cJSON_AddNumberToObject(trk, "channels", (double) si.channels);
+                }
+                if (si.duration > 0) {
+                    snprintf(dur, sizeof dur, "%.3f", si.duration);
+                    cJSON_DeleteItemFromObject(trk, "duration");
+                    cJSON_AddRawToObject(trk, "duration", dur);
+                }
+                sa = cJSON_GetObjectItemCaseSensitive(trk, "sourceAudio");
+                if (!cJSON_IsObject(sa))
+                    sa = cJSON_AddObjectToObject(trk, "sourceAudio");
+                cJSON_DeleteItemFromObject(sa, "codec");
+                cJSON_AddStringToObject(sa, "codec", src_codec ? "wav" : "flac");
+            }
+
+            done_count++;
+            emit_encode_track(done_count, (int) total, m.discs[d].disc, tr->number,
+                              tr->title, "ok", hex, si.duration);
+        }
+    }
+
+    if (!bad && !g_encode_cancelled) {
+        if (!stage_artwork(draft, source_root, art_dir) ||
+            !stage_asset_dir(draft, "booklet", "booklet", source_root, bok_dir) ||
+            !stage_asset_dir(draft, "lyrics", "lyrics", source_root, lyr_dir) ||
+            !stage_asset_dir(draft, "extras", "extras", source_root, ex_dir)) {
+            emit_encode_error("STAGING_FAILED", "cannot stage artwork or assets",
+                              0, 0);
+            bad = 1;
+        }
+    }
+
+    if (!bad && !g_encode_cancelled) {
+        /* the transformed draft now points at the staging area: the GUI can
+           build the package from it directly */
+        cJSON_DeleteItemFromObject(draft, "sourceRoot");
+        cJSON_AddStringToObject(draft, "sourceRoot", out_dir);
+        if (json) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "event", "done");
+            cJSON_AddBoolToObject(o, "ok", 1);
+            cJSON_AddStringToObject(o, "outputDir", out_dir);
+            cJSON_AddNumberToObject(o, "tracks", (double) total);
+            cJSON_AddItemToObject(o, "draft", draft);
+            draft = 0; /* ownership moved */
+            emit_encode_json(o);
+            cJSON_Delete(o);
+        } else {
+            printf("encoded %d track(s) into '%s'\n", done_count, out_dir);
+        }
+    } else if (g_encode_cancelled) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "event", "cancelled");
+        emit_encode_json(o);
+        cJSON_Delete(o);
+        bad = 0; /* cancellation is a distinct, non-failing outcome */
+        /* deterministic cleanup: a cancelled run never leaves a partial
+           staging area behind */
+        rm_rf(out_dir);
+    } else {
+        /* failure: remove the partial staging area */
+        rm_rf(out_dir);
+    }
+
+    musicpack_manifest_clear(&m);
+    cJSON_Delete(draft);
+    return g_encode_cancelled ? 130 : bad ? 1 : 0;
+}
+
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3663,7 +4568,7 @@ main(int argc, char **argv)
 
     fprintf(stderr, "%s", ABOUT);
     if (argc < 2) {
-        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|author-api-version> ...\n");
+        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|inspect|validate-draft|build-draft|identify-draft|encode-draft|author-api-version> ...\n");
         return 2;
     }
     cmd = argv[1];
@@ -3813,6 +4718,34 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_identify_draft(draft_path, mbid, barcode, mbjson, json);
+    }
+    if (strcmp(cmd, "encode-draft") == 0) {
+        const char *draft_path = 0, *out_dir = 0, *quality = 0;
+        const char *ffmpeg_bin = 0, *mpcenc_bin = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
+                draft_path = argv[++i];
+            } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+                out_dir = argv[++i];
+            } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+                quality = argv[++i];
+            } else if (strcmp(argv[i], "--ffmpeg") == 0 && i + 1 < argc) {
+                ffmpeg_bin = argv[++i];
+            } else if (strcmp(argv[i], "--mpcenc") == 0 && i + 1 < argc) {
+                mpcenc_bin = argv[++i];
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else {
+                return usage_error("too many arguments");
+            }
+        }
+        if (draft_path == 0 || out_dir == 0) {
+            usage_encode_draft();
+            return 2;
+        }
+        return cmd_encode_draft(draft_path, out_dir, quality, ffmpeg_bin,
+                                mpcenc_bin, json);
     }
     if (strcmp(cmd, "author-api-version") == 0) {
         /* Machine-readable capability handshake for MusicPack Author. */

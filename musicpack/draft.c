@@ -506,6 +506,8 @@ draft_from_manifest(const musicpack_manifest *m, const char *source_root,
                     cJSON_AddNumberToObject(x, "sampleRate", p->sample_rate);
                 if (p->channels > 0)
                     cJSON_AddNumberToObject(x, "channels", p->channels);
+                if (p->bits > 0)
+                    cJSON_AddNumberToObject(x, "bitDepth", p->bits);
                 if (p->duration > 0) {
                     snprintf(tmp, sizeof tmp, "%.3f", p->duration);
                     cJSON_AddRawToObject(x, "duration", tmp);

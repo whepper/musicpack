@@ -58,6 +58,7 @@ typedef struct mpc_stream_info {
     int stream_version;   ///< 8 for SV8 Musepack, 0 otherwise
     long sample_rate;
     long channels;
+    long bits;            ///< bits per sample, 0 when unknown
     double duration;      ///< seconds, 0 when unknown
 } mpc_stream_info;
 
