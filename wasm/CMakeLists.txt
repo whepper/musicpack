@@ -7,8 +7,17 @@
 
 add_executable(musepack_wasm musepack_wasm.c)
 target_link_libraries(musepack_wasm PRIVATE musepack)
+target_include_directories(musepack_wasm PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
 
 set_target_properties(musepack_wasm PROPERTIES OUTPUT_NAME musepack)
+
+set(MPC_WASM_EXPORTS
+    _mpc_wasm_create,_mpc_wasm_open,_mpc_wasm_open_range,_mpc_wasm_sample_rate,_mpc_wasm_channels,_mpc_wasm_stream_version,_mpc_wasm_length_samples,_mpc_wasm_position,_mpc_wasm_read,_mpc_wasm_seek_sample,_mpc_wasm_seek_seconds,_mpc_wasm_check,_mpc_wasm_destroy,_malloc,_free)
+if(MPC_WASM_TEST_HOOKS)
+  target_compile_definitions(musepack_wasm PRIVATE MPC_WASM_TEST_HOOKS)
+  set(MPC_WASM_EXPORTS
+      _mpc_wasm_set_synth_impl,_mpc_wasm_has_synth_simd,${MPC_WASM_EXPORTS})
+endif()
 
 # Single-threaded, no SharedArrayBuffer, no experimental extensions.
 # The range reader (mpc_wasm_open_range) reads through the declared imports
@@ -21,7 +30,7 @@ target_link_options(musepack_wasm PRIVATE
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createMusepackModule"
     "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/range_library.js"
-    "-sEXPORTED_FUNCTIONS=_mpc_wasm_create,_mpc_wasm_open,_mpc_wasm_open_range,_mpc_wasm_sample_rate,_mpc_wasm_channels,_mpc_wasm_stream_version,_mpc_wasm_length_samples,_mpc_wasm_position,_mpc_wasm_read,_mpc_wasm_seek_sample,_mpc_wasm_seek_seconds,_mpc_wasm_check,_mpc_wasm_destroy,_malloc,_free"
+    "-sEXPORTED_FUNCTIONS=${MPC_WASM_EXPORTS}"
     "-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32"
     "-sENVIRONMENT=web,worker,node")
 if(MPC_WASM_SIMD)

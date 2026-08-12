@@ -6,7 +6,12 @@
 if(EMSCRIPTEN)
   add_test(NAME wasm_smoke
            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_smoke.sh
-                   ${CMAKE_BINARY_DIR})
+                    ${CMAKE_BINARY_DIR})
+  if(MPC_DECODER_SIMD_ENABLED AND MPC_WASM_TEST_HOOKS)
+    add_test(NAME wasm_synth_ab
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_synth_ab.sh
+                     ${CMAKE_BINARY_DIR})
+  endif()
   # Phase 6: the web client's audio guarantees against the real wasm decoder —
   # gapless two-track continuity, exact track-end frames, demand-reader seek
   # accounting (seeking never downloads the whole file). Needs Node 22.6+
@@ -69,6 +74,9 @@ endif()
 add_executable(mpc_synth_diff synth_diff.c)
 target_link_libraries(mpc_synth_diff PRIVATE ${MPC_WHITEBOX_LIB})
 target_include_directories(mpc_synth_diff PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
+if(MPC_DECODER_SIMD_ENABLED)
+  target_compile_definitions(mpc_synth_diff PRIVATE MPC_ENABLE_SIMD_KERNEL)
+endif()
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_synth_diff PRIVATE m)
 endif()
@@ -80,6 +88,22 @@ add_test(NAME synth_ab COMMAND mpc_synth_diff
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5-48s.mpc
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q7.mpc
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine48-q6.mpc)
+
+add_executable(mpc_synth_dispatch_negative synth_dispatch_negative.c)
+target_link_libraries(mpc_synth_dispatch_negative PRIVATE ${MPC_WHITEBOX_LIB})
+target_include_directories(mpc_synth_dispatch_negative PRIVATE
+    ${PROJECT_SOURCE_DIR}/libmpcdec)
+add_test(NAME synth_simd_unavailable COMMAND mpc_synth_dispatch_negative)
+set_tests_properties(synth_simd_unavailable PROPERTIES SKIP_RETURN_CODE 77)
+
+if(MPC_DECODER_SIMD_ENABLED)
+  add_executable(mpc_synth_state_ab synth_state_ab.c)
+  target_link_libraries(mpc_synth_state_ab PRIVATE ${MPC_WHITEBOX_LIB})
+  target_include_directories(mpc_synth_state_ab PRIVATE
+      ${PROJECT_SOURCE_DIR}/libmpcdec)
+  target_compile_definitions(mpc_synth_state_ab PRIVATE MPC_ENABLE_SIMD_KERNEL)
+  add_test(NAME synth_state_ab COMMAND mpc_synth_state_ab)
+endif()
 
 # ---- .mpack / libmusicpack tests ------------------------------------------
 add_executable(mpc_mpack_tests mpack_tests.c)

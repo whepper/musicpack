@@ -15,6 +15,8 @@ on:
       - 'libmpcdec/**'
       - 'libmpcenc/**'
       - 'libmpcpsy/**'
+      - 'common/**'
+      - 'tests/**'
       - 'mpcenc/**'
       - 'bench/**'
       - 'wasm/**'
@@ -56,7 +58,7 @@ jobs:
 
       - name: Run benchmark (scalar + simd)
         run: |
-          MPC_BENCH="$(pwd)/build/bench/decode_bench" bench/run_bench.sh /tmp/mpc-bench --iterations 5
+          MPC_BENCH="$(pwd)/build/bench/decode_bench" MPC_BENCH_BUILD="$(pwd)/build" bench/run_bench.sh /tmp/mpc-bench --runs=5
 
       - name: Encoder corpus + benchmark (q5/q6/q7, scalar vs SIMD psycho)
         run: |
@@ -133,17 +135,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source /opt/emsdk/emsdk_env.sh
           C=/tmp/mpc-bench/corpus
-          FILES="$C/uncorrelated_noise_44100-q7.mpc $C/stereo_sine_44100-q5.mpc $C/silence_44100-q5.mpc $C/clipping_edge_44100-q7.mpc $C/chirp_44100-q7.mpc tests/fixtures/sine44-q5-48s.mpc"
+          FILES=(
+            "$C/uncorrelated_noise_44100-q7.mpc"
+            "$C/stereo_sine_44100-q5.mpc"
+            "$C/silence_44100-q5.mpc"
+            "$C/clipping_edge_44100-q7.mpc"
+            "$C/chirp_44100-q7.mpc"
+            "tests/fixtures/sine44-q5-48s.mpc"
+          )
           mkdir -p bench/results
           : > bench/results/wasm.tsv
-          for CFG in scalar autovec simd; do
-            echo "# === wasm $CFG ===" >> bench/results/wasm.tsv
-            for F in $FILES; do
-              node bench/wasm_bench.mjs "$(pwd)/build-wasm-$CFG/wasm/musepack.js" "$F" >> bench/results/wasm.tsv
+          {
+            echo "# commit: $GITHUB_SHA"
+            echo "# cmake: $(cmake --version | head -1)"
+            echo "# emscripten: $(emcc --version | head -1)"
+            echo "# node: $(node --version)"
+            echo "# columns: file rate channels block run audio_s frames wall_ms realtime_x config"
+            for CFG in scalar autovec simd; do
+              echo "# cmake $CFG"
+              grep -E '^(CMAKE_BUILD_TYPE|CMAKE_C_COMPILER|CMAKE_C_FLAGS|CMAKE_C_FLAGS_RELEASE|MPC_ENABLE_SIMD|MPC_ENABLE_NATIVE_TUNING|MPC_WASM_SIMD):' \
+                "build-wasm-$CFG/CMakeCache.txt"
+            done
+          } >> bench/results/wasm.tsv
+          ORDERS=("scalar autovec simd" "simd scalar autovec" "autovec simd scalar")
+          for RUN in 1 2 3 4 5; do
+            ORDER="${ORDERS[$(((RUN - 1) % 3))]}"
+            echo "# run $RUN order: $ORDER" >> bench/results/wasm.tsv
+            read -ra CONFIGS <<< "$ORDER"
+            for CFG in "${CONFIGS[@]}"; do
+              for F in "${FILES[@]}"; do
+                node bench/wasm_bench.mjs "$(pwd)/build-wasm-$CFG/wasm/musepack.js" "$F" \
+                  --blocks=1152 --runs=1 "--run-offset=$((RUN - 1))" "--config=$CFG" >> bench/results/wasm.tsv
+              done
             done
           done
+          python3 bench/summarize_bench.py --mode wasm --expected-runs 5 \
+            bench/results/wasm.tsv bench/results/wasm-summary.tsv
           cat bench/results/wasm.tsv
+          cat bench/results/wasm-summary.tsv
 
       - name: Upload results
         uses: actions/upload-artifact@v4

@@ -23,10 +23,11 @@ Measured realtime-multiplier improvements (higher = faster):
 | wasm autovec (-msimd128, scalar C)     | 812x   | —      | +5% vs scalar |
 | wasm explicit SIMD                     | —      | 2042x  | **2.64x vs scalar** |
 
-All existing tests pass with SIMD on and off (17/17 CTest, incl. fixtures,
-fuzz, integration, wasm smoke, web gapless), and a new scalar-vs-SIMD
-differential test (`synth_ab`) decodes every fixture through both paths:
-output is **bit-identical** on arm64 and x86-64 Release builds.
+Native SIMD-enabled CI directly runs `synth_ab` alongside the ordinary test
+suites. A scalar-only configuration runs applicable scalar suites and proves
+that forced SIMD is rejected. The differential gate uses the decoder's
+fixture tolerance; historical ARM64/x86-64 measurements observed zero float
+differences on the six exercised fixtures.
 
 ## Baseline findings
 
@@ -79,21 +80,25 @@ the next-largest component. No other routine was worth expanding scope for.
   `MPC_ENABLE_NATIVE_TUNING` (opt-in, off by default). Wasm objects get `-O3`;
   `demo/build.sh` and the wasm CI job use `Release`.
 - `bench/` — `decode_bench.c` (native, white-box impl forcing), `run_bench.sh`
-  (records commit/compiler/arch/CPU/flags into `results/*.tsv`), `make_corpus.sh`
+  (records commit/compiler/arch/CPU/build provenance and independent paired
+  repetitions into `results/*.tsv`), `make_corpus.sh`
   (deterministic WAV corpus incl. 30 s/60 s long tracks, encoded Q5/Q7),
   `wasm_bench.mjs` (Node, real `mpc_wasm_*` API, block-size A/B), README.
 - `tests/synth_diff.c` — scalar-vs-SIMD differential test, registered as
-  CTest `synth_ab` (all platforms).
+  CTest `synth_ab` on native builds; Wasm has a separate forced scalar vs
+  explicit-SIMD Node differential gate.
 - `.github/workflows/bench.yml` — repeatable x86-64 native + 3-config wasm
   benchmark job (artifacts: `bench/results/`).
 
 ## Correctness results
 
-- 17/17 CTest suites pass with SIMD on **and** off (unit, api, fixtures,
-  integration, fuzz, mpack, author, server, wasm smoke, web wasm gapless,
-  compat, synth_ab) — full CI matrix incl. Windows/MSVC.
-- `synth_ab` over all 6 fixtures: **worst diff 0** (bit-identical) on ARM64
-  (clang) and x86-64 (clang cross-compile + GCC CI).
+- The SIMD-enabled Release CI matrix runs `synth_ab` directly on Linux GCC,
+  Linux Clang, macOS Clang, and Windows MSVC. Emscripten/Node runs both the
+  golden-WAV smoke test and forced scalar/explicit-SIMD differential test.
+- Scalar-only CI runs the applicable suites and separately requires forced
+  SIMD to fail closed.
+- `synth_ab` historically observed worst diff 0 over six fixtures on ARM64
+  Clang and x86-64 GCC. The maintained contract remains tolerance-based.
 - A standalone kernel check confirms `mpc_compute_new_V` matches the scalar
   transform on 64/64 outputs on both NEON and SSE2.
 
@@ -120,8 +125,9 @@ the filter occupies (smaller for high-bitrate, bitstream-heavy material).
 | median realtime-x | 1491 | 2269 |
 | overall mean speedup | — | **1.50x** (median 1.52x) |
 
-(The earlier 2 s-only corpus run on a Xeon 8573C gave 1.39x; the long-track
-corpus reduces fixed open/header overhead and is the better measure.)
+(The earlier 2 s-only corpus run on a Xeon 8573C gave 1.39x; long tracks
+reduce timing quantization and are the better decode-loop measure. File open
+and decoder setup are outside the timer.)
 GCC/SSE2 gain is lower than NEON's on the noise material (1.3x vs 3.3x);
 suggested follow-up: inspect GCC SSE2 codegen for the strided FIR loads.
 
@@ -151,8 +157,10 @@ change made.
 - MSVC: `decode_bench` uses `QueryPerformanceCounter`/`clock` (no
   `clock_gettime`). The SIMD kernel compiles under MSVC (SSE2 via `_M_X64`);
   verified by the Windows CI build.
-- The wasm `-msimd128` config keeps the single-threaded, no-SAB deployment
-  model (no pthreads, no cross-origin isolation) — unchanged.
+- The Wasm decoder module is single-threaded and uses no Wasm pthreads,
+  shared linear memory, or Asyncify; memory-backed decoding needs no
+  cross-origin isolation. The demand-streaming web application separately
+  uses a SharedArrayBuffer mailbox and therefore requires COOP/COEP.
 - `bench/` adds no runtime cost: the bench binary is only built under
   `MPC_BUILD_TESTS`, and its CTest entry is informational (excluded from the
   default suites).
@@ -178,6 +186,8 @@ bench/run_bench.sh /tmp/mpc-bench                                   # scalar + s
 # wasm matrix (3 configs) and methodology: bench/README.md
 ```
 
-Results records (commit, compiler/version, arch, CPU, flags, before/after,
-per-file + aggregate) land in `bench/results/`; the CI run uploads them as
-workflow artifacts.
+Raw result records and per-file/configuration median/min/max summaries land in
+`bench/results/`; the CI run uploads them as workflow artifacts. Historical
+numbers above predate the integrity hardening and are not evidence for the
+hardened benchmark path; the integrity review records the fresh post-hardening
+runs separately.

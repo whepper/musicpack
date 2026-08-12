@@ -30,7 +30,7 @@
 
 typedef struct {
     float *pcm;
-    size_t frames;
+    size_t samples;
     unsigned rate;
 } pcm_t;
 
@@ -54,7 +54,18 @@ decode_with_impl(const char *path, int impl, pcm_t *out)
         fprintf(stderr, "cannot demux %s\n", path);
         exit(2);
     }
-    mpc_decoder_set_synth_impl(demux->d, impl);
+    if (!mpc_decoder_set_synth_impl(demux->d, impl)) {
+        fprintf(stderr, "cannot select requested synthesis implementation\n");
+        exit(2);
+    }
+    if ((impl == MPC_SYNTH_SCALAR && demux->d->synth != mpc_synthese_filter_float_scalar)
+#ifdef MPC_ENABLE_SIMD_KERNEL
+        || (impl == MPC_SYNTH_SIMD && demux->d->synth != mpc_synthese_filter_float_simd)
+#endif
+        ) {
+        fprintf(stderr, "requested synthesis implementation was not selected\n");
+        exit(2);
+    }
     mpc_demux_get_info(demux, &si);
 
     buf = 0;
@@ -68,7 +79,13 @@ decode_with_impl(const char *path, int impl, pcm_t *out)
             continue;
         if (len + frame.samples * si.channels > cap) {
             cap = cap ? cap * 2 : 1u << 16;
-            buf = realloc(buf, cap * sizeof *buf);
+            float *new_buf = realloc(buf, cap * sizeof *buf);
+            if (new_buf == 0) {
+                free(buf);
+                fprintf(stderr, "out of memory decoding %s\n", path);
+                exit(2);
+            }
+            buf = new_buf;
         }
         memcpy(buf + len, frame.buffer,
                frame.samples * si.channels * sizeof *buf);
@@ -79,7 +96,7 @@ decode_with_impl(const char *path, int impl, pcm_t *out)
     mpc_reader_exit_stdio(&reader);
 
     out->pcm = buf;
-    out->frames = len;
+    out->samples = len;
     out->rate = si.sample_freq;
 }
 
@@ -100,20 +117,26 @@ main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         pcm_t a, b;
-        size_t n, changed = 0, over = 0;
+        size_t n, changed = 0, over = 0, nonfinite = 0;
         float worst = 0.0f;
         size_t worst_at = 0;
 
         decode_with_impl(argv[i], MPC_SYNTH_SCALAR, &a);
         decode_with_impl(argv[i], MPC_SYNTH_SIMD, &b);
 
-        n = a.frames < b.frames ? a.frames : b.frames;
-        if (a.frames != b.frames) {
+        n = a.samples < b.samples ? a.samples : b.samples;
+        if (a.samples != b.samples) {
             fprintf(stderr, "FAIL %s: frame count differs (%zu vs %zu)\n",
-                    argv[i], a.frames, b.frames);
+                    argv[i], a.samples, b.samples);
             rc = 1;
         }
         for (size_t j = 0; j < n; j++) {
+            if (!isfinite(a.pcm[j]) || !isfinite(b.pcm[j])) {
+                fprintf(stderr, "FAIL %s: non-finite PCM at %zu\n", argv[i], j);
+                rc = 1;
+                nonfinite++;
+                continue;
+            }
             float d = fabsf(a.pcm[j] - b.pcm[j]);
             if (d > 0.0f) {
                 changed++;
@@ -127,10 +150,12 @@ main(int argc, char **argv)
             }
         }
 
-        if (changed == 0 && a.frames == b.frames) {
-            printf("PASS %-28s identical (%zu frames, worst diff 0)\n",
+        if (nonfinite != 0) {
+            printf("FAIL %-28s %zu non-finite sample values\n", argv[i], nonfinite);
+        } else if (changed == 0 && a.samples == b.samples) {
+            printf("PASS %-28s identical (%zu sample values, worst diff 0)\n",
                     argv[i], n);
-        } else if (over == 0 && a.frames == b.frames) {
+        } else if (over == 0 && a.samples == b.samples) {
             printf("PASS %-28s %zu samples differ within tolerance (worst %.3g at %zu)\n",
                    argv[i], changed, worst, worst_at);
         } else if (over != 0) {

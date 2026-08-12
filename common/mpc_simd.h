@@ -49,8 +49,12 @@
 # include <wasm_simd128.h>
 typedef v128_t mpc_f32x4;
 # define MPC_SIMD_WASM 1
-#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
-# include <arm_neon.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+# if defined(_MSC_VER) && defined(_M_ARM64)
+#  include <arm64_neon.h>
+# else
+#  include <arm_neon.h>
+# endif
 typedef float32x4_t mpc_f32x4;
 # define MPC_SIMD_NEON 1
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86) && defined(_M_IX86_FP) && _M_IX86_FP >= 2)

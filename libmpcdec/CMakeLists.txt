@@ -30,6 +30,8 @@ set(MPC_USE_SIMD FALSE)
 if(MPC_ENABLE_SIMD AND MPC_SIMD_SUPPORTED)
   set(MPC_USE_SIMD TRUE)
 endif()
+set(MPC_DECODER_SIMD_ENABLED ${MPC_USE_SIMD} CACHE INTERNAL
+    "Whether the decoder SIMD synthesis kernel is compiled")
 
 if(MPC_USE_SIMD)
   list(APPEND MPCDEC_SOURCES synth_filter_simd.c)

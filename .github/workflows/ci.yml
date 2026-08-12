@@ -8,11 +8,24 @@ on:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.label || format('{0} ({1})', matrix.os, matrix.compiler) }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cmake_compiler: gcc
+          - os: ubuntu-latest
+            compiler: clang
+            cmake_compiler: clang
+          - os: macos-14
+            compiler: clang
+            cmake_compiler: clang
+            label: macos-arm64
+          - os: windows-latest
+            compiler: msvc
+            cmake_compiler: ''
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -36,6 +49,12 @@ jobs:
           -DMPC_BUILD_MPCGAIN=OFF
           -DMPC_BUILD_MPCCHAP=OFF
           -DCMAKE_BUILD_TYPE=Release
+          ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }}
+
+      - name: Assert macOS ARM64 runner
+        if: matrix.label == 'macos-arm64'
+        shell: bash
+        run: test "$(uname -m)" = arm64
 
       - name: Build
         run: cmake --build build --config Release -j
@@ -44,15 +63,22 @@ jobs:
       # suites (bash + python3) are UNIX-only. server_unit builds on Windows
       # too (the server core is platform-independent; the HTTP server itself
       # is not built there since libmicrohttpd is unavailable).
-      - name: Test (unit + mpack + server)
-        run: ctest --test-dir build -C Release -R "^(unit|mpack|server_unit|synth_ab|enc_ab|psy_ab)$" --output-on-failure
+      - name: Test direct SIMD gates
+        shell: bash
+        run: |
+          for TEST in synth_ab synth_state_ab enc_ab psy_ab; do
+            ctest --test-dir build -C Release --no-tests=error -R "^${TEST}$" --output-on-failure
+          done
+
+      - name: Test unit, package, and server core
+        run: ctest --test-dir build -C Release --no-tests=error -R "^(unit|mpack|server_unit)$" --output-on-failure
 
       # enc_compat is excluded here: its manifest mode is a local developer
       # fallback pinned to the arm64-clang -O0 reference build. CI enforces
       # the Phase 2 guarantee in live mode (REF_MPCENC) in the compat step.
       - name: Test (integration + fuzz + fixtures)
         if: matrix.os != 'windows-latest'
-        run: ctest --test-dir build -C Release -E "^unit$|^mpack$|^compat$|^enc_compat$" --output-on-failure
+        run: ctest --test-dir build -C Release --no-tests=error -E "^unit$|^mpack$|^compat$|^enc_compat$" --output-on-failure
 
       # Build the pristine reference encoder (05d97a5) and verify the built
       # encoder is byte-identical to it. Runs on all platforms: the live
@@ -75,6 +101,7 @@ jobs:
           PY="$(command -v python3 || command -v python)"
           "$PY" "$GITHUB_WORKSPACE/tests/patch_reference.py" "$RUNNER_TEMP/musepack-ref"
           cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }} \
             -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
 
       - name: Build reference encoder
@@ -93,10 +120,26 @@ jobs:
           fi
           [ -x "$REF_MPCENC" ] || { echo "reference mpcenc not found"; exit 1; }
           export REF_MPCENC
-          ctest --test-dir build -C Release -R "^compat$" --output-on-failure
+          ctest --test-dir build -C Release --no-tests=error -R "^compat$" --output-on-failure
           # Phase 2: extended-corpus q5/q6/q7 bit-exact regression (live mode,
           # same reference encoder => toolchain-agnostic per-platform proof).
-          ctest --test-dir build -C Release -R "^enc_compat$" --output-on-failure
+          ctest --test-dir build -C Release --no-tests=error -R "^enc_compat$" --output-on-failure
+
+  simd-off:
+    name: linux scalar-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure and build
+        run: >
+          cmake -S . -B build-nosimd -DMPC_BUILD_TESTS=ON
+          -DMPC_BUILD_MPCGAIN=OFF -DMPC_BUILD_MPCCHAP=OFF
+          -DMPC_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-nosimd -j
+      - name: Test scalar-only suites
+        run: ctest --test-dir build-nosimd --no-tests=error -R "^(unit|api|mpack|sonic_unit|sonic_analyzer|server_unit|fixtures|fuzz|mpack_integration|author_backend|author_app_audit|mpack_fuzz|meta_fuzz)$" --output-on-failure
+      - name: Verify forced SIMD rejects scalar-only build
+        run: ctest --test-dir build-nosimd --no-tests=error -R "^synth_simd_unavailable$" --output-on-failure
 
   wasm-build:
     name: wasm
@@ -114,7 +157,8 @@ jobs:
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          emcmake cmake -S . -B build-wasm -DMPC_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+          emcmake cmake -S . -B build-wasm -DMPC_BUILD_TESTS=ON \
+            -DMPC_WASM_TEST_HOOKS=ON -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         shell: bash
@@ -122,11 +166,17 @@ jobs:
           source /opt/emsdk/emsdk_env.sh
           cmake --build build-wasm -j
 
-      - name: Test (wasm smoke)
+      - name: Test Wasm smoke
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
-          ctest --test-dir build-wasm -R "^wasm_smoke$" --output-on-failure
+          ctest --test-dir build-wasm --no-tests=error -R "^wasm_smoke$" --output-on-failure
+
+      - name: Test Wasm scalar vs explicit SIMD
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          ctest --test-dir build-wasm --no-tests=error -R "^wasm_synth_ab$" --output-on-failure
 
   research:
     name: research (model-free)

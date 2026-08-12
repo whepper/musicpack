@@ -43,6 +43,7 @@
 #include <string.h>
 #include <mpc/mpcdec.h>
 #include <musepack/musepack.h>
+#include "internal.h"
 
 struct musepack_decoder {
     mpc_demux *demux;
@@ -52,6 +53,12 @@ struct musepack_decoder {
     uint64_t frame_filled;  ///< sample-frames already consumed from frame_buffer
     uint64_t frame_samples; ///< sample-frames (per channel) in frame_buffer
 };
+
+mpc_decoder *
+musepack_decoder_internal(musepack_decoder *d)
+{
+    return d != 0 && d->demux != 0 ? d->demux->d : 0;
+}
 
 static musepack_error
 mpc_status_to_error(mpc_status s)

@@ -83,9 +83,11 @@ bench/run_bench.sh /tmp/bench-corpus --impl scalar --iterations 5
 bench/run_bench.sh /tmp/bench-corpus --impl simd --iterations 5
 ```
 
-Output rows: `file sample_rate channels audio_s wall_ms cpu_ms realtime_x
-impl`. The record header captures commit, compiler/version, arch, CPU model,
-flags, and the corpus size. Append to `results/<timestamp>.tsv`.
+Raw rows contain `file sample_rate channels audio_s wall_ms cpu_ms realtime_x
+impl run`. The record header captures commit, architecture, CPU, CMake
+version, binary/corpus hashes, and effective CMake compiler/build flags.
+`--runs N` records independent paired repetitions in alternating scalar/SIMD
+order. A sibling `*-summary.tsv` records count, median, minimum, and maximum.
 
 Realtime multiplier = `audio_seconds / wall_seconds`; higher is better.
 Iterate a few times on an idle machine; keep the frequency fixed
@@ -118,11 +120,16 @@ node bench/wasm_bench.mjs build-wasm-simd/wasm/musepack.js ...
 ```
 
 The `--blocks=1152,4608` option (default both) measures the JS<->wasm
-boundary cost per `_mpc_wasm_read` call.
+boundary cost per `_mpc_wasm_read` call. CI counterbalances scalar, autovec,
+and explicit-SIMD configuration order across five independent runs and emits
+raw plus median/min/max summary artifacts. Records include Node/V8, OS/CPU,
+JS/Wasm/input hashes, Emscripten, CMake, and commit metadata.
 
 ## Methodology (recording)
 
 Record for every optimization: commit, compiler + version, architecture,
 CPU model, build flags, corpus, before/after wall time, and percentage
-improvement. `run_bench.sh` stamps these into `results/`. Do not merge
-performance claims based on single runs; compare medians of >=3 runs.
+improvement. `run_bench.sh` stamps provenance and raw repetitions into
+`results/`. Do not merge performance claims based on single runs; compare
+medians of >=3 runs and report spread. These are decode-loop measurements;
+open/setup and module/input-copy costs are intentionally excluded.

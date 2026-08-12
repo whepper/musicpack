@@ -2,11 +2,11 @@
 # Repeatable native decoder benchmark.
 #
 # Runs bench/decode_bench over the corpus with an optional --impl filter,
-# records full environment metadata (commit, compiler+version, arch, CPU,
-# flags), and appends the results to bench/results/<date>.tsv.
+# records full environment metadata and independent repetitions in
+# bench/results/<date>.tsv.
 #
 # Usage:
-#   run_bench.sh <corpus-dir> [--impl scalar|simd] [--iterations N]
+#   run_bench.sh <corpus-dir> [--impl scalar|simd] [--iterations N] [--runs N]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,14 +16,31 @@ CORPUS="${1:?corpus dir}"
 
 IMPL=""
 ITERATIONS="3"
-ARGS=()
-for A in "$@"; do
-  case "$A" in
-    --impl=*) IMPL="${A#--impl=}" ;;
-    --iterations=*) ITERATIONS="${A#--iterations=}" ;;
+RUNS="3"
+shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --impl|--iterations|--runs)
+      [ "$#" -ge 2 ] || { echo "missing value for $1"; exit 2; }
+      case "$1" in
+        --impl) IMPL="$2" ;;
+        --iterations) ITERATIONS="$2" ;;
+        --runs) RUNS="$2" ;;
+      esac
+      shift 2 ;;
+    --impl=*) IMPL="${1#--impl=}"; shift ;;
+    --iterations=*) ITERATIONS="${1#--iterations=}"; shift ;;
+    --runs=*) RUNS="${1#--runs=}"; shift ;;
+    *) echo "unknown option: $1"; exit 2 ;;
   esac
 done
-if [ -n "${2:-}" ] && [ "$2" = "--impl" ]; then IMPL="$3"; fi
+
+[[ "$ITERATIONS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid --iterations: $ITERATIONS"; exit 2; }
+[[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid --runs: $RUNS"; exit 2; }
+if [ -n "$IMPL" ] && [ "$IMPL" != scalar ] && [ "$IMPL" != simd ]; then
+  echo "invalid --impl: $IMPL"
+  exit 2
+fi
 
 [ -x "$BIN" ] || { echo "decode_bench not found at $BIN (build with -DMPC_BUILD_TESTS=ON)"; exit 1; }
 
@@ -31,12 +48,35 @@ RESULTS_DIR="$BENCH/results"
 mkdir -p "$RESULTS_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RESULTS="$RESULTS_DIR/$STAMP.tsv"
+SUMMARY="$RESULTS_DIR/$STAMP-summary.tsv"
+CORPUS_HASH="$(python3 - "$CORPUS" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+h = hashlib.sha256()
+for path in sorted(root.rglob("*.mpc"), key=lambda p: p.relative_to(root).as_posix()):
+    rel = path.relative_to(root).as_posix().encode()
+    h.update(len(rel).to_bytes(4, "big")); h.update(rel)
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+print(h.hexdigest())
+PY
+)"
+CMAKE_COMPILER=""
+if [ -n "${MPC_BENCH_BUILD:-}" ] && [ -f "$MPC_BENCH_BUILD/CMakeCache.txt" ]; then
+  CMAKE_COMPILER="$(grep '^CMAKE_C_COMPILER:FILEPATH=' "$MPC_BENCH_BUILD/CMakeCache.txt" | cut -d= -f2-)"
+fi
 
 # ---- metadata record ------------------------------------------------------
 {
   echo "# date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# commit: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "# compiler: $(cc --version 2>/dev/null | head -1 || clang --version | head -1)"
+  echo "# cmake_version: $(cmake --version | head -1)"
+  if [ -n "$CMAKE_COMPILER" ]; then
+    echo "# compiler: $($CMAKE_COMPILER --version 2>&1 | head -1)"
+  else
+    echo "# compiler: unknown"
+  fi
   if [ "$(uname -s)" = "Darwin" ]; then
     echo "# cpu: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
   else
@@ -45,8 +85,14 @@ RESULTS="$RESULTS_DIR/$STAMP.tsv"
   echo "# arch: $(uname -m)"
   echo "# impl: ${IMPL:-auto}"
   echo "# iterations: $ITERATIONS"
+  echo "# runs: $RUNS"
+  echo "# binary_sha256: $(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$BIN")"
+  echo "# corpus_sha256: $CORPUS_HASH"
+  if [ -n "${MPC_BENCH_BUILD:-}" ] && [ -f "$MPC_BENCH_BUILD/CMakeCache.txt" ]; then
+    grep -E '^(CMAKE_BUILD_TYPE|CMAKE_C_COMPILER|CMAKE_C_COMPILER_ID|CMAKE_C_COMPILER_VERSION|CMAKE_C_FLAGS|CMAKE_C_FLAGS_RELEASE|MPC_ENABLE_SIMD|MPC_ENABLE_NATIVE_TUNING):' "$MPC_BENCH_BUILD/CMakeCache.txt" | sed 's/^/# cmake: /'
+  fi
   echo "# files: $(find "$CORPUS" -name '*.mpc' | wc -l | tr -d ' ')"
-  echo "# columns: file sample_rate channels audio_s wall_ms cpu_ms realtime_x impl"
+  echo "# columns: file sample_rate channels audio_s wall_ms cpu_ms realtime_x impl run"
 } | tee "$RESULTS"
 
 # ---- run ------------------------------------------------------------------
@@ -54,13 +100,20 @@ FILES=( "$CORPUS"/corpus/*.mpc "$CORPUS"/fixtures/*.mpc )
 ARGS=(--iterations "$ITERATIONS")
 if [ -n "$IMPL" ]; then ARGS+=(--impl "$IMPL"); fi
 
-if [ -n "$IMPL" ]; then
-  "$BIN" "${ARGS[@]}" "${FILES[@]}" | tee -a "$RESULTS"
-else
-  echo "# --- scalar ---" | tee -a "$RESULTS"
-  "$BIN" "${ARGS[@]}" --impl scalar "${FILES[@]}" | tee -a "$RESULTS"
-  echo "# --- simd ---" | tee -a "$RESULTS"
-  "$BIN" "${ARGS[@]}" --impl simd "${FILES[@]}" | tee -a "$RESULTS"
-fi
+for ((run = 1; run <= RUNS; run++)); do
+  echo "# --- run $run ---" | tee -a "$RESULTS"
+  if [ -n "$IMPL" ]; then
+    "$BIN" "${ARGS[@]}" "${FILES[@]}" | awk -v r="$run" 'BEGIN{OFS="\t"}{print $0,r}' | tee -a "$RESULTS"
+  elif ((run % 2)); then
+    "$BIN" "${ARGS[@]}" --impl scalar "${FILES[@]}" | awk -v r="$run" 'BEGIN{OFS="\t"}{print $0,r}' | tee -a "$RESULTS"
+    "$BIN" "${ARGS[@]}" --impl simd "${FILES[@]}" | awk -v r="$run" 'BEGIN{OFS="\t"}{print $0,r}' | tee -a "$RESULTS"
+  else
+    "$BIN" "${ARGS[@]}" --impl simd "${FILES[@]}" | awk -v r="$run" 'BEGIN{OFS="\t"}{print $0,r}' | tee -a "$RESULTS"
+    "$BIN" "${ARGS[@]}" --impl scalar "${FILES[@]}" | awk -v r="$run" 'BEGIN{OFS="\t"}{print $0,r}' | tee -a "$RESULTS"
+  fi
+done
 
-echo "results appended to $RESULTS"
+python3 "$BENCH/summarize_bench.py" --mode native --expected-runs "$RUNS" \
+  "$RESULTS" "$SUMMARY"
+echo "raw results: $RESULTS"
+echo "summary: $SUMMARY"

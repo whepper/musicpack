@@ -60,6 +60,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <musepack/musepack.h>
+#include "internal.h"
 
 #define WASM_MAX_HANDLES 16
 
@@ -113,6 +114,25 @@ int mpc_wasm_open(int h, const void *data, unsigned int size)
     hnd->decoder = musepack_decoder_open(&hnd->reader, &err);
     return hnd->decoder != 0 ? MUSEPACK_OK : (int) err;
 }
+
+#ifdef MPC_WASM_TEST_HOOKS
+/* Test-only implementation control. The browser-facing API remains AUTO. */
+int mpc_wasm_set_synth_impl(int h, int impl)
+{
+    wasm_handle *hnd = wasm_get_handle(h);
+    mpc_decoder *decoder;
+
+    if (hnd == 0 || hnd->decoder == 0)
+        return 0;
+    decoder = musepack_decoder_internal(hnd->decoder);
+    return decoder != 0 && mpc_decoder_set_synth_impl(decoder, impl);
+}
+
+int mpc_wasm_has_synth_simd(void)
+{
+    return mpc_decoder_has_synth_simd();
+}
+#endif
 
 /* ---- range reader: the decoder's reads go through JS imports ----------
    The JS side (Module.mpcRangeRead/Seek/Tell, see range_library.js) fulfills

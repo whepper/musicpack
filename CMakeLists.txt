@@ -23,6 +23,7 @@ option(MPC_ENABLE_SIMD "Enable SIMD synthesis filter kernels" ON)
 # Independent of MPC_ENABLE_SIMD so the scalar-wasm, auto-vectorized-wasm
 # and explicit-SIMD-wasm configurations can be compared directly.
 set(MPC_WASM_SIMD ON CACHE BOOL "Emit WebAssembly SIMD128 (-msimd128) for the wasm decoder")
+option(MPC_WASM_TEST_HOOKS "Export internal Wasm decoder test controls" OFF)
 # Opt-in native tuning for local builds only; never enabled in releases.
 option(MPC_ENABLE_NATIVE_TUNING "Tune native builds for the build host (-march=native, opt-in)" OFF)
 option(MPC_ENABLE_PSY_PROFILE "Enable opt-in psychoacoustic CPU-time counters" OFF)

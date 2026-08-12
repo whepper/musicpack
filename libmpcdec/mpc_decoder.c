@@ -112,24 +112,26 @@ void mpc_decoder_setup(mpc_decoder *d)
 	mpc_decoder_init_quant(d, 1.0f);
 }
 
-void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl)
+int mpc_decoder_set_synth_impl(mpc_decoder *d, int impl)
 {
 	switch (impl) {
 	case MPC_SYNTH_SCALAR:
 		d->synth = mpc_synthese_filter_float_scalar;
-		break;
+		return 1;
 #ifdef MPC_ENABLE_SIMD_KERNEL
 	case MPC_SYNTH_SIMD:
 		d->synth = mpc_synthese_filter_float_simd;
-		break;
+		return 1;
 #endif
-	default: /* MPC_SYNTH_AUTO: best available */
+	case MPC_SYNTH_AUTO: /* best available */
 #ifdef MPC_ENABLE_SIMD_KERNEL
 		d->synth = mpc_synthese_filter_float_simd;
 #else
 		d->synth = mpc_synthese_filter_float_scalar;
 #endif
-		break;
+		return 1;
+	default:
+		return 0;
 	}
 }
 

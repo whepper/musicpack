@@ -25,7 +25,6 @@
 /* White-box: force the synthesis implementation + reach the inner decoder. */
 #include "decoder.h"
 #include "internal.h"
-extern void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
 
 #define IMPL_AUTO   0
 #define IMPL_SCALAR 1
@@ -86,8 +85,19 @@ static int run_file(const char *path)
             mpc_reader_exit_stdio(&reader);
             return 1;
         }
-        if (impl_forced != IMPL_AUTO)
-            mpc_decoder_set_synth_impl(demux->d, impl_forced);
+        if (impl_forced == IMPL_SIMD && !mpc_decoder_has_synth_simd()) {
+            fprintf(stderr, "bench: SIMD kernel is not compiled in\n");
+            mpc_demux_exit(demux);
+            mpc_reader_exit_stdio(&reader);
+            return 1;
+        }
+        if (impl_forced != IMPL_AUTO &&
+            !mpc_decoder_set_synth_impl(demux->d, impl_forced)) {
+            fprintf(stderr, "bench: requested synthesis implementation is unavailable\n");
+            mpc_demux_exit(demux);
+            mpc_reader_exit_stdio(&reader);
+            return 1;
+        }
 
         mpc_demux_get_info(demux, &si);
         if (i == 0) {
@@ -115,7 +125,12 @@ static int run_file(const char *path)
         mpc_demux_exit(demux);
         mpc_reader_exit_stdio(&reader);
     }
-    (void) total;
+    if (total != (uint64_t) mpc_streaminfo_get_length_samples(&si) * iterations) {
+        fprintf(stderr, "bench: incomplete decode of %s (%llu of %llu frames)\n",
+                path, (unsigned long long) total,
+                (unsigned long long) mpc_streaminfo_get_length_samples(&si) * iterations);
+        return 1;
+    }
 
     printf("%s\t%u\t%u\t%.3f\t%.1f\t%.1f\t%.3f\t%s\n",
            path, si.sample_freq, si.channels,
@@ -135,8 +150,13 @@ int main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--iterations") == 0 && i + 1 < argc) {
-            iterations = atoi(argv[++i]);
-            if (iterations < 1) iterations = 1;
+            char *end;
+            long value = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || value < 1 || value > 1000000) {
+                fprintf(stderr, "bench: invalid --iterations value\n");
+                return 2;
+            }
+            iterations = (int) value;
         } else if (strcmp(argv[i], "--impl") == 0 && i + 1 < argc) {
             const char *v = argv[++i];
             if (strcmp(v, "scalar") == 0) impl_forced = IMPL_SCALAR;

@@ -87,7 +87,9 @@ static mpc_inline mpc_status mpc_check_key(char * key)
 }
 
 /// helper functions used by multiple files
+typedef struct musepack_decoder musepack_decoder;
 mpc_uint32_t mpc_random_int(mpc_decoder *d); // in synth_filter.c
+void mpc_decoder_setup(mpc_decoder *d);
 void mpc_decoder_init_quant(mpc_decoder *d, double scale_factor);
 
 // Synthesis filter entry points. mpc_decoder_synthese_filter_float is the
@@ -104,10 +106,12 @@ void mpc_synthese_filter_float_simd(mpc_decoder *d, MPC_SAMPLE_FORMAT* OutData, 
 enum {
     MPC_SYNTH_AUTO   = 0, ///< best available (default)
     MPC_SYNTH_SCALAR = 1, ///< force the scalar reference path
-    MPC_SYNTH_SIMD   = 2, ///< force the SIMD path (no-op if not compiled in)
+    MPC_SYNTH_SIMD   = 2, ///< force the compiled SIMD path
 };
-void mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
+// Returns nonzero only when the requested implementation is available.
+int mpc_decoder_set_synth_impl(mpc_decoder *d, int impl);
 int mpc_decoder_has_synth_simd(void);
+mpc_decoder *musepack_decoder_internal(musepack_decoder *d);
 
 #define MPC_IS_FAILURE(X) ((int)(X) < (int)MPC_STATUS_OK)
 #define MPC_AUTO_FAIL(X) { mpc_status s = (X); if (MPC_IS_FAILURE(s)) return s; }
