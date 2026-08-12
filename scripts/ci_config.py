@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import pathlib
 import platform
+import re
 import subprocess
 
 
@@ -19,6 +20,19 @@ def cache_values(build):
         key = key_type.split(":", 1)[0]
         values[key] = value
     return values
+
+
+def compiler_values(build, values):
+    compiler = values.get("CMAKE_C_COMPILER", "")
+    compiler_files = sorted(build.glob("CMakeFiles/*/CMakeCCompiler.cmake"))
+    if not compiler_files:
+        return compiler, ""
+    content = compiler_files[-1].read_text(encoding="utf-8", errors="replace")
+    if not compiler:
+        match = re.search(r'set\(CMAKE_C_COMPILER "([^"]+)', content)
+        compiler = match.group(1) if match else ""
+    match = re.search(r'set\(CMAKE_C_COMPILER_ID "([^"]+)', content)
+    return compiler, match.group(1) if match else ""
 
 
 def version(command):
@@ -44,12 +58,13 @@ def main():
     args = parser.parse_args()
     build = pathlib.Path(args.build)
     values = cache_values(build)
-    compiler = values.get("CMAKE_C_COMPILER", "")
+    compiler, compiler_id = compiler_values(build, values)
     fields = {
         "role": args.role,
         "os": platform.system(),
         "arch": platform.machine(),
         "compiler": compiler or "unknown",
+        "compiler_id": compiler_id or "unknown",
         "compiler_version": version(compiler),
         "cmake_build_type": values.get("CMAKE_BUILD_TYPE", "<multi-config>"),
         "cmake_configurations": values.get("CMAKE_CONFIGURATION_TYPES", ""),
