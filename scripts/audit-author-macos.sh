@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Audit the standalone MusicPack Author .app for the Sonic distribution
-# contract:
+# Audit the standalone MusicPack Author .app for the distribution contract:
 #
 #   MusicPack Author.app/
 #     Contents/MacOS/musicpack          (static backend)
+#     Contents/MacOS/mpcenc             (static Musepack encoder)
 #     Contents/MacOS/musicpack-sonic    (Sonic analyzer)
 #     Contents/Frameworks/libonnxruntime*.dylib  (relocatable ONNX Runtime)
 #
 # Fails the build when:
-#   - any of the three pieces is missing,
+#   - any of the required pieces is missing,
 #   - a dependency resolves to Homebrew / /usr/local / another external path,
 #   - the analyzer carries an absolute rpath or an absolute ONNX Runtime
 #     load path (must be @rpath/@loader_path-relocatable),
@@ -25,10 +25,11 @@ OTOOL="$(command -v otool || echo /usr/bin/otool)"
 MACOS="$APP/Contents/MacOS"
 FRAMEWORKS="$APP/Contents/Frameworks"
 BACKEND="$MACOS/musicpack"
+MPCENC="$MACOS/mpcenc"
 SONIC="$MACOS/musicpack-sonic"
 
 echo "== required pieces =="
-for f in "$BACKEND" "$SONIC"; do
+for f in "$BACKEND" "$MPCENC" "$SONIC"; do
   [ -f "$f" ] || { echo "fail: missing $f" >&2; exit 1; }
   [ -x "$f" ] || { echo "fail: not executable $f" >&2; exit 1; }
   echo "ok: $(basename "$f")"
@@ -48,7 +49,7 @@ ARCH="$(file "$MACOS/musicpack-author" 2>/dev/null | grep -oE 'x86_64|arm64' | h
 echo "host architecture: $ARCH"
 
 echo "== architecture consistency =="
-for f in "$BACKEND" "$SONIC" "$ONNX_DYLIB"; do
+for f in "$BACKEND" "$MPCENC" "$SONIC" "$ONNX_DYLIB"; do
   a="$(file "$f" | grep -oE 'x86_64|arm64' | head -1 || true)"
   if [ "$a" != "$ARCH" ]; then
     echo "fail: $(basename "$f") architecture '$a' does not match host '$ARCH'" >&2
@@ -83,6 +84,7 @@ check_deps() {
 }
 
 check_deps musicpack "$BACKEND"
+check_deps mpcenc "$MPCENC"
 check_deps musicpack-sonic "$SONIC"
 check_deps onnxruntime "$ONNX_DYLIB"
 if [ "$FAIL" -ne 0 ]; then

@@ -7,13 +7,18 @@
 #   author/src-tauri/target/release/bundle/macos/MusicPack Author.app
 #
 # The standalone app embeds a fully static `musicpack` backend, the
-# `musicpack-sonic` analyzer, and a relocatable ONNX Runtime dylib so it needs
-# nothing but macOS system libraries at runtime:
+# `musicpack-sonic` analyzer, a fully static `mpcenc` encoder, and a
+# relocatable ONNX Runtime dylib so it needs nothing but macOS system
+# libraries at runtime:
 #
 #   MusicPack Author.app
 #     ├── Contents/MacOS/musicpack           (static backend)
+#     ├── Contents/MacOS/mpcenc              (static Musepack encoder)
 #     ├── Contents/MacOS/musicpack-sonic     (Sonic analyzer)
 #     └── Contents/Frameworks/libonnxruntime*.dylib
+#
+# FFmpeg (FLAC/WAV decode) is intentionally NOT bundled: it is an external
+# macOS system/Homebrew tool, exactly like /usr/bin/curl for MusicBrainz.
 #
 # ONNX Runtime is downloaded from a pinned immutable release asset and
 # checksum-verified (arm64 → 1.28.0; x86_64 → 1.23.0, the last Intel macOS
@@ -87,12 +92,14 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
   -DMPC_BUILD_MPCCHAP=OFF \
   -DSONIC_ONNXRUNTIME_DIR="$ONNX_DIR" \
   -DCMAKE_BUILD_TYPE="$CONFIG"
-cmake --build "$BUILD_DIR" -j --target musicpack_cmd musicpack_sonic_cmd
+cmake --build "$BUILD_DIR" -j --target musicpack_cmd musicpack_sonic_cmd mpcenc
 
 BACKEND="$BUILD_DIR/musicpack/musicpack"
 SONIC_BIN="$BUILD_DIR/sonic/musicpack-sonic"
+MPCENC_BIN="$BUILD_DIR/mpcenc/mpcenc"
 [ -x "$BACKEND" ] || { echo "error: backend not produced at $BACKEND" >&2; exit 1; }
 [ -x "$SONIC_BIN" ] || { echo "error: sonic analyzer not produced at $SONIC_BIN" >&2; exit 1; }
+[ -x "$MPCENC_BIN" ] || { echo "error: mpcenc not produced at $MPCENC_BIN" >&2; exit 1; }
 
 echo "== 2. verifying runtime dependencies =="
 "$ROOT/scripts/verify-backend-dylibs.sh" "$BACKEND"
@@ -101,12 +108,16 @@ if otool -L "$SONIC_BIN" | grep -Eq '/opt/homebrew|/usr/local'; then
   echo "error: musicpack-sonic references a Homebrew/local path" >&2
   exit 1
 fi
+# mpcenc (the encoder sidecar) must be fully static like the backend.
+"$ROOT/scripts/verify-backend-dylibs.sh" "$MPCENC_BIN"
 
 echo "== 3. staging the Tauri sidecars =="
 SIDECAR_DIR="$AUTHOR_DIR/src-tauri/binaries"
 mkdir -p "$SIDECAR_DIR"
 cp "$BACKEND" "$SIDECAR_DIR/musicpack-$TRIPLE"
 chmod +x "$SIDECAR_DIR/musicpack-$TRIPLE"
+cp "$MPCENC_BIN" "$SIDECAR_DIR/mpcenc-$TRIPLE"
+chmod +x "$SIDECAR_DIR/mpcenc-$TRIPLE"
 
 # Stage the analyzer and rewrite it to be relocatable: remove the dev build's
 # absolute rpath and point @rpath at the bundle Frameworks directory. The

@@ -28,14 +28,20 @@ echo "ok: bundled backend present and executable"
 echo "== backend capability handshake =="
 API="$("$BACKEND" author-api-version --json 2>/dev/null)"
 echo "$API"
-echo "$API" | grep -q '"authorApi":[[:space:]]*1' \
-  || { echo "fail: backend does not report author API 1" >&2; exit 1; }
+echo "$API" | grep -q '"authorApi":[[:space:]]*2' \
+  || { echo "fail: backend does not report author API 2" >&2; exit 1; }
 echo "$API" | grep -q '"musicpackVersion"' \
   || { echo "fail: backend does not report a musicpack version" >&2; exit 1; }
 echo "ok: author-API handshake matches"
 
 echo "== runtime dependency check =="
 "$ROOT/scripts/verify-backend-dylibs.sh" "$BACKEND"
+
+MPCENC="$MACOS/mpcenc"
+[ -f "$MPCENC" ] || { echo "fail: bundled mpcenc missing at $MPCENC" >&2; exit 1; }
+[ -x "$MPCENC" ] || { echo "fail: bundled mpcenc not executable" >&2; exit 1; }
+"$ROOT/scripts/verify-backend-dylibs.sh" "$MPCENC"
+echo "ok: bundled mpcenc present, executable and static"
 
 SONIC="$MACOS/musicpack-sonic"
 [ -f "$SONIC" ] || { echo "fail: bundled sonic analyzer missing at $SONIC" >&2; exit 1; }

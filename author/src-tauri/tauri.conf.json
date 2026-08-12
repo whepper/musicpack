@@ -33,6 +33,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/musicpack", "binaries/musicpack-sonic"]
+    "externalBin": ["binaries/musicpack", "binaries/musicpack-sonic", "binaries/mpcenc"]
   }
 }
