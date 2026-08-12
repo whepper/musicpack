@@ -21,6 +21,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <mpc/datatypes.h>
@@ -83,7 +84,7 @@ static void
 segv_handler ( int sig, siginfo_t* si, void* ctx )
 {
     fprintf ( stderr, "SEGV at address %p\n", si->si_addr );
-    _Exit (128 + sig);
+    abort ();
 }
 
 int
