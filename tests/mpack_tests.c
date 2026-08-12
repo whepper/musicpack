@@ -433,7 +433,11 @@ test_path_security(void)
                   == MUSICPACK_ERR_PATH, "escape rejected");
             CHECK(musicpack_path_resolve(root, "audio/a.mpc", out, sizeof out)
                   == MUSICPACK_OK, "contained path resolves");
+#if defined(_WIN32)
+            CHECK(strstr(out, "\\audio\\a.mpc") != 0, "resolved package path retained");
+#else
             CHECK(strstr(out, "/audio/a.mpc") != 0, "resolved package path retained");
+#endif
             remove_temp_dir(root, 0);
         }
     }
