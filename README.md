@@ -34,7 +34,8 @@ The guiding rule of this repository:
 - **The `.mpack` album model** — `libmusicpack` owns the package format: a
   release-group → release/edition → media → track hierarchy, assets, SHA-256
   integrity and BS.1770-5 loudness; the `musicpack` CLI authors, imports and
-  verifies packages.
+  verifies packages. The format is codec-aware rather than Musepack-only —
+  Musepack is the foundation codec, but FLAC-backed packages are valid v1.
 - **The server** — `musicpack-server` indexes an `.mpack` collection into a
   SQLite collector library and serves it over a read-only HTTP API v1 with
   **direct streaming** (the original audio bytes, never transcoded).
@@ -43,11 +44,19 @@ The guiding rule of this repository:
   demand-driven WASM decoding, BS.1770 album normalization, gapless album
   playback and Media Session integration.
 - **The desktop authoring GUI** — `author/` is **MusicPack Author**, a Tauri 2
-  desktop app for turning a tagged Musepack album into a curated, validated
-  `.mpack` release. It calls the existing `musicpack` implementation through
-  the CLI's JSON draft modes (`inspect`, `validate-draft`, `build-draft`,
-  `identify-draft`) behind a clean service, so `libmusicpack` stays the only
-  authority on package semantics.
+  desktop app (macOS/Apple Silicon is the current packaged target) that turns a
+  tagged lossless album into a curated, validated `.mpack` release through a
+  real authoring pipeline: inspect → metadata review → Musepack q6 encoding
+  (bundled static `mpcenc`, FLAC/WAV decoded via ffmpeg) → `.mpack` assembly →
+  validation. ffmpeg is not bundled; packaged macOS builds find it
+  deterministically via `MUSICPACK_FFMPEG` or `/opt/homebrew/bin`,
+  `/usr/local/bin`, `/opt/local/bin` — never the shell PATH. It drives the
+  existing `musicpack` implementation through the
+  CLI's JSON draft modes (`inspect`, `validate-draft`, `encode-draft`,
+  `build-draft`, `identify-draft`) behind a clean service, so `libmusicpack`
+  stays the only authority on package semantics. Source files are never
+  modified; package finalization is transactional and verified before it is
+  reported successful.
 - **WASM + demo** — the decoder builds to WebAssembly (Emscripten); `demo/` is
   a low-level playback proof-of-concept kept as a development/test artifact.
 
@@ -55,7 +64,7 @@ The guiding rule of this repository:
 
 ## The web client — a digital record shelf
 
-`web/` (Phase 6) is the first genuinely usable MusicPack client. It is
+`web/` is the first genuinely usable MusicPack client. It is
 deliberately a *digital record shelf*, not a streaming catalogue:
 
 - sign in once with a server token (exchanged for an **HttpOnly session
@@ -106,10 +115,12 @@ musicpack_package_track_open_reader(pkg, 0, 0, &reader);
 musepack_decoder *d = musepack_decoder_open(&reader, 0);
 ```
 
-The `musicpack` CLI (`musicpack info|verify|identify|create|import|update-metadata`)
-builds, inspects and validates directory-form packages. `info` shows collector
-identity (release type, edition, release/original dates, country, label,
-catalogue number, medium, barcode); `create`/`import` accept release options.
+The `musicpack` CLI (`musicpack info|verify|identify|create|import|update-metadata`,
+plus the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/
+`build-draft`/`identify-draft`) builds, inspects and validates directory-form
+packages. `info` shows collector identity (release type, edition, release/
+original dates, country, label, catalogue number, medium, barcode);
+`create`/`import` accept release options.
 `import` reads embedded metadata (Vorbis Comments from FLAC, APEv2 from
 `.mpc`) to fill album/track/release/identifier/source fields — explicit flags
 override tags, and it never invents edition/country/label/catalogue/type from
@@ -123,6 +134,16 @@ checksums (unknown top-level manifest fields preserved). The normative spec and
 machine-readable schema live in `specs/musicpack-v1.md` and
 `specs/musicpack-v1.schema.json`; committed reference packages (a Musepack
 album and a FLAC album) are under `tests/reference/`.
+
+The v1 contract is strictly enforced by the parser: a manifest must be a
+single strict JSON document (duplicate keys and malformed nested objects are
+rejected, numbers are parsed finitely and range-safely), every
+manifest-referenced file requires a SHA-256, referenced paths must be unique
+and stay contained within the package root, and unknown root-level fields are
+documented to survive a round-trip. A committed conformance corpus (3 valid
+manifests, 42 invalid manifests, 8 invalid asset cases) gates the contract
+across platforms. See `docs/mpack-v1-contract-hardening.md` for the enforced
+rules.
 
 ### Sonic analysis — content-based discovery
 
@@ -165,8 +186,25 @@ musicpack-server token create --name "Web" | token list | token revoke <id>
   package in its own transaction. A package's manifest sha256 gives cheap
   change detection; a content fingerprint keeps a *moved* package the same
   album. Removed packages become `unavailable`; malformed packages are
-  recorded `invalid` without touching the index. Scan policy defaults to
-  manifest + object existence; `--verify` runs full SHA-256 verification.
+  recorded `invalid` without touching the index. Scanning is **fail-closed**:
+  an incomplete traversal (enumeration, metadata or database-write failure)
+  fails the scan and the unavailable sweep does not run, so prior library
+  state is preserved. A lightweight scan records package verification state;
+  `--verify` runs full SHA-256 verification.
+- **Verified-only visibility** — a newly discovered package is not servable
+  merely because its manifest parses. It becomes visible/servable only after
+  full SHA-256 verification succeeds (`--verify` or the live verify endpoint);
+  an unverified, checksum-failed or quarantined package is never served.
+- **Package ownership** — releases can share logical identity (editions,
+  mirror duplicates), but servable content is owned by exactly one package per
+  release: one package owns the content graph, and a package claiming the same
+  release identity cannot overwrite another package's tracks/assets. Streaming
+  and API content enumeration resolve through the owning package only.
+- **Conflict quarantine** — a package claiming an already-owned release
+  identity with different content is quarantined as `conflict` rather than
+  silently merged. Verification can never clear a conflict; quarantine ends
+  only through explicit ownership re-arbitration (the owner becomes
+  unavailable/invalid, or the conflicting content comes to match the owner).
 - **Collector library** — SQLite (vendored amalgamation) preserving the
   release-group → release/edition → media → track hierarchy, with artists,
   assets, package status, and schema migrations.
@@ -188,10 +226,21 @@ musicpack-server token create --name "Web" | token list | token revoke <id>
 - **Direct streaming** — audio/assets are served as the **original stored
   bytes** (no decode/remux/rewrite) with full RFC 9110 single-range support
   (`206`/`416`, `Content-Range`, `Accept-Ranges`, `HEAD`), streamed from a
-  file descriptor — never buffered. The bytes served hash to the manifest's
-  `sha256`; a strong `ETag` (the manifest hash) enables `If-None-Match` →
-  `304`. MIME and codec (`musepack-sv8`, …) are reported separately and
-  derived server-side.
+  file descriptor — never buffered. Only **verified** package content is
+  servable, and every referenced object is type-checked (a regular file) and
+  read through hardened opened-descriptor handling. Manifest hashes are
+  validated during verification; a strong `ETag` (the manifest hash) enables
+  `If-None-Match` → `304`. After verification, the package must remain in
+  non-mutable, server-controlled storage for this trust guarantee to hold;
+  post-verification mutation is detected on the next scan/verify. MIME and
+  codec (`musepack-sv8`, …) are reported separately and derived server-side.
+- **Package-object serving** — package-controlled web content is served
+  defensively. Inline serving is restricted to verified raster image types
+  (JPEG, PNG, GIF, WebP, BMP) and audio streams; HTML, SVG, JavaScript, XML,
+  text and PDF-like assets are forced to `Content-Disposition: attachment`
+  with a sanitized filename. Every package-object response carries
+  `X-Content-Type-Options: nosniff` plus a sandboxing `Content-Security-Policy`
+  on `200`/`206`/`304`/`416`.
 - **Browser streaming** — `--static-dir DIR` serves static files with
   cross-origin isolation (COOP/COEP). Point it at the built web client
   (`web/app/dist`) to get the first-party record shelf at the server root; the
@@ -199,6 +248,28 @@ musicpack-server token create --name "Web" | token list | token revoke <id>
   Atomics + a network worker with a block cache), fetching only the compressed
   ranges the decoder needs, so playback starts before the file downloads and
   seeking never fetches the whole file.
+
+### Security model for untrusted ingestion
+
+MusicPack serves collections that may contain untrusted, externally placed
+`.mpack` directories, and the server is hardened accordingly: verified-only
+visibility, package-owned content, identity-conflict quarantine, regular-file
+checks bound to the object actually read or hashed (POSIX opens with
+`O_NONBLOCK|O_NOFOLLOW` and `fstat`s the opened descriptor), hard-link
+rejection on POSIX, symlink/reparse-point containment, the attachment/`nosniff`/
+sandbox-CSP serving policy above, fail-closed scanning and verification, and
+resource budgets bounding object counts, aggregate referenced bytes, traversal
+depth and manifest/Sonic parse sizes. A hostile-package regression suite
+exercises special files, hard links, symlink escapes and oversized objects.
+
+Documented operational restrictions remain: verified bytes are **not** copied
+into immutable server-owned storage, so package directories must not be
+concurrently mutable after verification; path containment is pathname-based
+rather than descriptor-relative (`openat`-style); Windows cannot reliably
+detect hard links (that rejection is POSIX-only); scans are not scoped to a
+persisted library-root id (one database per root); and sanitizer testing is
+local, not hosted. See `docs/server-untrusted-package-hardening.md` for the
+exact limits and threat model.
 
 Defaults are safe: loopback binding, no remote access implied. The API spec
 is `specs/musicpack-api-v1.md`.
@@ -280,7 +351,7 @@ emcmake cmake -S . -B build-wasm && cmake --build build-wasm
 
 - The **MusicPack web client** (`web/`) decodes `.mpc` over HTTP Range with a
   demand-driven reader; see `web/README.md`.
-- The low-level WASM demo (`demo/`, Phase 5) is a development/test artifact
+- The low-level WASM demo (`demo/`) is a development/test artifact
   kept for the demand-reader plumbing.
 
 ## Tools
@@ -294,28 +365,51 @@ emcmake cmake -S . -B build-wasm && cmake --build build-wasm
 | `mpcgain`  | Compute ReplayGain (requires libreplaygain)                    |
 | `mpcchap`  | Read/write SV8 chapters (requires libcuefile)                  |
 | `wavcmp`   | Compare two WAV files                                          |
-| `musicpack` | Author and verify `.mpack` albums (`info`, `create`, `import`, `identify`, `update-metadata`, `verify`) |
+| `musicpack` | Author and verify `.mpack` albums (`info`, `verify`, `create`, `import`, `identify`, `update-metadata`, plus the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/`build-draft`/`identify-draft`) |
 | `musicpack-server` | Index a `.mpack` library and serve it over HTTP API v1 (requires libmicrohttpd) |
 
 ## Testing
 
-See `tests/README.md`. With `-DMPC_BUILD_TESTS=ON`, `ctest` runs twelve native
-suites: unit tests (crc32, bitstream, tables), the libmusepack API suite, the
-libmusicpack suite (manifest, paths, checksums, loudness meter, handoff), the
-server core suite (range parser, migrations, tokens, package identity, verify,
-scanner behaviors — runs on all platforms), a fixture regression that pins
-decode output for bit-exactness, end-to-end integration, `.mpack` integration,
-`.mpack` fuzz-lite, decoder robustness on malformed input, the server HTTP
-integration (auth matrix, CORS, live scan/verify/status, streaming
-byte-identity, HTTP Range, ETag/304, concurrency, security boundaries —
-UNIX), and a compatibility check that pins the encoder to
-bit-identical output with the pristine reference encoder (compared live
-against a reference build on CI, with a committed manifest as the local
-fallback). The Emscripten build registers an additional `wasm_smoke` suite
-(including the demand-driven range-reader path: PCM identity, a seek-to-90%
-fetch-accounting check, and network-failure injection) and the
-`web_wasm_gapless` suite (the web client's audio guarantees: gapless
-two-track continuity, exact track-end frames, demand-reader seek accounting).
+See `tests/README.md`. With `-DMPC_BUILD_TESTS=ON`, `ctest` runs the full suite,
+organized by category rather than a single count:
+
+- **unit / API / codec** — crc32, bitstream and table internals; the stable
+  `libmusepack` API surface; a fixture regression pinning decode output for
+  bit-exactness; end-to-end toolchain integration; and decoder robustness on
+  malformed input;
+- **decoder SIMD A/B** — scalar-vs-SIMD synthesis differential and direct
+  decoder-state differential (`synth_ab`, `synth_state_ab`), each fail-closed
+  when the SIMD kernel is unavailable;
+- **encoder / psy A/B** — analysis-filter and psychoacoustic scalar-vs-SIMD
+  differentials (`enc_ab`, `psy_ab`), also fail-closed;
+- **`.mpack` package** — manifest, paths, checksums, loudness meter, handoff,
+  integration and fuzz-lite;
+- **v1 conformance corpus** — 3 valid manifests, 42 invalid manifests, 8
+  invalid asset cases, required to pass `info`/`verify` per case;
+- **hostile-package regression** — special files (FIFO/directory/symlink
+  escape), hard links and oversized objects must fail quickly;
+- **Sonic** — container parsing/validation units and WAV robustness;
+- **Author** — backend draft-command tests and the FLAC→MPC q6 encode stage
+  (skipped when ffmpeg is unavailable);
+- **server** — a core suite (range parser, migrations, tokens, package
+  identity, ownership/conflict, verify, scanner behaviors) that runs on all
+  platforms, plus an HTTP integration suite (auth matrix, CORS, live
+  scan/verify/status, streaming, HTTP Range, ETag/304, concurrency, security
+  headers — UNIX);
+- **compatibility** — a check that pins the encoder to bit-identical output
+  with the pristine reference encoder, and `enc_compat` for the extended
+  q5/q6/q7 corpus (live against a same-toolchain reference build on CI, with a
+  committed manifest as the local fallback);
+- **Wasm / web** — an Emscripten `wasm_smoke` suite (demand-driven
+  range-reader path: PCM identity, seek fetch-accounting, network-failure
+  injection), a `web_wasm_gapless` Node suite (gapless two-track continuity,
+  exact track-end frames, demand-reader seek accounting), and the web client's
+  own Vitest/Playwright suites.
+
+Hosted CI covers Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, a Linux
+SIMD-off build, Emscripten/Wasm, and the web client (Playwright). Sanitizer
+coverage (ASan/UBSan) is a targeted local exercise of the package, server,
+integration and fuzz suites — not a hosted job.
 
 The web client adds its own suites (`web/`): Vitest units for the controller,
 queue, ring buffer, loudness math, API client and session; a Playwright
@@ -339,10 +433,10 @@ ctest --test-dir build
 - `include/musepack/` — stable `libmusepack` public API
 - `include/mpc/` — historical public headers (installed for compatibility)
 - `libmusicpack/` — `.mpack` package library (`libmusicpack`)
-- `musicpack/` — `musicpack` CLI (info/verify/create/import/update-metadata + the authoring draft commands `inspect`/`validate-draft`/`build-draft`/`identify-draft`)
+- `musicpack/` — `musicpack` CLI (info/verify/create/import/update-metadata + the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/`build-draft`/`identify-draft`)
 - `author/` — **MusicPack Author**: the Tauri 2 + Svelte 5 desktop authoring GUI (`author/README.md`)
 - `server/` — `musicpack-server`: scanner, SQLite collector library, HTTP API v1, direct streaming (vendored SQLite in `server/vendor/`)
-- `web/` — the Phase 6 web client (Svelte 5 + Vite + TS): the digital record shelf
+- `web/` — the web client (Svelte 5 + Vite + TS): the digital record shelf
 - `wasm/` — Emscripten build of the decoder + WASM wrapper + smoke test
 - `demo/` — low-level browser playback proof-of-concept
 - `specs/` — `.mpack` v1 spec + JSON Schema, and the server API spec (`musicpack-api-v1.md`)
