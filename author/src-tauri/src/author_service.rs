@@ -20,7 +20,8 @@ use std::process::Command;
 
 /// Authoring JSON surface version the GUI expects from the backend.
 /// Bump together with the CLI's `MUSICPACK_AUTHOR_API`.
-const EXPECTED_AUTHOR_API: u32 = 1;
+/// Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage).
+const EXPECTED_AUTHOR_API: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub enum AuthorError {
@@ -448,6 +449,152 @@ impl AuthorService {
             })?;
         Ok((child, job_tmp))
     }
+
+    // ---- FLAC -> Musepack encoding ----------------------------------
+
+    /// Resolves the `mpcenc` encoder binary. Bundled apps use the sidecar
+    /// next to the CLI; development uses MUSICPACK_MPCENC, the CMake build
+    /// tree, then PATH. Like the CLI, encoder selection is trusted
+    /// configuration — the GUI never discovers an encoder from package data.
+    pub fn encode_resolve_mpcenc(&self) -> Result<PathBuf, AuthorError> {
+        match &self.location {
+            Ok(BackendLocation::Bundled(cli)) => {
+                let p = cli
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join("mpcenc");
+                if p.is_file() {
+                    Ok(p)
+                } else {
+                    Err(AuthorError::CliNotFound(format!(
+                        "bundled mpcenc not found at {}; reinstall MusicPack Author",
+                        p.display()
+                    )))
+                }
+            }
+            Ok(BackendLocation::Development(cli)) => {
+                if let Ok(v) = std::env::var("MUSICPACK_MPCENC") {
+                    let p = PathBuf::from(v.trim());
+                    if !p.as_os_str().is_empty() && p.is_file() {
+                        return Ok(p);
+                    }
+                }
+                let base = cli.parent().unwrap_or_else(|| Path::new("."));
+                for cand in [base.join("../mpcenc/mpcenc"), base.join("mpcenc/mpcenc")] {
+                    if cand.is_file() {
+                        return Ok(cand);
+                    }
+                }
+                if command_on_path("mpcenc") {
+                    return Ok(PathBuf::from("mpcenc"));
+                }
+                Err(AuthorError::CliNotFound(
+                    "cannot find `mpcenc`; build it with `cmake --build build -j \
+                     --target mpcenc` or set MUSICPACK_MPCENC"
+                        .to_string(),
+                ))
+            }
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Resolves the FFmpeg binary used to decode FLAC/WAV sources. FFmpeg is
+    /// an external tool (never bundled): MUSICPACK_FFMPEG, then PATH.
+    pub fn encode_resolve_ffmpeg(&self) -> Result<PathBuf, AuthorError> {
+        if let Ok(v) = std::env::var("MUSICPACK_FFMPEG") {
+            let p = PathBuf::from(v.trim());
+            if !p.as_os_str().is_empty() && p.is_file() {
+                return Ok(p);
+            }
+        }
+        if command_on_path("ffmpeg") {
+            return Ok(PathBuf::from("ffmpeg"));
+        }
+        Err(AuthorError::CliNotFound(
+            "ffmpeg is required to decode FLAC/WAV sources; install it (e.g. \
+             `brew install ffmpeg`) or set MUSICPACK_FFMPEG"
+                .to_string(),
+        ))
+    }
+
+    /// Creates a fresh staging directory for an encode run. The GUI owns it
+    /// until the run finishes; successful runs keep it for the build step,
+    /// failures/cancels remove it (see `cleanup_staging`).
+    pub fn encode_staging_dir(&self) -> Result<PathBuf, AuthorError> {
+        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "musicpack-author-encode-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AuthorError::Io(format!("cannot create staging directory: {e}")))?;
+        Ok(dir)
+    }
+
+    /// Spawns `musicpack encode-draft` for the current draft. Returns the
+    /// child (stdout piped, for progress events) and the draft temp path
+    /// (removed by the caller). The child handle is kept for cancellation.
+    pub fn encode_spawn(
+        &self,
+        draft_json: &str,
+        staging: &Path,
+        quality: &str,
+        mpcenc: &Path,
+        ffmpeg: &Path,
+    ) -> Result<(std::process::Child, PathBuf), AuthorError> {
+        let draft_tmp = self.temp_file("encode-draft.json", draft_json)?;
+        let child = Command::new(self.cli_path())
+            .arg("encode-draft")
+            .arg("--draft")
+            .arg(&draft_tmp)
+            .arg("-o")
+            .arg(staging)
+            .arg("--quality")
+            .arg(quality)
+            .arg("--mpcenc")
+            .arg(mpcenc)
+            .arg("--ffmpeg")
+            .arg(ffmpeg)
+            .arg("--json")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&draft_tmp);
+                AuthorError::Io(format!("cannot run `musicpack encode-draft`: {e}"))
+            })?;
+        Ok((child, draft_tmp))
+    }
+
+    /// Removes a staging directory created by `encode_staging_dir`. Refuses
+    /// to delete anything that is not an Author-created staging directory
+    /// (defense in depth against a stray path from the frontend).
+    pub fn cleanup_staging(&self, dir: &str) -> Result<(), AuthorError> {
+        let d = PathBuf::from(dir);
+        let prefix = format!("musicpack-author-encode-{}", std::process::id());
+        let name = d
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.starts_with(&prefix) {
+            return Err(AuthorError::Output(format!(
+                "refusing to remove {dir}: not a MusicPack Author staging directory"
+            )));
+        }
+        std::fs::remove_dir_all(&d)
+            .map_err(|e| AuthorError::Io(format!("cannot remove staging directory: {e}")))?;
+        Ok(())
+    }
+}
+
+/// Whether `name` resolves to an executable on PATH (dev-mode discovery only;
+/// packaged apps never consult PATH).
+fn command_on_path(name: &str) -> bool {
+    match Command::new("which").arg(name).output() {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -576,22 +723,22 @@ mod tests {
     #[test]
     fn handshake_accepts_matching_api() {
         let info = AuthorService::parse_author_api(
-            "{\"musicpackVersion\":\"0.1.0\",\"authorApi\":1}\n",
+            "{\"musicpackVersion\":\"0.1.0\",\"authorApi\":2}\n",
         )
         .unwrap();
-        assert_eq!(info.author_api, 1);
+        assert_eq!(info.author_api, 2);
         assert_eq!(info.musicpack_version, "0.1.0");
     }
 
     #[test]
     fn handshake_rejects_mismatched_api() {
         let err = AuthorService::parse_author_api(
-            "{\"musicpackVersion\":\"0.2.0\",\"authorApi\":2}\n",
+            "{\"musicpackVersion\":\"0.2.0\",\"authorApi\":3}\n",
         )
         .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("author API 2"), "{msg}");
-        assert!(msg.contains("requires 1"), "{msg}");
+        assert!(msg.contains("author API 3"), "{msg}");
+        assert!(msg.contains("requires 2"), "{msg}");
     }
 
     #[test]
@@ -607,12 +754,12 @@ mod tests {
         let bin = make_cli(
             tmp.path(),
             "MacOS",
-            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":1}\\n'\n",
+            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":2}\\n'\n",
         );
         let mut service =
             AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let info = service.ensure_handshake().unwrap();
-        assert_eq!(info.author_api, 1);
+        assert_eq!(info.author_api, 2);
         // Cached: a second call still succeeds.
         assert!(service.ensure_handshake().is_ok());
     }
@@ -738,5 +885,151 @@ mod tests {
             out.contains("\"modelDir\":\"/verified/models/profile\""),
             "analyzer received the verified model dir: {out}"
         );
+    }
+
+    // ---- mpcenc / ffmpeg resolution + encode spawn ---------------------
+
+    fn make_mpcenc(tmp: &Path, rel: &str) -> PathBuf {
+        let dir = tmp.join(rel);
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("mpcenc");
+        fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&bin, perms).unwrap();
+        }
+        bin
+    }
+
+    #[test]
+    fn mpcenc_bundled_sits_next_to_cli() {
+        let tmp = TempDir::new().unwrap();
+        make_mpcenc(tmp.path(), "MacOS");
+        let cli = make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let parent = cli.parent().unwrap().to_path_buf();
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+        let p = svc.encode_resolve_mpcenc().unwrap();
+        assert_eq!(p, parent.join("mpcenc"));
+    }
+
+    #[test]
+    fn mpcenc_bundled_missing_is_actionable() {
+        let tmp = TempDir::new().unwrap();
+        let cli = make_cli(tmp.path(), "MacOS", "#!/bin/sh\n");
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+        let err = svc.encode_resolve_mpcenc().unwrap_err();
+        assert!(err.to_string().contains("reinstall MusicPack Author"));
+    }
+
+    #[test]
+    fn mpcenc_dev_prefers_env_override() {
+        let tmp = TempDir::new().unwrap();
+        let mpcenc = make_mpcenc(tmp.path(), "custom");
+        let loc = AuthorService::resolve_development(Some("/p/cli"), tmp.path(), no_path).unwrap();
+        let svc = AuthorService::new(Ok(loc));
+        std::env::set_var("MUSICPACK_MPCENC", &mpcenc);
+        let p = svc.encode_resolve_mpcenc().unwrap();
+        std::env::remove_var("MUSICPACK_MPCENC");
+        assert_eq!(p, mpcenc);
+    }
+
+    #[test]
+    fn mpcenc_dev_prefers_build_tree() {
+        let tmp = TempDir::new().unwrap();
+        let mpcenc = make_mpcenc(tmp.path(), "build/mpcenc");
+        let cli = make_cli(tmp.path(), "build/musicpack", "#!/bin/sh\n");
+        let loc = AuthorService::resolve_development(None, tmp.path(), on_path).unwrap();
+        assert_eq!(loc.path(), &cli);
+        let svc = AuthorService::new(Ok(loc));
+        let p = svc.encode_resolve_mpcenc().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&p).unwrap(),
+            std::fs::canonicalize(&mpcenc).unwrap()
+        );
+    }
+
+    #[test]
+    fn mpcenc_dev_missing_is_actionable() {
+        let tmp = TempDir::new().unwrap();
+        let loc = AuthorService::resolve_development(Some("/p/cli"), tmp.path(), no_path).unwrap();
+        let svc = AuthorService::new(Ok(loc));
+        // Point PATH at an empty directory so `which mpcenc` cannot succeed.
+        std::env::set_var("PATH", tmp.path());
+        let err = svc.encode_resolve_mpcenc().unwrap_err();
+        std::env::remove_var("PATH");
+        let msg = err.to_string();
+        assert!(msg.contains("MUSICPACK_MPCENC"), "{msg}");
+    }
+
+    #[test]
+    fn ffmpeg_dev_resolves_from_path() {
+        // On every dev machine with ffmpeg installed this succeeds; without
+        // it the error must be actionable.
+        let loc = AuthorService::resolve_development(Some("/p/cli"), Path::new("/"), no_path)
+            .unwrap();
+        let svc = AuthorService::new(Ok(loc));
+        match svc.encode_resolve_ffmpeg() {
+            Ok(p) => assert!(!p.as_os_str().is_empty()),
+            Err(e) => assert!(e.to_string().contains("ffmpeg"), "{e}"),
+        }
+    }
+
+    #[test]
+    fn cleanup_staging_refuses_foreign_paths() {
+        let tmp = TempDir::new().unwrap();
+        let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
+        let err = svc.cleanup_staging(tmp.path().to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("not a MusicPack Author staging directory"));
+    }
+
+    #[test]
+    fn cleanup_staging_removes_own_staging() {
+        let tmp = TempDir::new().unwrap();
+        let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
+        // synthesize the exact staging name the service would create
+        let name = format!("musicpack-author-encode-{}-42", std::process::id());
+        let dir = tmp.path().join(&name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("x.mpc"), "data").unwrap();
+        svc.cleanup_staging(dir.to_str().unwrap()).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encode_spawn_passes_tools_and_staging_through() {
+        // A fake backend that echoes its encode-draft arguments.
+        let tmp = TempDir::new().unwrap();
+        let bin = make_cli(
+            tmp.path(),
+            "MacOS",
+            "#!/bin/sh\necho \"$@\"\n",
+        );
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let staging = tmp.path().join("stage");
+        let mpcenc = tmp.path().join("mpcenc");
+        let ffmpeg = tmp.path().join("ffmpeg");
+        let (mut child, draft_tmp) = svc
+            .encode_spawn(
+                "{\"schema\":\"musicpack-draft\"}",
+                &staging,
+                "6.0",
+                &mpcenc,
+                &ffmpeg,
+            )
+            .unwrap();
+        use std::io::Read;
+        let mut out = String::new();
+        child.stdout.as_mut().unwrap().read_to_string(&mut out).unwrap();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&draft_tmp);
+        assert!(out.contains("encode-draft"), "command dispatched: {out}");
+        assert!(out.contains(&format!("--mpcenc {}", mpcenc.display())), "{out}");
+        assert!(out.contains(&format!("--ffmpeg {}", ffmpeg.display())), "{out}");
+        assert!(out.contains(&format!("-o {}", staging.display())), "{out}");
+        assert!(out.contains("--quality 6.0"), "{out}");
     }
 }

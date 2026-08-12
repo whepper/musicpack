@@ -25,6 +25,7 @@ use tauri::{Emitter, Manager, State};
 struct AppState {
     service: Mutex<AuthorService>,
     running: Mutex<Option<Child>>,
+    encode_running: Mutex<Option<(Child, PathBuf)>>,
     model: SonicModelManager,
     model_cancel: Arc<AtomicBool>,
 }
@@ -475,6 +476,119 @@ fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the FLAC/WAV -> Musepack encode stage for the current draft. The
+/// `musicpack` CLI encodes every track into a fresh staging directory
+/// (streaming `encode-progress` events) and returns the transformed draft
+/// whose audioPath values point at the encoded .mpc files. On success the
+/// staging directory is kept for the build step; on failure/cancel it is
+/// removed so no partial bundle survives.
+#[tauri::command]
+async fn encode_tracks(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    draft_json: String,
+    quality: String,
+) -> Result<serde_json::Value, String> {
+    let mpcenc = state
+        .service
+        .lock()
+        .unwrap()
+        .encode_resolve_mpcenc()
+        .map_err(cli_err)?;
+    let ffmpeg = state
+        .service
+        .lock()
+        .unwrap()
+        .encode_resolve_ffmpeg()
+        .map_err(cli_err)?;
+    let staging = state
+        .service
+        .lock()
+        .unwrap()
+        .encode_staging_dir()
+        .map_err(cli_err)?;
+    let (mut child, draft_tmp) = {
+        let svc = state.service.lock().unwrap();
+        svc.encode_spawn(&draft_json, &staging, &quality, &mpcenc, &ffmpeg)
+            .map_err(cli_err)?
+    };
+    let stdout = child.stdout.take().ok_or_else(|| {
+        "encode backend produced no stdout".to_string()
+    })?;
+    *state.encode_running.lock().unwrap() = Some((child, staging.clone()));
+
+    let app2 = app.clone();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut final_event: Option<serde_json::Value> = None;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { continue };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                let _ = app2.emit("encode-progress", &v);
+                let ev = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
+                if matches!(ev, "done" | "error" | "cancelled") {
+                    final_event = Some(v);
+                }
+            }
+        }
+        final_event
+    });
+    let final_event = reader.join().unwrap_or(None);
+    let _ = std::fs::remove_file(&draft_tmp);
+    *state.encode_running.lock().unwrap() = None;
+
+    let Some(event) = final_event else {
+        return Err("encode backend produced no result".to_string());
+    };
+    let ev = event
+        .get("event")
+        .and_then(|e| e.as_str())
+        .unwrap_or("error");
+    if ev == "cancelled" {
+        // the CLI already removed the staging directory
+        return Ok(json!({ "ok": false, "cancelled": true }));
+    }
+    if ev == "error" {
+        let message = event
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("encoding failed");
+        return Err(message.to_string());
+    }
+    Ok(json!({
+        "ok": true,
+        "cancelled": false,
+        "outputDir": staging,
+        "tracks": event.get("tracks"),
+        "draft": event.get("draft"),
+    }))
+}
+
+/// Cancels a running encode stage; the encode child is terminated and the
+/// CLI removes the partial staging directory.
+#[tauri::command]
+fn encode_cancel(state: State<AppState>) -> Result<(), String> {
+    let mut running = state.encode_running.lock().unwrap();
+    if let Some((child, _)) = running.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *running = None;
+    Ok(())
+}
+
+/// Removes a staging directory after a successful package build. Only
+/// directories created by the Author encode stage are ever removed.
+#[tauri::command]
+fn cleanup_staging(state: State<AppState>, path: String) -> Result<(), String> {
+    state
+        .service
+        .lock()
+        .unwrap()
+        .cleanup_staging(&path)
+        .map_err(cli_err)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -500,6 +614,7 @@ pub fn run() {
             app.manage(AppState {
                 service: Mutex::new(AuthorService::new(location)),
                 running: Mutex::new(None),
+                encode_running: Mutex::new(None),
                 model: manager,
                 model_cancel: Arc::new(AtomicBool::new(false)),
             });
@@ -515,7 +630,10 @@ pub fn run() {
             read_image,
             sonic_analyze,
             sonic_cancel,
-            sonic_model_status
+            sonic_model_status,
+            encode_tracks,
+            encode_cancel,
+            cleanup_staging
         ])
         .run(tauri::generate_context!())
         .expect("error while running MusicPack Author");
