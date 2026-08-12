@@ -285,10 +285,13 @@ handshake result at startup via the `backend_info` command
    manifest. The GUI never invents required data to go green.
 8. **Create MusicPack** — choose an output location (the package name is
    pre-filled from the album metadata, e.g. `Artist - Album.mpack`);
-   `build-draft` copies and hashes the audio/assets, measures BS.1770-5
-   loudness (album as one concatenated program), writes `manifest.json`, then
-   runs full package verification. A package is never reported as successful
-   if verification fails. On macOS, “Reveal in Finder” opens the result.
+    `build-draft` copies and hashes every manifest-referenced asset (audio,
+    artwork, booklet, lyrics, extras, and analysis), measures BS.1770-5
+    loudness (album as one concatenated program), writes `manifest.json`, then
+    runs full package verification. It preserves authored media and track order
+    as canonical manifest order and rejects packages with more than 4096
+    manifest-referenced assets. A package is never reported as successful if
+    verification fails. On macOS, “Reveal in Finder” opens the result.
 
 ## MusicBrainz identity
 

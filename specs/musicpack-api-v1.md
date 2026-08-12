@@ -234,10 +234,12 @@ request).
 
 ### `GET /api/v1/releases/{id}`
 
-Full release/edition detail. Top-level fields mirror `.mpack` v1's
-`release` block (edition, releaseDate, country, label, catalogueNumber,
-barcode, notes, mbid, identity/source/provenance) plus `packageStatus` /
-`verifyStatus`. `album` carries the release-group summary and artists.
+Full release/edition detail. Top-level release metadata mirrors `.mpack` v1's
+optional `release` block (`edition`, `releaseDate`, `country`, `label`,
+`catalogueNumber`, `notes`) when present. Release identifiers (`barcode` and
+MusicBrainz release ID), `identity`, `source`, and `provenance` are separate
+manifest fields. `packageStatus` and `verifyStatus` describe the package;
+`album` carries the release-group summary and artists.
 
 ```json
 {
@@ -261,7 +263,7 @@ barcode, notes, mbid, identity/source/provenance) plus `packageStatus` /
             "codec": "musepack-sv8", "mimeType": "audio/musepack",
             "streamVersion": 8, "sampleRate": 44100, "channels": 2
           },
-          "audio": { "id": 90, "size": 28288, "sha256": "…",
+          "audio": { "id": 90, "size": 28288, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                      "url": "/api/v1/tracks/55/audio" }
         }
       ]
@@ -276,6 +278,7 @@ barcode, notes, mbid, identity/source/provenance) plus `packageStatus` /
 }
 ```
 
+Media and track arrays retain the package's canonical manifest order.
 `loudness` carries the package's canonical album-level BS.1770-5 measurement
 (stored from the manifest, never recomputed). Track `duration` is seconds from
 the manifest when present. These power the client's Album/Track normalization

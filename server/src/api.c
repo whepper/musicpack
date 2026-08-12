@@ -29,7 +29,7 @@
 #endif
 
 #define API_VERSION "v1"
-#define VISIBLE "p.status NOT IN ('invalid','unavailable')"
+#define VISIBLE "p.status IN ('valid','warning')"
 #define SESSION_COOKIE "musicpack_session"
 
 /* ---------- small parsing helpers -------------------------------------- */
@@ -287,8 +287,8 @@ group_object(mp_library *lib, sqlite3_stmt *g)
 static int
 serveable(const mp_object_ref *ref)
 {
-    return strcmp(ref->status, "unavailable") != 0 &&
-           strcmp(ref->status, "invalid") != 0;
+    return strcmp(ref->status, "valid") == 0 ||
+           strcmp(ref->status, "warning") == 0;
 }
 
 /* Strong ETag from the manifest sha256 + revalidation cache policy. The

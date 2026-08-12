@@ -85,7 +85,8 @@ int mp_library_package_by_path(mp_library *lib, const char *path,
                                mp_package_row *row);
 /// Finds a package by content fingerprint. Returns 1 and fills \p row, else 0.
 int mp_library_package_by_fingerprint(mp_library *lib, const char *fp,
-                                      mp_package_row *row);
+                                       mp_package_row *row);
+int mp_library_release_has_package(mp_library *lib, long long release_id);
 
 /// Inserts a package row; returns its id (or -1 on failure).
 long long mp_library_package_insert(mp_library *lib, const char *path,

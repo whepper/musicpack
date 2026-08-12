@@ -102,8 +102,9 @@ MUSICPACK_API musicpack_status musicpack_package_verify(const musicpack_package 
                                                         musicpack_report_fn report,
                                                         void *report_ctx);
 
-/// Rewrites the package's manifest.json, preserving any unknown fields that
-/// were present when the package was opened (forward-compatible round-trip).
+/// Rewrites the package's manifest.json, preserving unknown package-level
+/// fields present when opened. Nested extensions are not retained because the
+/// public model cannot safely associate them after arrays are changed.
 ///
 /// \param pkg package to save
 /// \return MUSICPACK_OK or an error

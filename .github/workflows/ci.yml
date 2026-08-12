@@ -84,7 +84,7 @@ jobs:
         run: python3 scripts/ci_ctest.py --build build --config Release synth_ab synth_state_ab enc_ab psy_ab
 
       - name: Test unit, package, and server core
-        run: python3 scripts/ci_ctest.py --build build --config Release unit mpack server_unit
+        run: python3 scripts/ci_ctest.py --build build --config Release unit mpack mpack_conformance server_unit
 
       # enc_compat is excluded here: its manifest mode is a local developer
       # fallback pinned to the arm64-clang -O0 reference build. CI enforces
@@ -168,7 +168,7 @@ jobs:
         run: >
           python3 scripts/ci_ctest.py --build build-nosimd
           unit api mpack sonic_unit sonic_analyzer server_unit fixtures fuzz
-          mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz
+          mpack_conformance mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz
       - name: Verify forced SIMD rejects scalar-only build
         run: python3 scripts/ci_ctest.py --build build-nosimd synth_simd_unavailable
 

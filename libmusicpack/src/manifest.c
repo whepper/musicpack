@@ -36,6 +36,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <math.h>
 
 #include "internal.h"
 #include <musicpack/path.h>
@@ -83,8 +85,8 @@ static int
 get_req_int(cJSON *obj, const char *key, int *out, musicpack_status *status)
 {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!cJSON_IsNumber(v) || v->valuedouble < 1 ||
-        v->valuedouble != (double) (int) v->valuedouble) {
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) || v->valuedouble < 1 ||
+        v->valuedouble > INT_MAX || v->valuedouble != floor(v->valuedouble)) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
@@ -101,7 +103,7 @@ get_opt_double(cJSON *obj, const char *key, int *present, double *out,
         *present = 0;
         return 1;
     }
-    if (!cJSON_IsNumber(v)) {
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble)) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
@@ -175,18 +177,19 @@ get_opt_enum(cJSON *obj, const char *key, char **field, const char *const *list,
 static int
 parse_asset(cJSON *o, musicpack_asset *a, musicpack_status *status)
 {
-    *status = MUSICPACK_OK;
-    if (!cJSON_IsObject(o))
+    if (!cJSON_IsObject(o)) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0;
+    }
     if (!get_req_string(o, "path", &a->path, status))
         return 0;
     if (musicpack_path_validate(a->path) != MUSICPACK_OK) {
         *status = MUSICPACK_ERR_PATH;
         return 0;
     }
-    if (!get_opt_string(o, "sha256", &a->sha256, status))
+    if (!get_req_string(o, "sha256", &a->sha256, status))
         return 0;
-    if (a->sha256 != 0 && !is_lower_hex(a->sha256)) {
+    if (!is_lower_hex(a->sha256)) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
@@ -201,10 +204,10 @@ parse_artists(cJSON *arr, musicpack_artist **out, size_t *count, musicpack_statu
 
     *out = 0;
     *count = 0;
-    if (!cJSON_IsArray(arr))
+    if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) == 0) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0;
-    if (cJSON_GetArraySize(arr) == 0)
-        return 0;
+    }
     *out = (musicpack_artist *) calloc((size_t) cJSON_GetArraySize(arr), sizeof **out);
     if (*out == 0) {
         *status = MUSICPACK_ERR_NOMEM;
@@ -212,7 +215,6 @@ parse_artists(cJSON *arr, musicpack_artist **out, size_t *count, musicpack_statu
     }
     cJSON_ArrayForEach(item, arr) {
         musicpack_artist *a = &(*out)[i];
-        *status = MUSICPACK_OK;
         if (!get_req_string(item, "name", &a->name, status))
             return 0;
         if (!get_opt_string(item, "role", &a->role, status))
@@ -231,16 +233,20 @@ parse_loudness(cJSON *o, musicpack_loudness *l, musicpack_status *status)
     l->present = 0;
     if (o == 0)
         return 1;
-    if (!cJSON_IsObject(o))
+    if (!cJSON_IsObject(o)) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0;
+    }
     if (!get_opt_double(o, "trackLUFS", &have_lufs, &l->lufs,
                         musicpack_loudness_validate_lufs, status))
         return 0;
     if (!get_opt_double(o, "truePeakDbTP", &have_peak, &l->true_peak_db,
                         musicpack_loudness_validate_true_peak, status))
         return 0;
-    if (!have_lufs || !have_peak)
+    if (!have_lufs || !have_peak) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0; /* both measured values required when the object is present */
+    }
     l->present = 1;
     return 1;
 }
@@ -254,8 +260,10 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
 {
     cJSON *v;
 
-    if (!cJSON_IsObject(o))
+    if (!cJSON_IsObject(o)) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0;
+    }
     if (!get_req_int(o, "track", &t->number, status))
         return 0;
     if (!get_req_string(o, "title", &t->title, status))
@@ -267,6 +275,10 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
 
     v = cJSON_GetObjectItemCaseSensitive(o, "identifiers");
     if (v != 0) {
+        if (!cJSON_IsObject(v)) {
+            *status = MUSICPACK_ERR_INVALID;
+            return 0;
+        }
         if (!get_opt_string(v, "isrc", &t->isrc, status))
             return 0;
         if (!get_opt_string(v, "musicbrainzTrackId", &t->musicbrainz_track_id, status))
@@ -276,6 +288,10 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
     }
     v = cJSON_GetObjectItemCaseSensitive(o, "source");
     if (v != 0) {
+        if (!cJSON_IsObject(v)) {
+            *status = MUSICPACK_ERR_INVALID;
+            return 0;
+        }
         if (!get_opt_string(v, "store", &t->source_store, status))
             return 0;
         if (!get_opt_string(v, "trackId", &t->source_track_id, status))
@@ -283,6 +299,10 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
     }
     v = cJSON_GetObjectItemCaseSensitive(o, "sourceAudio");
     if (v != 0) {
+        if (!cJSON_IsObject(v)) {
+            *status = MUSICPACK_ERR_INVALID;
+            return 0;
+        }
         if (!get_opt_string(v, "codec", &t->source_audio_codec, status))
             return 0;
         if (!get_opt_string(v, "md5", &t->source_audio_md5, status))
@@ -307,6 +327,8 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
+    if (!get_opt_string(v, "codec", &t->audio_codec, status))
+        return 0;
     return 1;
 }
 
@@ -317,8 +339,10 @@ parse_disc(cJSON *o, musicpack_disc *d, musicpack_status *status)
     cJSON *item;
     int i = 0;
 
-    if (!cJSON_IsObject(o))
+    if (!cJSON_IsObject(o)) {
+        *status = MUSICPACK_ERR_INVALID;
         return 0;
+    }
     if (!get_req_int(o, "disc", &d->disc, status))
         return 0;
     if (!get_opt_enum(o, "format", &d->format,
@@ -337,7 +361,6 @@ parse_disc(cJSON *o, musicpack_disc *d, musicpack_status *status)
         return 0;
     }
     cJSON_ArrayForEach(item, tracks) {
-        *status = MUSICPACK_OK;
         if (!parse_track(item, &d->tracks[i], status))
             return 0;
         i++;
@@ -368,7 +391,7 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
         }
         count += m->discs[d].track_count;
     }
-    if (count > 4096) {
+    if (count > MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS) {
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
@@ -401,6 +424,29 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
     return 1;
 }
 
+static int
+has_duplicate_keys(const cJSON *item)
+{
+    const cJSON *child;
+
+    if (cJSON_IsObject(item)) {
+        for (child = item->child; child != 0; child = child->next) {
+            const cJSON *other;
+            for (other = child->next; other != 0; other = other->next)
+                if (child->string != 0 && other->string != 0 &&
+                    strcmp(child->string, other->string) == 0)
+                    return 1;
+            if (has_duplicate_keys(child))
+                return 1;
+        }
+    } else if (cJSON_IsArray(item)) {
+        cJSON_ArrayForEach(child, item)
+            if (has_duplicate_keys(child))
+                return 1;
+    }
+    return 0;
+}
+
 musicpack_status
 musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
 {
@@ -409,13 +455,16 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
     int i, n;
     size_t d;
 
+    if (!cJSON_IsObject(root) || has_duplicate_keys(root))
+        return MUSICPACK_ERR_INVALID;
+
     /* format + version */
     v = cJSON_GetObjectItemCaseSensitive(root, "format");
     if (!cJSON_IsString(v) || strcmp(v->valuestring, MUSICPACK_FORMAT) != 0)
         return MUSICPACK_ERR_INVALID;
     v = cJSON_GetObjectItemCaseSensitive(root, "version");
-    if (!cJSON_IsNumber(v) || (int) v->valuedouble != MUSICPACK_VERSION_SCHEMA ||
-        v->valuedouble != (double) (int) v->valuedouble)
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble != (double) MUSICPACK_VERSION_SCHEMA)
         return MUSICPACK_ERR_VERSION;
 
     /* album */
@@ -497,9 +546,13 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
     if (v != 0) {
         if (!cJSON_IsObject(v))
             return MUSICPACK_ERR_INVALID;
-        if (!get_opt_string(v, "source", &m->identity_source, &status))
+        static const char *const IDENTITY_SOURCES[] = { "musicbrainz", "store", "local" };
+        static const char *const IDENTITY_CONFIDENCES[] = { "exact", "confirmed", "probable", "none" };
+        if (!get_opt_enum(v, "source", &m->identity_source, IDENTITY_SOURCES,
+                          sizeof IDENTITY_SOURCES / sizeof *IDENTITY_SOURCES, &status))
             return status;
-        if (!get_opt_string(v, "confidence", &m->identity_confidence, &status))
+        if (!get_opt_enum(v, "confidence", &m->identity_confidence, IDENTITY_CONFIDENCES,
+                          sizeof IDENTITY_CONFIDENCES / sizeof *IDENTITY_CONFIDENCES, &status))
             return status;
     }
 
@@ -614,15 +667,13 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
                 status = MUSICPACK_ERR_PATH;
                 return status;
             }
-            if (!get_opt_string(item, "sha256", &a->asset.sha256, &status))
+            if (!get_req_string(item, "sha256", &a->asset.sha256, &status))
                 return status;
-            if (a->asset.sha256 != 0 && !is_lower_hex(a->asset.sha256)) {
+            if (!is_lower_hex(a->asset.sha256)) {
                 status = MUSICPACK_ERR_INVALID;
                 return status;
             }
-            /* sonic references are integrity- and identity-protected */
-            if (strcmp(a->type, "sonic") == 0 &&
-                (a->asset.sha256 == 0 || a->profile == 0)) {
+            if (strcmp(a->type, "sonic") == 0 && a->profile == 0) {
                 status = MUSICPACK_ERR_INVALID;
                 return status;
             }
@@ -646,7 +697,11 @@ musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m)
                             &m->album_loudness.true_peak_db,
                             musicpack_loudness_validate_true_peak, &status))
             return status;
-        if (have_lufs || have_peak)
+        if (have_lufs != have_peak) {
+            status = MUSICPACK_ERR_INVALID;
+            return status;
+        }
+        if (have_lufs)
             m->has_album_loudness = 1;
     }
 
@@ -687,7 +742,7 @@ musicpack_manifest_parse(const char *json, musicpack_status *status)
         *status = MUSICPACK_ERR_INVALID;
         return 0;
     }
-    root = cJSON_ParseWithLength(json, len);
+    root = cJSON_ParseWithLengthOpts(json, len + 1, 0, 1);
     if (root == 0) {
         *status = MUSICPACK_ERR_JSON;
         return 0;
@@ -765,6 +820,7 @@ musicpack_manifest_clear(musicpack_manifest *m)
             free(tr->source_audio_md5);
             free(tr->audio.path);
             free(tr->audio.sha256);
+            free(tr->audio_codec);
         }
         free(d->tracks);
     }
@@ -829,8 +885,7 @@ asset_to_json(const musicpack_asset *a)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "path", a->path);
-    if (a->sha256 != 0)
-        cJSON_AddStringToObject(o, "sha256", a->sha256);
+    cJSON_AddStringToObject(o, "sha256", a->sha256);
     return o;
 }
 
@@ -950,6 +1005,9 @@ build_tree(const musicpack_manifest *m)
                 cJSON_AddNumberToObject(lo, "truePeakDbTP", tr->loudness.true_peak_db);
             }
             cJSON_AddItemToObject(to, "audio", asset_to_json(&tr->audio));
+            if (tr->audio_codec != 0)
+                cJSON_AddStringToObject(cJSON_GetObjectItemCaseSensitive(to, "audio"),
+                                        "codec", tr->audio_codec);
             cJSON_AddItemToArray(item, to);
         }
         cJSON_AddItemToArray(arr, o);
@@ -961,8 +1019,7 @@ build_tree(const musicpack_manifest *m)
             cJSON *w = cJSON_CreateObject();
             cJSON_AddStringToObject(w, "role", m->artwork[i].role);
             cJSON_AddItemToObject(w, "path", cJSON_CreateString(m->artwork[i].asset.path));
-            if (m->artwork[i].asset.sha256 != 0)
-                cJSON_AddStringToObject(w, "sha256", m->artwork[i].asset.sha256);
+            cJSON_AddStringToObject(w, "sha256", m->artwork[i].asset.sha256);
             cJSON_AddItemToArray(arr, w);
         }
     }
@@ -985,8 +1042,7 @@ build_tree(const musicpack_manifest *m)
             if (m->analysis[i].profile != 0)
                 cJSON_AddStringToObject(an, "profile", m->analysis[i].profile);
             cJSON_AddStringToObject(an, "path", m->analysis[i].asset.path);
-            if (m->analysis[i].asset.sha256 != 0)
-                cJSON_AddStringToObject(an, "sha256", m->analysis[i].asset.sha256);
+            cJSON_AddStringToObject(an, "sha256", m->analysis[i].asset.sha256);
             cJSON_AddItemToArray(arr, an);
         }
     }
@@ -1007,6 +1063,63 @@ build_tree(const musicpack_manifest *m)
     }
 
     return root;
+}
+
+static musicpack_status
+validate_for_write(const musicpack_manifest *m)
+{
+    cJSON *tree;
+    musicpack_manifest checked;
+    musicpack_status status;
+    size_t i, d, t;
+
+    if (m->album_title == 0 || m->album_artists == 0 || m->album_artist_count == 0 ||
+        m->discs == 0 || m->disc_count == 0)
+        return MUSICPACK_ERR_INVALID;
+    for (i = 0; i < m->album_artist_count; i++)
+        if (m->album_artists[i].name == 0)
+            return MUSICPACK_ERR_INVALID;
+    for (i = 0; i < m->genre_count; i++)
+        if (m->genres == 0 || m->genres[i] == 0)
+            return MUSICPACK_ERR_INVALID;
+    for (d = 0; d < m->disc_count; d++) {
+        const musicpack_disc *disc = &m->discs[d];
+        if (disc->tracks == 0 || disc->track_count == 0)
+            return MUSICPACK_ERR_INVALID;
+        for (t = 0; t < disc->track_count; t++) {
+            const musicpack_track *track = &disc->tracks[t];
+            if (track->title == 0 || track->audio.path == 0 || track->audio.sha256 == 0)
+                return MUSICPACK_ERR_INVALID;
+            for (i = 0; i < track->artist_count; i++)
+                if (track->artists == 0 || track->artists[i].name == 0)
+                    return MUSICPACK_ERR_INVALID;
+        }
+    }
+    for (i = 0; i < m->artwork_count; i++)
+        if (m->artwork == 0 || m->artwork[i].role == 0 ||
+            m->artwork[i].asset.path == 0 || m->artwork[i].asset.sha256 == 0)
+            return MUSICPACK_ERR_INVALID;
+#define VALIDATE_ASSETS(field, count)                                          \
+    for (i = 0; i < m->count; i++)                                             \
+        if (m->field == 0 || m->field[i].path == 0 || m->field[i].sha256 == 0) \
+            return MUSICPACK_ERR_INVALID;
+    VALIDATE_ASSETS(booklet, booklet_count);
+    VALIDATE_ASSETS(lyrics, lyrics_count);
+    VALIDATE_ASSETS(extras, extras_count);
+#undef VALIDATE_ASSETS
+    for (i = 0; i < m->analysis_count; i++)
+        if (m->analysis == 0 || m->analysis[i].type == 0 ||
+            m->analysis[i].asset.path == 0 || m->analysis[i].asset.sha256 == 0)
+            return MUSICPACK_ERR_INVALID;
+
+    tree = build_tree(m);
+    if (tree == 0)
+        return MUSICPACK_ERR_NOMEM;
+    memset(&checked, 0, sizeof checked);
+    status = musicpack_manifest_parse_tree(tree, &checked);
+    musicpack_manifest_clear(&checked);
+    cJSON_Delete(tree);
+    return status;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1145,36 +1258,35 @@ musicpack_json_print(const cJSON *root)
     return o.buf;
 }
 
-static void
-merge_into(cJSON *dst, const cJSON *src)
+static int
+is_package_field(const char *key)
+{
+    static const char *const fields[] = {
+        "format", "version", "album", "release", "identifiers", "identity",
+        "source", "media", "artwork", "booklet", "lyrics", "extras", "analysis",
+        "loudness", "provenance"
+    };
+    return is_in_string_list(key, fields, sizeof fields / sizeof *fields);
+}
+
+static int
+copy_package_extensions(cJSON *dst, const cJSON *original)
 {
     const cJSON *child;
 
-    if (dst == 0 || src == 0 || !cJSON_IsObject(dst))
-        return;
-    cJSON_ArrayForEach(child, src) {
-        cJSON *existing = cJSON_GetObjectItemCaseSensitive(dst, child->string);
-        if (existing != 0 && cJSON_IsObject(existing) && cJSON_IsObject(child)) {
-            merge_into(existing, child);
-        } else if (existing != 0 && cJSON_IsArray(existing) && cJSON_IsArray(child)) {
-            int idx = 0;
-            const cJSON *el;
-            cJSON_ArrayForEach(el, child) {
-                cJSON *dst_el = cJSON_GetArrayItem(existing, idx);
-                if (dst_el != 0 && cJSON_IsObject(dst_el) && cJSON_IsObject(el))
-                    merge_into(dst_el, el);
-                idx++;
-            }
-        } else {
-            cJSON *copy = cJSON_Duplicate(child, 1);
-            if (copy != 0) {
-                if (existing != 0)
-                    cJSON_ReplaceItemInObjectCaseSensitive(dst, child->string, copy);
-                else
-                    cJSON_AddItemToObject(dst, child->string, copy);
-            }
+    if (!cJSON_IsObject(original))
+        return 1;
+    cJSON_ArrayForEach(child, original) {
+        cJSON *copy;
+        if (is_package_field(child->string))
+            continue;
+        copy = cJSON_Duplicate(child, 1);
+        if (copy == 0 || !cJSON_AddItemToObject(dst, child->string, copy)) {
+            cJSON_Delete(copy);
+            return 0;
         }
     }
+    return 1;
 }
 
 musicpack_status
@@ -1185,21 +1297,23 @@ musicpack_manifest_write_with_original(const musicpack_manifest *m,
 
     if (m == 0 || json_out == 0)
         return MUSICPACK_ERR_INVALID;
+    *json_out = 0;
+    {
+        musicpack_status status = validate_for_write(m);
+        if (status != MUSICPACK_OK)
+            return status;
+    }
     tree = build_tree(m);
     if (tree == 0)
         return MUSICPACK_ERR_NOMEM;
 
     if (original != 0) {
-        /* Preserve unknown fields: merge the typed values into a copy of the
-           original document so extension keys survive the round-trip. */
-        cJSON *copy = cJSON_Duplicate(original, 1);
-        if (copy == 0) {
+        /* Only root extensions are retained. Nested extensions cannot be
+           safely associated after callers shrink or reorder typed arrays. */
+        if (!copy_package_extensions(tree, original)) {
             cJSON_Delete(tree);
             return MUSICPACK_ERR_NOMEM;
         }
-        merge_into(copy, tree);
-        cJSON_Delete(tree);
-        tree = copy;
     }
 
     *json_out = musicpack_json_print(tree);

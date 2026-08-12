@@ -154,6 +154,20 @@ mp_library_package_by_fingerprint(mp_library *lib, const char *fp,
     return rc;
 }
 
+int
+mp_library_release_has_package(mp_library *lib, long long release_id)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT 1 FROM packages WHERE release_id = ?1 LIMIT 1");
+    int rc = 0;
+    if (st == 0)
+        return 0;
+    sqlite3_bind_int64(st, 1, release_id);
+    rc = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return rc;
+}
+
 long long
 mp_library_package_insert(mp_library *lib, const char *path,
                           long long release_id, const char *fingerprint,
@@ -691,8 +705,8 @@ mp_library_track_audio(mp_library *lib, long long track_id, mp_object_ref *ref)
         "  JOIN releases r ON r.id = me.release_id"
         "  JOIN packages p ON p.release_id = r.id"
         "  JOIN audio_objects a ON a.track_id = t.id"
-        " WHERE t.id = ?1"
-        " ORDER BY CASE WHEN p.status='unavailable' THEN 1 ELSE 0 END, p.id"
+         " WHERE t.id = ?1 AND p.status IN ('valid','warning')"
+         " ORDER BY p.id"
         " LIMIT 1");
     int rc = 0;
     if (st == 0)
@@ -715,8 +729,9 @@ mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref)
         "  FROM assets a"
         "  JOIN releases r ON r.id = a.release_id"
         "  JOIN packages p ON p.release_id = r.id"
-        " WHERE a.id = ?1 AND a.kind IN ('artwork','booklet','lyrics')"
-        " ORDER BY CASE WHEN p.status='unavailable' THEN 1 ELSE 0 END, p.id"
+         " WHERE a.id = ?1 AND a.kind IN ('artwork','booklet','lyrics')"
+         "   AND p.status IN ('valid','warning')"
+         " ORDER BY p.id"
         " LIMIT 1");
     int rc = 0;
     if (st == 0)

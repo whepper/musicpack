@@ -119,7 +119,7 @@ document) and enriches empty fields with honest `identity.confidence`
 (`exact`/`confirmed`/`probable`/`none`) — importing never requires a network.
 `update-metadata` reconciles the manifest from the tracks' tags and, with
 `--sync-tags`, writes the manifest back into `.mpc` APEv2 tags and refreshes
-checksums (unknown fields preserved throughout). The normative spec and
+checksums (unknown top-level manifest fields preserved). The normative spec and
 machine-readable schema live in `specs/musicpack-v1.md` and
 `specs/musicpack-v1.schema.json`; committed reference packages (a Musepack
 album and a FLAC album) are under `tests/reference/`.

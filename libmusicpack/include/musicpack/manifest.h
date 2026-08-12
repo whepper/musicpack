@@ -35,9 +35,9 @@
 /// The `.mpack` v1 manifest model: what an album IS (independent of storage).
 ///
 /// The model is a plain, owned C structure. All string members are
-/// `strdup`'d and released by musicpack_manifest_free(). Unknown fields in
-/// the source JSON are not represented here; they are preserved on write by
-/// passing the original parse tree (see musicpack_manifest_write()).
+/// `strdup`'d and released by musicpack_manifest_free(). Unknown source JSON
+/// fields are not represented here. Package handles retain only unknown root
+/// fields on save; nested fields cannot safely survive model array edits.
 #ifndef MUSICPACK_MANIFEST_H_
 #define MUSICPACK_MANIFEST_H_
 #pragma once
@@ -63,10 +63,10 @@ typedef struct musicpack_artist {
     char *role; ///< optional ("main", "featuring", ...), may be NULL
 } musicpack_artist;
 
-/// A referenced object in the package (manifest-relative path + optional hash).
+/// A referenced object in the package (manifest-relative path + required hash).
 typedef struct musicpack_asset {
     char *path;  ///< required, '/'-separated, relative, contained
-    char *sha256; ///< optional lowercase hex; may be NULL
+    char *sha256; ///< required lowercase SHA-256 hex
 } musicpack_asset;
 
 /// Measured BS.1770 loudness (gain is derived, never stored).
@@ -93,6 +93,7 @@ typedef struct musicpack_track {
     double duration;      ///< seconds
     musicpack_loudness loudness;
     musicpack_asset audio;
+    char *audio_codec;       ///< optional encoded audio codec ("mpc", "flac", ...)
 } musicpack_track;
 
 /// A disc / medium.
@@ -170,8 +171,12 @@ typedef struct musicpack_manifest {
     char *provenance_tool_version; ///< optional
 } musicpack_manifest;
 
+/// Maximum total number of referenced assets across all manifest arrays.
+#define MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS 4096
+
 /// Parses manifest JSON text into a typed model (validation is structural:
-/// format, version, required fields, path rules, numbering, loudness ranges).
+/// format, version, required fields, path rules, numbering, loudness ranges,
+/// hashes, closed enums, and the 4096 referenced-asset limit).
 ///
 /// \param json      NUL-terminated JSON text
 /// \param status    optional error out

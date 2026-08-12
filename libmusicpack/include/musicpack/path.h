@@ -45,7 +45,8 @@
 ///  - length is bounded (MUSICPACK_PATH_MAX).
 ///
 /// musicpack_path_resolve() additionally enforces that the joined path stays
-/// inside the package root (realpath containment, symlink escapes rejected).
+/// inside the package root. Existing ancestors are canonicalized so symlink
+/// and Windows reparse-point escapes are rejected.
 #ifndef MUSICPACK_PATH_H_
 #define MUSICPACK_PATH_H_
 #pragma once

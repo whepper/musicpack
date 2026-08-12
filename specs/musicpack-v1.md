@@ -73,7 +73,8 @@ Album.mpack/
   reports them as warnings, never errors, so ordinary files remain usable
   outside MusicPack (no archive/extraction required).
 - `manifest.json` is **not** self-hashed (avoiding a self-referential
-  checksum); integrity is per-asset `sha256`.
+  checksum); integrity is the required `sha256` on every manifest-referenced
+  asset.
 - All object paths are relative to the package root and use `/` separators.
 
 ### Path rules (canonical)
@@ -108,13 +109,22 @@ Field summary (see the JSON Schema for full constraints):
 | track fields           | yes/var  | `track` (>=1), `title`, `audio`; optional `artists`, `identifiers` (`isrc`, `musicbrainzTrackId`, `musicbrainzRecordingId`), `source`, `sourceAudio`, `duration` (derived), `loudness` |
 | `audio`                | yes      | object: `path` (required), `sha256` (required, 64 lowercase hex), `codec` (optional) |
 | `artwork`              | no       | array of `{ role, path, sha256 }`             |
-| `booklet`,`lyrics`,`extras` | no | arrays of `{ path, sha256? }`             |
+| `booklet`,`lyrics`,`extras` | no | arrays of `{ path, sha256 }`              |
 | `analysis`             | no       | optional analysis references: array of `{ type, profile?, path, sha256 }` (see below) |
 | `loudness`             | no       | album-level `algorithm`, `albumLUFS`, `albumTruePeakDbTP` |
 | `provenance`           | no       | `tool`, `toolVersion`; timestamps omitted by default for determinism |
 
 Disc numbers are unique; track numbers are unique within a disc; object paths
 are unique across the whole package.
+
+`release` is optional. Its absence means the package has no recorded
+specific-release metadata; it does not change the package's single-release
+scope or move release identifiers into another block.
+
+Array order is canonical manifest order. Consumers preserve the order of
+`media[]` and of each `media[].tracks[]`; `disc` and `track` identify entries
+and validate uniqueness, but do not reorder them. This order is used wherever
+the format refers to album or track order, including album loudness.
 
 ### Analysis references
 
@@ -127,7 +137,7 @@ them; it never embeds their payload:
   { "type": "sonic",
     "profile": "musicpack-sonic-openl3-v1",
     "path": "analysis/sonic.json",
-    "sha256": "<64 lowercase hex>" }
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
 ]
 ```
 
@@ -139,7 +149,7 @@ them; it never embeds their payload:
   document's profile id.
 - `path` — package-relative, validated by the canonical path rules, unique
   across all package asset paths.
-- `sha256` — lowercase hex; required when `type == "sonic"`.
+- `sha256` — required lowercase hex.
 
 A package without `analysis[]` is completely valid.
 
@@ -259,7 +269,9 @@ Rules:
 
 ## 6. Integrity
 
-SHA-256 (lowercase hex) per audio/artwork/booklet/lyrics asset.
+Every manifest-referenced asset — audio, artwork, booklet, lyrics, extras, and
+analysis — has a required SHA-256 in lowercase hexadecimal. `manifest.json`
+itself is not an asset and is not self-hashed.
 `musicpack verify` detects: missing files, checksum mismatches, malformed
 manifests, duplicate track identity, invalid paths, impossible numbering,
 invalid loudness values, invalid release-type / medium-format enumeration
@@ -267,9 +279,9 @@ values, unsupported manifest version, and (as warnings) unreferenced files.
 
 ## 7. Validation / forward compatibility
 
-- Unknown fields are **ignored on read** and **preserved on write**: a
-  read-modify-write round-trip keeps extension data (patch-on-original),
-  including inside `album`, `release`, `identifiers` and `media`.
+- Unknown package-level fields are ignored on read and preserved on write when
+  a package is opened and written through the same package session. Preservation
+  does not extend to unknown fields nested inside known manifest objects.
 - Unknown schema majors are rejected cleanly (`version` != 1).
 - New fields must be added as optional fields; existing fields must not
   change meaning. `releaseType` and `media[].format` are closed enums by
@@ -278,11 +290,12 @@ values, unsupported manifest version, and (as warnings) unreferenced files.
 
 ## 8. Security model
 
-`.mpack` is untrusted input. The library enforces the path rules above,
-bounds manifest size (16 MiB), bounds JSON nesting (100), validates checksum
-format and loudness ranges, and treats `extras/` as opaque data (never
-executed or interpreted). Fuzzing targets cover manifest parsing, path
-normalization and package validation.
+`.mpack` is untrusted input. The library enforces the path rules above, bounds
+manifest size (16 MiB), bounds JSON nesting (100), and permits at most exactly
+4096 manifest-referenced assets. It validates checksum format and loudness
+ranges, and treats `extras/` as opaque data (never executed or interpreted).
+Fuzzing targets cover manifest parsing, path normalization and package
+validation.
 
 ## 9. Collector examples
 
@@ -311,7 +324,7 @@ Different editions of the same album are distinct, meaningful packages:
   "identity": { "source": "local", "confidence": "none" },
   "source": { "type": "cd-rip" },
   "media": [ { "disc": 1, "format": "CD", "tracks": [ { "track": 1, "title": "...",
-    "audio": { "path": "audio/01.mpc", "sha256": "..." } } ] } ]
+    "audio": { "path": "audio/01.mpc", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } ] } ]
 }
 ```
 
@@ -342,7 +355,7 @@ Different editions of the same album are distinct, meaningful packages:
   "source": { "type": "cd-rip" },
   "media": [ { "disc": 1, "format": "CD", "tracks": [ { "track": 1,
     "identifiers": { "isrc": "...", "musicbrainzTrackId": "...", "musicbrainzRecordingId": "..." },
-    "title": "...", "audio": { "path": "audio/01.mpc", "sha256": "..." } } ] } ]
+    "title": "...", "audio": { "path": "audio/01.mpc", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } ] } ]
 }
 ```
 
@@ -367,7 +380,7 @@ Different editions of the same album are distinct, meaningful packages:
   },
   "source": { "type": "digital-download", "store": "Deezer" },
   "media": [ { "disc": 1, "format": "Digital",
-    "tracks": [ { "track": 1, "title": "...", "audio": { "path": "audio/01.mpc", "sha256": "..." } } ] } ]
+    "tracks": [ { "track": 1, "title": "...", "audio": { "path": "audio/01.mpc", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } ] } ]
 }
 ```
 
@@ -391,7 +404,7 @@ Different editions of the same album are distinct, meaningful packages:
     "catalogueNumber": "EXA 1992M"
   },
   "media": [ { "disc": 1, "format": "CD", "tracks": [ { "track": 1, "title": "...",
-    "audio": { "path": "audio/01.mpc", "sha256": "..." } } ] } ]
+    "audio": { "path": "audio/01.mpc", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } ] } ]
 }
 ```
 
@@ -409,7 +422,7 @@ Different editions of the same album are distinct, meaningful packages:
   },
   "release": { "releaseDate": "2020-04-17", "edition": "2020 Digital", "country": "US" },
   "media": [ { "disc": 1, "format": "Digital", "tracks": [ { "track": 1, "title": "...",
-    "audio": { "path": "audio/01.mpc", "sha256": "..." } } ] } ]
+    "audio": { "path": "audio/01.mpc", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } ] } ]
 }
 ```
 

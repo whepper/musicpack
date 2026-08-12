@@ -114,7 +114,7 @@ projected back onto each encoded `.mpc` as APEv2 tags
 | ARTIST | `track.artists[]` (role `main`) | `Artist` |
 | ALBUM | `album.title` | `Album` |
 | ALBUMARTIST | `album.artists[]` (role `main`) | `Album Artist` |
-| TRACKNUMBER | `track.number` | `Track` (as `n/total`) |
+| TRACKNUMBER | `track.track` | `Track` (as `n/total`) |
 | TRACKTOTAL / TOTALTRACKS | — | folded into `Track` |
 | DISCNUMBER | `media[].disc` | `Disc` (as `n/total`) |
 | DISCTOTAL / TOTALDISCS | — | folded into `Disc` |
@@ -232,6 +232,10 @@ the package). Package naming is a sensible default derived from normalized
 metadata (`"Artist - Album"`, filesystem-invalid characters sanitized) but the
 **manifest remains the authoritative identity**, never the filename.
 
+The draft preserves its media and track sequence when writing `media[]` and
+`tracks[]`; this is the canonical manifest order. Disc and track numbers are
+identifiers, not instructions to sort the authored sequence.
+
 Loudness is measured with the BS.1770-5 meter over the album as one
 concatenated program (`musicpack_meter`), recorded per track and per album,
 never aggregated from per-track values.
@@ -249,9 +253,11 @@ Validation is mandatory and never assumed:
    successful if verification fails.
 3. The GUI's Create dialog re-verifies on demand and shows `MusicPack valid`
    or the actionable error list (missing files, checksum mismatch, malformed
-   manifest, duplicate/invalid numbering, enumeration violations). Audio
-   `sha256` is mandatory for every v1 track and verification detects missing,
-   malformed, or mismatched hashes.
+   manifest, duplicate/invalid numbering, enumeration violations). `sha256` is
+   mandatory for every manifest-referenced asset (audio, artwork, booklet,
+   lyrics, extras, and analysis); verification detects missing, malformed, or
+   mismatched hashes. A package may contain at most 4096 manifest-referenced
+   assets.
 
 ## 9. Sonic analysis
 

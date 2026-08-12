@@ -226,6 +226,28 @@ replace_in_file(const char *path, const char *from, const char *to)
     free(buf);
 }
 
+static void
+insert_before_final_brace(const char *path, const char *text)
+{
+    char *buf = read_file(path);
+    char *end;
+    char *out;
+    if (buf == 0)
+        return;
+    end = strrchr(buf, '}');
+    if (end == 0) {
+        free(buf);
+        return;
+    }
+    out = (char *) malloc(strlen(buf) + strlen(text) + 1);
+    memcpy(out, buf, (size_t) (end - buf));
+    strcpy(out + (end - buf), text);
+    strcpy(out + (end - buf) + strlen(text), end);
+    write_file(path, out);
+    free(out);
+    free(buf);
+}
+
 /* ---------- range parser ------------------------------------------------- */
 
 static void
@@ -326,7 +348,22 @@ test_identity(const char *ref)
         m2->release.edition = strdup("1987 Original CD");
         CHECK(mp_identity_release_key(m1, rk1, sizeof rk1) == MUSICPACK_OK &&
               mp_identity_release_key(m2, rk2, sizeof rk2) == MUSICPACK_OK &&
-              strcmp(rk1, rk2) != 0, "release key differs by edition");
+           strcmp(rk1, rk2) != 0, "release key differs by edition");
+    }
+    {
+        char *long_title = (char *) malloc(10001);
+        memset(long_title, 'a', 10000);
+        long_title[10000] = '\0';
+        free(m1->album_title);
+        free(m2->album_title);
+        m1->album_title = strdup(long_title);
+        long_title[9999] = 'b';
+        m2->album_title = strdup(long_title);
+        CHECK(mp_identity_group_key(m1, gk1, sizeof gk1) == MUSICPACK_OK &&
+              mp_identity_group_key(m2, gk2, sizeof gk2) == MUSICPACK_OK &&
+              strcmp(gk1, gk2) != 0,
+              "long identity fields are not truncated");
+        free(long_title);
     }
     musicpack_manifest_free(m1);
     musicpack_manifest_free(m2);
@@ -412,6 +449,16 @@ test_scanner(void)
     CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 11,
           "eleven tracks");
 
+    /* An identical package is a separate copy, not a move that hijacks the
+       original package row. */
+    {
+        char duplicate[4096];
+        snprintf(duplicate, sizeof duplicate, "%s/ClassicalCopy.mpack", lib);
+        copy_tree(g_ref_flac, duplicate);
+        mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+        CHECK(res.added == 1 && res.moved == 0, "duplicate does not hijack move");
+    }
+
     /* 5. changed manifest -> updated, not duplicated */
     {
         char mpath[4096];
@@ -442,6 +489,17 @@ test_scanner(void)
         "invalid status persisted");
     CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 11,
           "malformed package did not corrupt index");
+
+    /* Lightweight scans still resolve every analysis reference. */
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", second);
+        insert_before_final_brace(mpath,
+            ",\n  \"analysis\": [{\"type\": \"other\", \"path\": \"analysis/missing.json\", \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"}]\n");
+        mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+        CHECK(count_rows(db, "SELECT COUNT(*) FROM packages WHERE status='warning'", -1)
+              >= 1, "missing analysis reference warns on lightweight scan");
+    }
 
     /* 7. moved package -> same id at new path */
     snprintf(moved, sizeof moved, "%s/MovedClassical.mpack", lib);
@@ -736,6 +794,12 @@ test_verify(void)
     CHECK(count_query(db,
         "SELECT COUNT(*) FROM packages WHERE verify_status='checksum-failed'",
         0) == 1, "checksum-failed persisted");
+
+    /* Explicit scan verification must not take the unchanged-manifest fast path. */
+    mp_scan_library(lib, libdir, 1, &res, 0, 0);
+    CHECK(count_query(db,
+        "SELECT COUNT(*) FROM packages WHERE verify_status='checksum-failed'",
+        0) == 1, "verified scan checks unchanged manifest assets");
 
     mp_library_close(lib);
 }

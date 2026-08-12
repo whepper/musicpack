@@ -94,7 +94,11 @@ static int
 is_within(const char *base, const char *candidate)
 {
     size_t blen = strlen(base);
+#if defined(_WIN32)
+    if (_strnicmp(base, candidate, blen) != 0)
+#else
     if (strncmp(base, candidate, blen) != 0)
+#endif
         return 0;
     /* Windows separators are backslashes; manifest paths are '/' only, and
        POSIX realpath never yields '\', so accepting both is safe. */
@@ -102,6 +106,79 @@ is_within(const char *base, const char *candidate)
         return 1;
     return 0;
 }
+
+#if defined(_WIN32)
+static musicpack_status
+final_path(const char *path, char *out, size_t cap)
+{
+    HANDLE h;
+    DWORD n;
+
+    h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return MUSICPACK_ERR_PATH;
+    n = GetFinalPathNameByHandleA(h, out, (DWORD) cap,
+                                  FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(h);
+    return n > 0 && n < cap ? MUSICPACK_OK : MUSICPACK_ERR_PATH;
+}
+
+static musicpack_status
+check_existing_ancestors(const char *root_abs, const char *root_real,
+                         const char *rel)
+{
+    char probe[MUSICPACK_PATH_MAX + 2], resolved[MUSICPACK_PATH_MAX + 2];
+    size_t i, len;
+
+    memcpy(probe, root_abs, strlen(root_abs) + 1);
+    len = strlen(probe);
+    for (i = 0; rel[i] != '\0'; ) {
+        size_t start = i;
+        while (rel[i] != '\0' && rel[i] != '/')
+            i++;
+        if (snprintf(probe + len, sizeof probe - len, "\\%.*s",
+                     (int) (i - start), rel + start) >= (int) (sizeof probe - len))
+            return MUSICPACK_ERR_PATH;
+        if (final_path(probe, resolved, sizeof resolved) != MUSICPACK_OK)
+            return MUSICPACK_OK;
+        if (!is_within(root_real, resolved))
+            return MUSICPACK_ERR_PATH;
+        memcpy(probe, resolved, strlen(resolved) + 1);
+        len = strlen(probe);
+        if (rel[i] == '/')
+            i++;
+    }
+    return MUSICPACK_OK;
+}
+#else
+static musicpack_status
+check_existing_ancestors(const char *root_real, const char *rel)
+{
+    char probe[MUSICPACK_PATH_MAX + 2], resolved[MUSICPACK_PATH_MAX + 2];
+    size_t i, len;
+
+    memcpy(probe, root_real, strlen(root_real) + 1);
+    len = strlen(probe);
+    for (i = 0; rel[i] != '\0'; ) {
+        size_t start = i;
+        while (rel[i] != '\0' && rel[i] != '/')
+            i++;
+        if (snprintf(probe + len, sizeof probe - len, "/%.*s",
+                     (int) (i - start), rel + start) >= (int) (sizeof probe - len))
+            return MUSICPACK_ERR_PATH;
+        if (realpath(probe, resolved) == 0)
+            return MUSICPACK_OK;
+        if (!is_within(root_real, resolved))
+            return MUSICPACK_ERR_PATH;
+        memcpy(probe, resolved, strlen(resolved) + 1);
+        len = strlen(probe);
+        if (rel[i] == '/')
+            i++;
+    }
+    return MUSICPACK_OK;
+}
+#endif
 
 musicpack_status
 musicpack_path_resolve(const char *root, const char *rel, char *out, size_t cap)
@@ -119,13 +196,15 @@ musicpack_path_resolve(const char *root, const char *rel, char *out, size_t cap)
 
 #if defined(_WIN32)
     {
-        char root_abs[MUSICPACK_PATH_MAX + 2], joined_abs[MUSICPACK_PATH_MAX + 2];
+        char root_abs[MUSICPACK_PATH_MAX + 2], root_real[MUSICPACK_PATH_MAX + 2];
+        char joined_abs[MUSICPACK_PATH_MAX + 2];
         DWORD n1, n2;
         n1 = GetFullPathNameA(root, (DWORD) sizeof root_abs, root_abs, NULL);
         n2 = GetFullPathNameA(joined, (DWORD) sizeof joined_abs, joined_abs, NULL);
         if (n1 == 0 || n2 == 0)
             return MUSICPACK_ERR_PATH;
-        if (!is_within(root_abs, joined_abs))
+        if (final_path(root_abs, root_real, sizeof root_real) != MUSICPACK_OK ||
+            check_existing_ancestors(root_abs, root_real, rel) != MUSICPACK_OK)
             return MUSICPACK_ERR_PATH;
         if (strlen(joined_abs) >= cap)
             return MUSICPACK_ERR_PATH;
@@ -134,20 +213,15 @@ musicpack_path_resolve(const char *root, const char *rel, char *out, size_t cap)
     }
 #else
     {
-        char root_real[MUSICPACK_PATH_MAX + 2], joined_real[MUSICPACK_PATH_MAX + 2];
+        char root_real[MUSICPACK_PATH_MAX + 2], candidate[MUSICPACK_PATH_MAX + 2];
         if (realpath(root, root_real) == 0)
             return MUSICPACK_ERR_PATH;
-        if (realpath(joined, joined_real) == 0) {
-            /* target does not exist yet: nothing to escape to; fall back to
-               the lexical join (already free of '..'). */
-            memcpy(out, joined, strlen(joined) + 1);
-            return MUSICPACK_OK;
-        }
-        if (!is_within(root_real, joined_real))
+        if (check_existing_ancestors(root_real, rel) != MUSICPACK_OK)
             return MUSICPACK_ERR_PATH;
-        if (strlen(joined_real) >= cap)
+        if (snprintf(candidate, sizeof candidate, "%s/%s", root_real, rel)
+            >= (int) sizeof candidate || strlen(candidate) >= cap)
             return MUSICPACK_ERR_PATH;
-        memcpy(out, joined_real, strlen(joined_real) + 1);
+        memcpy(out, candidate, strlen(candidate) + 1);
         return MUSICPACK_OK;
     }
 #endif

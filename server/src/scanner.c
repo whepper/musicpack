@@ -62,32 +62,38 @@ read_file_bounded(const char *path, size_t max)
 /* Resolves each referenced object and checks existence (lightweight scan
    policy: no full hashing). Returns the number of missing objects. */
 static int
+object_missing(const musicpack_package *pkg, const char *path)
+{
+    char out[MUSICPACK_PATH_MAX + 2];
+    struct stat st;
+    return musicpack_package_resolve_path(pkg, path, out, sizeof out)
+               != MUSICPACK_OK ||
+           stat(out, &st) != 0;
+}
+
+static int
 count_missing_objects(const musicpack_package *pkg, const musicpack_manifest *m)
 {
     int missing = 0;
     size_t d, t, i;
-    char out[MUSICPACK_PATH_MAX + 2];
     for (d = 0; d < m->disc_count; d++)
         for (t = 0; t < m->discs[d].track_count; t++)
-            if (musicpack_package_resolve_path(
-                    pkg, m->discs[d].tracks[t].audio.path, out, sizeof out)
-                != MUSICPACK_OK)
+            if (object_missing(pkg, m->discs[d].tracks[t].audio.path))
                 missing++;
     for (i = 0; i < m->artwork_count; i++)
-        if (musicpack_package_resolve_path(pkg, m->artwork[i].asset.path,
-                                           out, sizeof out) != MUSICPACK_OK)
+        if (object_missing(pkg, m->artwork[i].asset.path))
             missing++;
     for (i = 0; i < m->booklet_count; i++)
-        if (musicpack_package_resolve_path(pkg, m->booklet[i].path, out,
-                                           sizeof out) != MUSICPACK_OK)
+        if (object_missing(pkg, m->booklet[i].path))
             missing++;
     for (i = 0; i < m->lyrics_count; i++)
-        if (musicpack_package_resolve_path(pkg, m->lyrics[i].path, out,
-                                           sizeof out) != MUSICPACK_OK)
+        if (object_missing(pkg, m->lyrics[i].path))
             missing++;
     for (i = 0; i < m->extras_count; i++)
-        if (musicpack_package_resolve_path(pkg, m->extras[i].path, out,
-                                           sizeof out) != MUSICPACK_OK)
+        if (object_missing(pkg, m->extras[i].path))
+            missing++;
+    for (i = 0; i < m->analysis_count; i++)
+        if (object_missing(pkg, m->analysis[i].asset.path))
             missing++;
     return missing;
 }
@@ -192,7 +198,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
         return -1;
     }
     codecs = collect_track_ingest(pkg, m, &codec_count);
-    if (mp_library_replace_release_content(lib, release_id, m, dir, codecs,
+    if ((have_row || !mp_library_release_has_package(lib, release_id)) &&
+        mp_library_replace_release_content(lib, release_id, m, dir, codecs,
                                            codec_count) != 0) {
         free(codecs);
         mp_library_rollback(lib);
@@ -250,6 +257,12 @@ handle_move(mp_library *lib, const char *dir, const musicpack_package *pkg,
         return 0;
     if (strcmp(row.path, dir) == 0)
         return 0;
+    {
+        struct stat st;
+        /* A duplicate package must not take over an extant package's row. */
+        if (stat(row.path, &st) == 0 && S_ISDIR(st.st_mode))
+            return 0;
+    }
     determine_status(pkg, m, verify, &status, &verify_status,
                      errbuf, sizeof errbuf);
     if (strcmp(status, "valid") != 0)
@@ -316,7 +329,7 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
                               sizeof manifest_sha);
 
     /* fast path: unchanged package (same path, same manifest hash) */
-    if (mp_library_package_by_path(lib, dir, &row) &&
+    if (!verify && mp_library_package_by_path(lib, dir, &row) &&
         strcmp(row.manifest_sha256, manifest_sha) == 0) {
         free(json);
         mp_library_begin(lib);

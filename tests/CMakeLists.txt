@@ -117,8 +117,17 @@ add_test(NAME mpack COMMAND mpc_mpack_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-musicpack-album.mpack
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-flac-album.mpack
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/meta)
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME mpack_conformance
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_mpack_conformance.py
+            $<TARGET_FILE:musicpack_cmd>
+            ${CMAKE_CURRENT_SOURCE_DIR}/generate_mpack_conformance.py)
 if(WIN32)
   set_tests_properties(mpack PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+  set_tests_properties(mpack_conformance PROPERTIES
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
 endif()
 

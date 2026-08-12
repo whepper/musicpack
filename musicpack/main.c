@@ -79,6 +79,7 @@
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
 static void rm_rf(const char *path);
+static int unique_target(char *path, size_t cap);
 
 static int usage_error(const char *msg)
 {
@@ -145,6 +146,45 @@ write_all(const char *path, const char *data)
         return -1;
     ok = (len == 0 || fwrite(data, 1, len, f) == len) && fclose(f) == 0;
     return ok ? 0 : -1;
+}
+
+/* Create beside, rather than inside, the destination so rename is atomic. */
+static int
+prepare_stage(const char *final_dir, const char *kind, char *stage, size_t cap)
+{
+    struct stat st;
+
+#ifdef _WIN32
+    if (stat(final_dir, &st) == 0)
+#else
+    if (lstat(final_dir, &st) == 0)
+#endif
+        return 0;
+    if (snprintf(stage, cap, "%s.%s-%ld", final_dir, kind, (long) getpid())
+            >= (int) cap)
+        return 0;
+#ifdef _WIN32
+    if (stat(stage, &st) == 0)
+#else
+    if (lstat(stage, &st) == 0)
+#endif
+        return 0;
+    return 1;
+}
+
+static int
+verify_staged_package(const char *dir)
+{
+    musicpack_package *pkg;
+    musicpack_report rep = { 0, 0 };
+    int ok;
+
+    pkg = musicpack_package_open_dir(dir, 0);
+    if (pkg == 0)
+        return 0;
+    ok = musicpack_package_verify(pkg, &rep, 0, 0) == MUSICPACK_OK;
+    musicpack_package_close(pkg);
+    return ok;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1102,6 +1142,8 @@ static int
 cmd_create(int argc, char **argv)
 {
     const char *out_dir = 0, *title = 0, *release_date = 0, *artwork = 0;
+    const char *final_dir;
+    char stage_dir[MUSICPACK_PATH_MAX + 2];
     const char *release_type = 0, *orig_release_date = 0, *edition = 0;
     const char *label = 0, *catalogue = 0, *country = 0, *medium_format = 0;
     const char *notes = 0;
@@ -1118,7 +1160,11 @@ cmd_create(int argc, char **argv)
         switch (c) {
         case 'o': out_dir = optarg; break;
         case 't': title = optarg; break;
-        case 'a': artists[artist_count++] = optarg; break;
+        case 'a':
+            if (artist_count >= sizeof artists / sizeof *artists)
+                return usage_error("too many artists");
+            artists[artist_count++] = optarg;
+            break;
         case 'd': release_date = optarg; break;
         case 'R': release_type = optarg; break;
         case 'O': orig_release_date = optarg; break;
@@ -1146,10 +1192,16 @@ cmd_create(int argc, char **argv)
             return 2;
         }
     }
-    if (out_dir == 0 || title == 0 || track_count == 0) {
+    if (out_dir == 0 || title == 0 || artist_count == 0 || track_count == 0) {
         usage_create();
         return 2;
     }
+    final_dir = out_dir;
+    if (!prepare_stage(final_dir, "create", stage_dir, sizeof stage_dir)) {
+        fprintf(stderr, "create: output or staging destination already exists\n");
+        return 1;
+    }
+    out_dir = stage_dir;
 
     /* build the model */
     {
@@ -1195,6 +1247,7 @@ cmd_create(int argc, char **argv)
         snprintf(art_dir, sizeof art_dir, "%s/artwork", out_dir);
         if (mkdir_p(out_dir) != 0 || mkdir_p(audio_dir) != 0 || mkdir_p(art_dir) != 0) {
             fprintf(stderr, "cannot create package directory '%s'\n", out_dir);
+            rm_rf(out_dir);
             return 1;
         }
 
@@ -1323,11 +1376,17 @@ cmd_create(int argc, char **argv)
         free(m.artwork);
 
         if (bad) {
+            rm_rf(out_dir);
             fprintf(stderr, "create failed\n");
             return 1;
         }
     }
-    printf("created package '%s'\n", out_dir);
+    if (!verify_staged_package(out_dir) || rename(out_dir, final_dir) != 0) {
+        rm_rf(out_dir);
+        fprintf(stderr, "create failed\n");
+        return 1;
+    }
+    printf("created package '%s'\n", final_dir);
     return 0;
 }
 
@@ -1880,6 +1939,8 @@ static int
 cmd_import(int argc, char **argv)
 {
     const char *src = 0, *out_dir = 0, *title = 0;
+    const char *final_dir;
+    char stage_dir[MUSICPACK_PATH_MAX + 2];
     const char *release_date = 0, *release_type = 0, *orig_release_date = 0;
     const char *edition = 0, *label = 0, *catalogue = 0, *country = 0;
     const char *medium_format = 0, *notes = 0;
@@ -1901,7 +1962,11 @@ cmd_import(int argc, char **argv)
         switch (c) {
         case 'o': out_dir = optarg; break;
         case 't': title = optarg; break;
-        case 'a': artists[artist_count++] = optarg; break;
+        case 'a':
+            if (artist_count >= sizeof artists / sizeof *artists)
+                return usage_error("too many artists");
+            artists[artist_count++] = optarg;
+            break;
         case 'L': no_loudness = 1; break;
         case 'd': release_date = optarg; break;
         case 'R': release_type = optarg; break;
@@ -1921,9 +1986,16 @@ cmd_import(int argc, char **argv)
         usage_import();
         return 2;
     }
+    final_dir = out_dir;
+    if (!prepare_stage(final_dir, "import", stage_dir, sizeof stage_dir)) {
+        fprintf(stderr, "import: output or staging destination already exists\n");
+        return 1;
+    }
+    out_dir = stage_dir;
 
     if (!scan_source_dir(src, &scan)) {
         fprintf(stderr, "no audio files found under '%s'\n", src);
+        rm_rf(out_dir);
         return 1;
     }
 
@@ -1995,18 +2067,22 @@ cmd_import(int argc, char **argv)
     if (mkdir_p(out_dir) != 0 || mkdir_p(audio_dir) != 0 ||
         mkdir_p(art_dir) != 0 || mkdir_p(lyr_dir) != 0) {
         fprintf(stderr, "cannot create package directory '%s'\n", out_dir);
-        return 1;
+        bad = 1;
+        goto cleanup;
     }
 
     /* count discs */
     {
-        size_t d;
-        int ndiscs = 0;
+        size_t d, ndiscs = 0;
         for (d = 0; d < scan.track_count; d++)
-            if (scan.tracks[d].disc > ndiscs)
-                ndiscs = scan.tracks[d].disc;
-        m.discs = (musicpack_disc *) calloc((size_t) ndiscs, sizeof *m.discs);
-        m.disc_count = (size_t) ndiscs;
+            if (d == 0 || scan.tracks[d].disc != scan.tracks[d - 1].disc)
+                ndiscs++;
+        m.discs = (musicpack_disc *) calloc(ndiscs, sizeof *m.discs);
+        m.disc_count = ndiscs;
+        ndiscs = 0;
+        for (d = 0; d < scan.track_count; d++)
+            if (d == 0 || scan.tracks[d].disc != scan.tracks[d - 1].disc)
+                m.discs[ndiscs++].disc = scan.tracks[d].disc;
     }
 
     for (i = 0; i < scan.track_count; i++) {
@@ -2015,12 +2091,14 @@ cmd_import(int argc, char **argv)
         musicpack_track *t;
         char target[MUSICPACK_PATH_MAX + 2];
 
-        if ((size_t) it->disc - 1 >= m.disc_count) {
+        size_t d;
+        for (d = 0; d < m.disc_count && m.discs[d].disc != it->disc; d++)
+            ;
+        if (d == m.disc_count) {
             bad = 1;
             break;
         }
-        disc = &m.discs[it->disc - 1];
-        disc->disc = it->disc;
+        disc = &m.discs[d];
         if (disc->format == 0 && medium_format != 0)
             disc->format = strdup(medium_format);
         disc->tracks = (musicpack_track *) realloc(disc->tracks,
@@ -2043,8 +2121,12 @@ cmd_import(int argc, char **argv)
             char fname[MUSICPACK_PATH_MAX + 2];
             snprintf(fname, sizeof fname, "%s", t->title != 0 ? t->title : "");
             sanitize_component(fname);
-            snprintf(target, sizeof target, "%s/%02d - %s%s", audio_dir, t->number,
-                     fname, it->ext != 0 ? it->ext : "");
+            if (m.disc_count > 1)
+                snprintf(target, sizeof target, "%s/%d-%02d - %s%s", audio_dir,
+                         disc->disc, t->number, fname, it->ext != 0 ? it->ext : "");
+            else
+                snprintf(target, sizeof target, "%s/%02d - %s%s", audio_dir, t->number,
+                         fname, it->ext != 0 ? it->ext : "");
         }
         snprintf(srcpath, sizeof srcpath, "%s/%s", src, it->src_rel);
 
@@ -2088,7 +2170,7 @@ cmd_import(int argc, char **argv)
                 sanitize_component(fname2);
                 snprintf(lpath, sizeof lpath, "%s/%02d - %s.txt", lyr_dir, t->number,
                          fname2);
-                if (write_all(lpath, ly->value) == 0) {
+                if (unique_target(lpath, sizeof lpath) && write_all(lpath, ly->value) == 0) {
                     it->lyric_path = strdup(lpath + strlen(out_dir) + 1);
                     if (musicpack_sha256_file(lpath, hex, sizeof hex) == MUSICPACK_OK)
                         it->lyric_sha = strdup(hex);
@@ -2206,6 +2288,7 @@ cmd_import(int argc, char **argv)
             const char *base = strrchr(scan.lyrics_srcs[k], '/');
             const char *name = base != 0 ? base + 1 : scan.lyrics_srcs[k];
             snprintf(target, sizeof target, "%s/%s", lyr_dir, name);
+            if (!unique_target(target, sizeof target)) { bad = 1; break; }
             if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.lyrics_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
             if (copy_file(srcpath, target) != 0) {
                 fprintf(stderr, "cannot copy lyrics '%s'\n", name);
@@ -2260,6 +2343,7 @@ cmd_import(int argc, char **argv)
                 const char *base = strrchr(scan.extras_srcs[k], '/');
                 const char *name = base != 0 ? base + 1 : scan.extras_srcs[k];
                 snprintf(target, sizeof target, "%s/%s", ex_dir, name);
+                if (!unique_target(target, sizeof target)) { bad = 1; break; }
                 if (snprintf(srcpath, sizeof srcpath, "%s/%s", src, scan.extras_srcs[k]) >= (int) sizeof srcpath) { bad = 1; break; }
                 if (copy_file(srcpath, target) != 0) {
                     fprintf(stderr, "cannot copy extra '%s'\n", name);
@@ -2300,13 +2384,21 @@ cleanup:
     /* free model */
     musicpack_manifest_clear(&m);
     musicpack_meter_free(album_meter);
-    scan_result_clear(&scan);
+    {
+        size_t imported = scan.track_count;
+        scan_result_clear(&scan);
 
-    if (bad) {
-        fprintf(stderr, "import failed\n");
-        return 1;
+        if (!bad && !verify_staged_package(out_dir))
+            bad = 1;
+        if (!bad && rename(out_dir, final_dir) != 0)
+            bad = 1;
+        if (bad) {
+            rm_rf(out_dir);
+            fprintf(stderr, "import failed\n");
+            return 1;
+        }
+        printf("imported %zu track(s) into '%s'\n", imported, final_dir);
     }
-    printf("imported %zu track(s) into '%s'\n", scan.track_count, out_dir);
     return 0;
 }
 

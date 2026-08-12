@@ -153,7 +153,9 @@ class T:
 
 def run(base, libdir, demo_dir, t):
     mpc_src = os.path.join(libdir, "Compilation.mpack", "audio",
-                           "01 - Alphaville - Big in Japan.mpc")
+                            "01 - Alphaville - Big in Japan.mpc")
+    classical_src = os.path.join(libdir, "Classical.mpack", "audio",
+                                 "01 - Classical Piece No 1.flac")
 
     # ---- health is public
     st, _, body = get(base, API + "/health", auth=False)
@@ -265,6 +267,12 @@ def run(base, libdir, demo_dir, t):
          == "musepack-sv8", "release detail + codec")
     track = rel["media"][0]["tracks"][0]
     tid = track["id"]
+    classical = next(a for a in albums["albums"]
+                     if a["title"] == "Synthetic Classical Compilation")
+    st, _, body = get(base, API + f"/albums/{classical['id']}")
+    classical_release = json.loads(body)["releases"][0]["id"]
+    st, _, body = get(base, API + f"/releases/{classical_release}")
+    classical_tid = json.loads(body)["media"][0]["tracks"][0]["id"]
 
     # ---- Phase 6 client fields: artwork, duration, album loudness
     comp_alb = next(a for a in albums["albums"]
@@ -363,8 +371,10 @@ def run(base, libdir, demo_dir, t):
     t.ok(st == 202, "POST /library/verify -> 202")
     st, _, body = get(base, API + "/library/verify", method="POST")
     t.ok(st == 409, "duplicate verify -> 409")
-    st, _, chunk = get(base, API + f"/tracks/{tid}/audio", {"Range": "bytes=0-127"})
-    t.ok(st == 206 and chunk == expect, "serving continues during verify")
+    st, _, chunk = get(base, API + f"/tracks/{classical_tid}/audio", {"Range": "bytes=0-127"})
+    with open(classical_src, "rb") as f:
+        classical_expect = f.read(128)
+    t.ok(st == 206 and chunk == classical_expect, "serving continues during verify")
     v = wait_status(base, "verify")
     t.ok(v["packagesVerified"] >= 4 and v["failed"] >= 1,
          "verify checks library (escape package fails)")
@@ -377,6 +387,12 @@ def run(base, libdir, demo_dir, t):
     get(base, API + "/library/verify", method="POST")
     v = wait_status(base, "verify")
     t.ok(v["failed"] >= 2, "verify detects checksum mismatch")
+    st, h, _ = get(base, API + f"/tracks/{classical_tid}/audio")
+    t.ok(st == 404 and "ETag" not in h,
+         "checksum-failed package is unservable without an ETag")
+    st, _, body = get(base, API + "/albums")
+    t.ok(json.loads(body)["total"] == 2,
+         "checksum-failed package is invisible from the library")
 
     # library/status without auth -> 401
     st, _, _ = get(base, API + "/library/status", auth=False)

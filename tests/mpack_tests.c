@@ -27,6 +27,8 @@
 
 static int failures = 0;
 
+#define HASH_AAA "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 #define CHECK(cond, msg)                                                     \
     do {                                                                     \
         if (!(cond)) {                                                       \
@@ -152,6 +154,26 @@ test_parse_invalid(void)
               "\"track\":1,\"title\":\"T\",\"audio\":{\"path\":\"a.mpc\"}}]}]}",
               &s) == 0 && s == MUSICPACK_ERR_INVALID,
           "audio sha256 required");
+    CHECK(musicpack_manifest_parse(
+              "{\"format\":\"musicpack\",\"version\":1,\"album\":{"
+              "\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+              "\"media\":[{\"disc\":1,\"tracks\":[{"
+              "\"track\":1,\"title\":\"T\",\"audio\":{\"path\":\"a.mpc\","
+              "\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}]} garbage",
+              &s) == 0 && s == MUSICPACK_ERR_JSON,
+          "trailing JSON rejected");
+    CHECK(musicpack_manifest_parse(
+              "{\"format\":\"musicpack\",\"version\":1,\"album\":{"
+              "\"title\":\"T\",\"artists\":[{\"name\":\"A\",\"name\":\"B\"}]},"
+              "\"media\":[{\"disc\":1,\"tracks\":[{"
+              "\"track\":1,\"title\":\"T\",\"audio\":{\"path\":\"a.mpc\","
+              "\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}]}",
+              &s) == 0 && s == MUSICPACK_ERR_INVALID,
+          "nested duplicate key rejected");
+    CHECK(musicpack_manifest_parse(
+              "{\"format\":\"musicpack\",\"version\":1.5,\"album\":{"
+              "\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},\"media\":[]}", &s) == 0
+          && s == MUSICPACK_ERR_VERSION, "non-integer version rejected safely");
 }
 
 static void
@@ -258,10 +280,10 @@ test_unknown_field_roundtrip(void)
         }
     }
     CHECK(strstr(readback, "xFutureField") != 0, "unknown top-level field preserved");
-    CHECK(strstr(readback, "xTrackExt") != 0, "unknown track field preserved");
-    CHECK(strstr(readback, "xReleaseExt") != 0, "unknown release field preserved");
+    CHECK(strstr(readback, "xTrackExt") == 0, "unknown track field not retained");
+    CHECK(strstr(readback, "xReleaseExt") == 0, "unknown release field not retained");
     CHECK(strstr(readback, "survives") != 0, "unknown nested value preserved");
-    CHECK(strstr(readback, "keep me") != 0, "unknown release value preserved");
+    CHECK(strstr(readback, "keep me") == 0, "unknown nested value not retained");
 
     free(readback);
     free(json);
@@ -314,6 +336,70 @@ test_loudness_parse(void)
     CHECK(musicpack_loudness_compute_gain(-10.0, -14.0) == -4.0, "gain derived");
 }
 
+static void
+test_manifest_hardening(void)
+{
+    const char *base =
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+        "\"identity\":{\"source\":\"local\"},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"a.mpc\",\"codec\":\"mpc\",\"sha256\":\""
+        HASH_AAA "\"}}]}]}";
+    const char *bad_asset =
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"a.mpc\",\"sha256\":\"" HASH_AAA "\"}}]}],"
+        "\"booklet\":[{\"path\":\"booklet/a.pdf\"}]}";
+    const char *bad_loudness =
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"a.mpc\",\"sha256\":\"" HASH_AAA "\"}}]}],"
+        "\"loudness\":{\"albumLUFS\":-12}}";
+    musicpack_manifest *m;
+    musicpack_status s;
+    char *json = 0;
+
+    m = musicpack_manifest_parse(base, &s);
+    CHECK(m != 0, "audio codec manifest parses");
+    if (m != 0) {
+        CHECK(m->discs[0].tracks[0].audio_codec != 0 &&
+              strcmp(m->discs[0].tracks[0].audio_codec, "mpc") == 0,
+              "audio codec preserved in model");
+        CHECK(musicpack_manifest_write(m, &json) == MUSICPACK_OK &&
+              strstr(json, "\"codec\": \"mpc\"") != 0,
+              "audio codec preserved on write");
+        free(json);
+        json = 0;
+        musicpack_manifest_free(m);
+    }
+    CHECK(musicpack_manifest_parse(
+              "{\"format\":\"musicpack\",\"version\":1,"
+              "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
+              "\"identity\":{\"source\":\"invalid\"},"
+              "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+              "\"audio\":{\"path\":\"a.mpc\",\"sha256\":\"" HASH_AAA "\"}}]}]}", &s)
+          == 0 && s == MUSICPACK_ERR_INVALID,
+          "identity enum is closed");
+    CHECK(musicpack_manifest_parse(bad_asset, &s) == 0 && s == MUSICPACK_ERR_INVALID,
+          "all referenced assets require sha256");
+    CHECK(musicpack_manifest_parse(bad_loudness, &s) == 0 && s == MUSICPACK_ERR_INVALID,
+          "album loudness requires both measurements");
+
+    m = musicpack_manifest_parse(VALID_MANIFEST, &s);
+    CHECK(m != 0, "valid manifest for writer validation");
+    if (m != 0) {
+        free(m->discs[0].tracks[0].audio.sha256);
+        m->discs[0].tracks[0].audio.sha256 = 0;
+        CHECK(musicpack_manifest_write(m, &json) == MUSICPACK_ERR_INVALID,
+              "writer validates required asset hash");
+        free(json);
+        musicpack_manifest_free(m);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* path security                                                       */
 /* ------------------------------------------------------------------ */
@@ -347,10 +433,25 @@ test_path_security(void)
                   == MUSICPACK_ERR_PATH, "escape rejected");
             CHECK(musicpack_path_resolve(root, "audio/a.mpc", out, sizeof out)
                   == MUSICPACK_OK, "contained path resolves");
-            CHECK(strncmp(out, root, strlen(root)) == 0, "resolved under root");
+            CHECK(strstr(out, "/audio/a.mpc") != 0, "resolved package path retained");
             remove_temp_dir(root, 0);
         }
     }
+#if !defined(_WIN32)
+    {
+        char root[512], outside[512], link[1024], out[4096];
+        if (make_temp_dir(root, sizeof root) == 0 &&
+            make_temp_dir(outside, sizeof outside) == 0) {
+            snprintf(link, sizeof link, "%s/link", root);
+            CHECK(symlink(outside, link) == 0, "symlink created");
+            CHECK(musicpack_path_resolve(root, "link/new-file", out, sizeof out)
+                  == MUSICPACK_ERR_PATH, "symlink ancestor escape rejected");
+            remove(link);
+            remove_temp_dir(outside, 0);
+            remove_temp_dir(root, 0);
+        }
+    }
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -422,8 +523,6 @@ test_meter(void)
 /* ------------------------------------------------------------------ */
 /* release / edition model                                             */
 /* ------------------------------------------------------------------ */
-
-#define HASH_AAA "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 static const char *RELEASE_MANIFEST =
     "{"
@@ -1902,6 +2001,7 @@ int main(int argc, char **argv)
     test_manifest_add_new_fields();
     test_multidisc();
     test_loudness_parse();
+    test_manifest_hardening();
     test_release_model();
     test_release_invalid_enum();
     test_missing_release_optional();

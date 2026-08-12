@@ -65,7 +65,7 @@ struct musicpack_package {
 /* ------------------------------------------------------------------ */
 
 static char *
-read_file(const char *path, size_t max, musicpack_status *status)
+read_file(const char *path, size_t max, size_t *len_out, musicpack_status *status)
 {
     FILE *f;
     long len;
@@ -87,6 +87,7 @@ read_file(const char *path, size_t max, musicpack_status *status)
     }
     fclose(f);
     buf[len] = '\0';
+    *len_out = (size_t) len;
     *status = MUSICPACK_OK;
     return buf;
 }
@@ -117,6 +118,7 @@ musicpack_package_open_dir(const char *dir, musicpack_status *status)
     musicpack_package *pkg;
     musicpack_status local = MUSICPACK_OK;
     char *json, manifest_path[MUSICPACK_PATH_MAX + 2];
+    size_t json_len;
     cJSON *root;
 
     if (status == 0)
@@ -132,11 +134,16 @@ musicpack_package_open_dir(const char *dir, musicpack_status *status)
         return 0;
     }
 
-    json = read_file(manifest_path, MANIFEST_MAX, status);
+    json = read_file(manifest_path, MANIFEST_MAX, &json_len, status);
     if (json == 0)
         return 0;
 
-    root = cJSON_ParseWithLength(json, strlen(json));
+    if (memchr(json, '\0', json_len) != 0) {
+        free(json);
+        *status = MUSICPACK_ERR_JSON;
+        return 0;
+    }
+    root = cJSON_ParseWithLengthOpts(json, json_len + 1, 0, 1);
     if (root == 0) {
         free(json);
         *status = MUSICPACK_ERR_JSON;
@@ -405,7 +412,10 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
         if (musicpack_package_resolve_path(pkg, a->asset.path, abs, sizeof abs) != MUSICPACK_OK)
             continue; /* already reported by verify_assets */
 
-        json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &s);
+        {
+            size_t json_len;
+            json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &json_len, &s);
+        }
         if (json == 0)
             continue; /* already reported by verify_assets */
 

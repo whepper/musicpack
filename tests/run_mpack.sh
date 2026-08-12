@@ -110,6 +110,16 @@ else
     pass "no errors for stray file"
 fi
 
+# 4d. create requires an artist and does not publish a partial destination.
+NOART="$TMP/noartist.mpack"
+if ! "$MUSICPACK" create -o "$NOART" -t "No Artist" \
+    -T "$MPC_REF/audio/01 - Alphaville - Big in Japan.mpc" >/dev/null 2>&1 \
+   && [ ! -e "$NOART" ]; then
+    pass "create requires artist without publishing output"
+else
+    fail "create requires artist without publishing output"
+fi
+
 # 5. traversal manifest rejected
 TRAV="$TMP/trav.mpack"
 mkdir -p "$TRAV"
@@ -260,6 +270,48 @@ if "$MUSICPACK" import -L -o "$TAGIMP" "$TAGSRC" >/dev/null 2>&1; then
 else
     fail "import reads embedded tags"
 fi
+
+# 7d. import preserves sparse disc identifiers, distinguishes multi-disc
+# audio paths, and retains equal-basename assets with collision-safe names.
+MULTISRC="$TMP/multisrc"
+mkdir -p "$MULTISRC/disc-2" "$MULTISRC/disc-4"
+cp "$A1" "$MULTISRC/disc-2/01 - Same.mpc"
+cp "$A2" "$MULTISRC/disc-4/01 - Same.mpc"
+printf 'disc two lyrics' > "$MULTISRC/disc-2/notes.lrc"
+printf 'disc four lyrics' > "$MULTISRC/disc-4/notes.lrc"
+printf 'disc two extra' > "$MULTISRC/disc-2/readme.txt"
+printf 'disc four extra' > "$MULTISRC/disc-4/readme.txt"
+MULTI="$TMP/multidisc.mpack"
+if "$MUSICPACK" import -L -o "$MULTI" -t "Multi" -a "Artist" "$MULTISRC" >/dev/null 2>&1 \
+   && "$MUSICPACK" verify "$MULTI" >/dev/null 2>&1 \
+   && python3 - "$MULTI/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert [d["disc"] for d in m["media"]] == [2, 4]
+paths = [t["audio"]["path"] for d in m["media"] for t in d["tracks"]]
+assert len(paths) == len(set(paths)) == 2
+assert all(p.startswith("audio/") for p in paths)
+assert len(m["lyrics"]) == len({x["path"] for x in m["lyrics"]}) == 2
+assert len(m["extras"]) == len({x["path"] for x in m["extras"]}) == 2
+EOF
+then
+    pass "import sparse discs and colliding assets"
+else
+    fail "import sparse discs and colliding assets"
+fi
+
+# 7e. a failed import removes its fresh sibling staging directory and leaves
+# the requested destination absent.
+FAILSRC="$TMP/failsrc"
+mkdir -p "$FAILSRC"
+cp "$MPC_REF/audio/01 - Alphaville - Big in Japan.mpc" "$FAILSRC/01 - bad.mpc"
+FAILOUT="$TMP/failimport.mpack"
+if ! "$MUSICPACK" import -L -o "$FAILOUT" -t "Failure" "$FAILSRC" >/dev/null 2>&1 \
+   && [ ! -e "$FAILOUT" ] && ! compgen -G "$FAILOUT.import-*" >/dev/null; then
+    pass "failed import cleans staging"
+else
+    fail "failed import cleans staging"
+fi
 if python3 - "$TAGIMP/manifest.json" <<'EOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
@@ -306,7 +358,7 @@ fi
 APESRC="$TMP/apesrc"
 mkdir -p "$APESRC"
 cp "$META/album-ape.mpc" "$APESRC/09 - whatever.mpc"
-if "$MUSICPACK" import -L -o "$TMP/apeimp.mpack" "$APESRC" >/dev/null 2>&1 \
+if "$MUSICPACK" import -L -o "$TMP/apeimp.mpack" -a "Synthetic Artist" "$APESRC" >/dev/null 2>&1 \
    && python3 - "$TMP/apeimp.mpack/manifest.json" <<'EOF'
 import json, sys
 m = json.load(open(sys.argv[1]))

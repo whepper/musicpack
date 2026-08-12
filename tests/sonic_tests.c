@@ -775,7 +775,8 @@ test_manifest_analysis(void)
     m = musicpack_manifest_parse(
         "{\"format\":\"musicpack\",\"version\":1,"
         "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
-        "\"analysis\":[{\"type\":\"future-analysis\",\"path\":\"analysis/future.json\"}],"
+        "\"analysis\":[{\"type\":\"future-analysis\",\"path\":\"analysis/future.json\","
+        "\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],"
         "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"One\","
         "\"audio\":{\"path\":\"audio/1.mpc\","
         "\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}]}",
