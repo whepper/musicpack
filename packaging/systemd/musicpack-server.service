@@ -1,0 +1,54 @@
+# MusicPack server systemd unit
+#
+# Install:
+#   sudo useradd --system --home /srv/musicpack --shell /usr/sbin/nologin musicpack
+#   sudo mkdir -p /srv/musicpack/library /srv/musicpack/data \
+#                /srv/musicpack/incoming /srv/musicpack/web
+#   sudo chown -R musicpack:musicpack /srv/musicpack/data /srv/musicpack/incoming
+#   sudo cp packaging/systemd/musicpack-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now musicpack-server
+#
+# See docs/deployment.md for ownership/permissions and the upgrade/backup flow.
+
+[Unit]
+Description=MusicPack self-hosted library server
+Documentation=https://github.com/whepper/musicpack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicpack
+Group=musicpack
+WorkingDirectory=/srv/musicpack
+
+# Optional environment-driven overrides (see musicpack-server.env.example).
+# Command-line flags below take precedence over MUSICPACK_* variables, so do
+# not set the same value in both places.
+EnvironmentFile=-/etc/musicpack/musicpack-server.env
+
+ExecStart=/usr/local/bin/musicpack-server serve \
+    --library /srv/musicpack/library \
+    --database /srv/musicpack/data/library.db \
+    --static-dir /srv/musicpack/web/dist \
+    --listen 127.0.0.1 \
+    --port 8080
+
+Restart=on-failure
+RestartSec=2
+UMask=0027
+
+# Hardening: does not block package reads (library), SQLite writes (data),
+# or loopback networking.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/musicpack/library /srv/musicpack/web
+ReadWritePaths=/srv/musicpack/data
+RestrictAddressFamilies=AF_INET AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

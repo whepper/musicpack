@@ -274,6 +274,16 @@ exact limits and threat model.
 Defaults are safe: loopback binding, no remote access implied. The API spec
 is `specs/musicpack-api-v1.md`.
 
+### Deployment
+
+For a real end-to-end setup — MusicPack Author on macOS, `musicpack-server`
+and the web client on a Linux server, browser clients — see
+**`docs/deployment.md`** (build/install steps, filesystem layout, transfer
+workflow, first-run procedure, systemd service, reverse proxy, upgrade,
+backup and troubleshooting). The server also has its own concise README at
+`server/README.md`, and a production systemd unit plus optional environment
+template ship under `packaging/systemd/`.
+
 ---
 
 ## The Musepack codec (foundation)
@@ -437,6 +447,7 @@ ctest --test-dir build
 - `author/` — **MusicPack Author**: the Tauri 2 + Svelte 5 desktop authoring GUI (`author/README.md`)
 - `server/` — `musicpack-server`: scanner, SQLite collector library, HTTP API v1, direct streaming (vendored SQLite in `server/vendor/`)
 - `web/` — the web client (Svelte 5 + Vite + TS): the digital record shelf
+- `packaging/` — systemd service unit + optional environment template (see `docs/deployment.md`)
 - `wasm/` — Emscripten build of the decoder + WASM wrapper + smoke test
 - `demo/` — low-level browser playback proof-of-concept
 - `specs/` — `.mpack` v1 spec + JSON Schema, and the server API spec (`musicpack-api-v1.md`)
