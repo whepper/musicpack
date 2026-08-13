@@ -1494,15 +1494,41 @@ is_audio_ext(const char *name)
            strcmp(dot, ".wav") == 0 || strcmp(dot, ".ogg") == 0;
 }
 
-/* disc number from a directory name like "disc-2" / "CD 1" (0 if not a disc). */
+/* ASCII case-insensitive string prefix. */
+static int
+name_starts_with_ci(const char *s, const char *prefix)
+{
+    size_t i, n = strlen(prefix);
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char) s[i];
+        unsigned char p = (unsigned char) prefix[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char) (c - 'A' + 'a');
+        if (p >= 'A' && p <= 'Z') p = (unsigned char) (p - 'A' + 'a');
+        if (c != p)
+            return 0;
+        if (c == '\0')
+            return 1;
+    }
+    return 1;
+}
+
+/* Disc number from a directory name like "disc-2" / "CD 1" / "CD1" /
+   "Disc 2" (0 if not a disc). Real collections (e.g. Deezer) commonly use
+   uppercase "CD1"/"CD2" subdirectories; the match must be case-insensitive
+   or those tracks are silently skipped as non-disc subdirectories. */
 static int
 disc_from_dirname(const char *name)
 {
     const char *p = name;
     int n = 0, digits = 0;
-    if (strncmp(p, "disc", 4) != 0 && strncmp(p, "cd", 2) != 0)
+    if (name == 0)
         return 0;
-    p += (strncmp(p, "disc", 4) == 0) ? 4 : 2;
+    if (name_starts_with_ci(p, "disc"))
+        p += 4;
+    else if (name_starts_with_ci(p, "cd"))
+        p += 2;
+    else
+        return 0;
     while (*p == '-' || *p == '_' || *p == ' ')
         p++;
     while (*p >= '0' && *p <= '9') {
@@ -3874,7 +3900,7 @@ cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode
         char url[512];
         char *mbjson;
         snprintf(url, sizeof url,
-                 "https://musicbrainz.org/ws/2/release/%s?inc=artist-credits+labels+recordings+media&fmt=json",
+                 "https://musicbrainz.org/ws/2/release/%s?inc=artist-credits+labels+recordings+media+release-groups&fmt=json",
                  mbid);
         mbjson = curl_fetch(url, 1u * 1024u * 1024u);
         if (mbjson == 0) {

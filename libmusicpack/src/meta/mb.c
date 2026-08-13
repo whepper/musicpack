@@ -144,7 +144,12 @@ musicpack_mb_apply_release(const char *mb_json, musicpack_manifest *m)
         }
     }
 
-    item = cJSON_GetObjectItemCaseSensitive(rel, "labels");
+    /* Live MusicBrainz release documents carry the label under `label-info`;
+       the legacy (fixture) shape uses `labels`. Both have the same element
+       structure ({ "label": {...}, "catalog-number": "..." }). */
+    item = cJSON_GetObjectItemCaseSensitive(rel, "label-info");
+    if (!cJSON_IsArray(item) || cJSON_GetArraySize(item) == 0)
+        item = cJSON_GetObjectItemCaseSensitive(rel, "labels");
     if (cJSON_IsArray(item) && cJSON_GetArraySize(item) > 0) {
         cJSON *l0 = cJSON_GetArrayItem(item, 0);
         cJSON *lab;

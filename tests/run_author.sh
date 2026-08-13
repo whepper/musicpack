@@ -87,6 +87,30 @@ else
     fail "inspect lists embedded artwork without a cover file"
 fi
 
+# 1c. uppercase disc subdirectories ("CD1"/"CD2") are recognized: real
+# collections (e.g. Deezer Deemix converts) use CD1/CD2, and tracks under
+# them must not be silently skipped as non-disc subdirectories.
+CASE="$TMP/cdcase"
+mkdir -p "$CASE/CD1" "$CASE/CD2"
+cp "$ROOT/tests/reference/author-fixture/Neon Skyline/disc-1/"*.flac "$CASE/CD1/"
+cp "$ROOT/tests/reference/author-fixture/Neon Skyline/disc-2/"*.flac "$CASE/CD2/"
+if "$MUSICPACK" inspect "$CASE" --json 2>/dev/null > "$TMP/cdcase.json" \
+   && $PY - "$TMP/cdcase.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+media = d["media"]
+assert len(media) == 2, f"two discs, got {len(media)}"
+assert [m["disc"] for m in media] == [1, 2], "disc numbers 1 and 2"
+assert sum(len(m["tracks"]) for m in media) == 5, "all 5 tracks discovered"
+assert media[0]["tracks"][0]["audioPath"].startswith("CD1/"), "track path keeps CD1"
+print("ok")
+EOF
+then
+    pass "inspect recognizes uppercase CD1/CD2 disc directories"
+else
+    fail "inspect recognizes uppercase CD1/CD2 disc directories"
+fi
+
 # 2. the draft round-trips through validate-draft cleanly
 if "$MUSICPACK" validate-draft --draft "$TMP/draft.json" --json 2>/dev/null \
    | grep -q '"ok":[[:space:]]*false'; then
@@ -246,6 +270,31 @@ then
     pass "identified draft builds with exact identity"
 else
     fail "identified draft builds with exact identity"
+fi
+
+# 6c. identify-draft handles the live MusicBrainz /release/{id} response
+# shape: the live API returns "label-info" (with a nested "label" object)
+# rather than the legacy "labels" array, and returns the release-group as a
+# sub-object. Both must be applied or editions never group under one album.
+if "$MUSICPACK" identify-draft --draft "$TMP/draft.json" \
+   --mb-json "$META/mb-release-live-shape.json" --json 2>/dev/null > "$TMP/ident-live.json" \
+   && $PY - "$TMP/ident-live.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["applied"] is True
+dr = d["draft"]
+assert dr["identifiers"]["musicbrainzReleaseGroupId"] == \
+    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "release group applied"
+assert dr["release"]["label"] == "Example Records", "label read from label-info"
+assert dr["release"]["catalogueNumber"] == "ERCD 001", \
+    "catalogue read from label-info"
+assert dr["identity"]["source"] == "musicbrainz"
+print("ok")
+EOF
+then
+    pass "identify-draft applies the live MB release shape (label-info + release-group)"
+else
+    fail "identify-draft applies the live MB release shape (label-info + release-group)"
 fi
 
 # 7. author-API capability handshake is machine-readable and versioned
