@@ -207,8 +207,8 @@ It never searches PATH in a packaged app, including when started through
 Finder. Development retains `MUSICPACK_FFMPEG` → PATH for convenience. FFmpeg
 is only required when the user runs the encode stage.
 
-- The packaged sidecar is located through Tauri's runtime path API
-  (`BaseDirectory::Executable`), not guessed filesystem paths.
+- The packaged sidecar is located next to the app executable
+  (`std::env::current_exe().parent()`), not guessed filesystem paths.
 - If the bundled backend is missing, the app starts but every backend
   operation (and the startup banner) reports an actionable
   *"reinstall MusicPack Author"* error. It never falls back to PATH.
@@ -224,7 +224,7 @@ machine-readable capability handshake:
 
 ```sh
 musicpack author-api-version --json
-# {"musicpackVersion":"0.1.0","authorApi":1}
+# {"musicpackVersion":"0.1.0","authorApi":2}
 ```
 
 On the first backend operation the `AuthorService` runs this and rejects a

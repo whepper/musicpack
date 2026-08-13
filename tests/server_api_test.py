@@ -242,6 +242,27 @@ def run(base, libdir, demo_dir, t):
     st, _, _ = get(base, API + "/session", method="POST", auth=False)
     t.ok(st == 400, "session exchange without a body -> 400")
 
+    # ---- bounded session-token body parsing ----------------------------
+    # The token parser must never scan past the meaningful body length or
+    # rely on NUL padding: malformed/truncated input must fail cleanly.
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=b'{"token":"mpk_truncated')
+    t.ok(st == 400, "truncated token body -> 400")
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=b'{"foo":"bar"}')
+    t.ok(st == 400, "body without token field -> 400")
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=b'{"token":""}')
+    t.ok(st == 400, "empty token value -> 400")
+    # the closing quote of the value is the last byte of the body
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=b'{"token":"' + TOKEN.encode() + b'"')
+    t.ok(st == 200, "token value ending exactly at body boundary -> 200")
+    # bytes after the meaningful body (NULs, garbage) must be ignored
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=b'{"token":"' + TOKEN.encode() + b'"}\x00\x00garbage\xff')
+    t.ok(st == 200, "garbage after meaningful body ignored -> 200")
+
     # ---- albums / collector hierarchy (Phase 4 behaviour preserved)
     st, _, body = get(base, API + "/albums")
     albums = json.loads(body)
@@ -427,6 +448,11 @@ def run(base, libdir, demo_dir, t):
     # verify (the deliberately broken Escape package is expected to fail)
     st, _, body = get(base, API + "/library/verify", method="POST")
     t.ok(st == 202, "POST /library/verify -> 202")
+    # a session exchange while a verify job holds the database must never be
+    # reported as invalid credentials (no false 401 from DB contention)
+    st, _, _ = get(base, API + "/session", method="POST", auth=False,
+                   data=json.dumps({"token": TOKEN}).encode())
+    t.ok(st == 200, "session exchange during verify -> 200 (no false 401)")
     st, _, body = get(base, API + "/library/verify", method="POST")
     t.ok(st == 409, "duplicate verify -> 409")
     st, _, chunk = get(base, API + f"/tracks/{classical_tid}/audio", {"Range": "bytes=0-127"})
@@ -451,6 +477,48 @@ def run(base, libdir, demo_dir, t):
     st, _, body = get(base, API + "/albums")
     t.ok(json.loads(body)["total"] == 2,
          "checksum-failed package is invisible from the library")
+
+    # ---- re-ingest replaces assets (stale rows gone, no duplicates) -----
+    # Re-scan a content-changed package (track title edit keeps release
+    # identity stable) and verify assets are replaced rather than appended.
+    st, _, body = get(base, API + f"/releases/{release_id}")
+    rdetail = json.loads(body)
+    assets_before = rdetail.get("assets", [])
+    t.ok(len(assets_before) >= 2, "release exposes assets before re-ingest")
+    old_url = assets_before[0]["url"]
+
+    comp_manifest = os.path.join(libdir, "Compilation.mpack", "manifest.json")
+    with open(comp_manifest, encoding="utf-8") as f:
+        m = json.load(f)
+    m["media"][0]["tracks"][0]["title"] = "Big in Japan (re-ingested)"
+    write_json(comp_manifest, m)
+    get(base, API + "/library/scan", method="POST")
+    wait_status(base, "scan")
+    # A lightweight re-ingest leaves the package unverified (fail-closed), so
+    # verify it again before reading the release's asset rows.
+    get(base, API + "/library/verify", method="POST")
+    wait_status(base, "verify")
+
+    st, _, body = get(base, API + f"/releases/{release_id}")
+    rdetail2 = json.loads(body)
+    assets_after = [a["url"] for a in rdetail2.get("assets", [])]
+    t.ok(len(assets_after) == len(assets_before),
+         "re-ingest keeps asset count stable (no accumulation)")
+    t.ok(len(set(assets_after)) == len(assets_after),
+         "re-ingest produces no duplicate asset URLs")
+    for a in rdetail2.get("assets", []):
+        # extras are indexed but not servable (documented limitation); the
+        # servable kinds (booklet/lyrics/artwork) must all resolve.
+        if a.get("kind") == "extras":
+            continue
+        st, _, _ = get(base, a["url"])
+        t.ok(st == 200, "current asset URL resolves after re-ingest")
+    # the pre-re-ingest asset id was deleted: its URL no longer resolves
+    if old_url not in assets_after:
+        st, _, _ = get(base, old_url)
+        t.ok(st == 404, "stale asset URL no longer resolves after re-ingest")
+    else:
+        t.ok(True, "old asset id reused (not stale)")
 
     # library/status without auth -> 401
     st, _, _ = get(base, API + "/library/status", auth=False)

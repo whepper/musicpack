@@ -77,7 +77,15 @@
   }
 
   function close(): void {
+    // Reset both the result and the form so reopening the dialog for a
+    // second package always starts fresh (no stale success/error state, no
+    // stale output path).
     createOpen.set(false);
+    createResult.set(null);
+    outputParent = null;
+    packageName = '';
+    creating = false;
+    reVerifying = false;
   }
 
   function reveal(): void {

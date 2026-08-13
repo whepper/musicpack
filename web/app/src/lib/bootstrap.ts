@@ -16,6 +16,20 @@ export const player = new PlayerController(queue, {});
 export const playerModel = player.model;
 export const router: Router = createRouter();
 
+// Stop playback and dispose the backend when the session ends (sign-out or
+// expiry), so audio and Media Session state never leak across the auth
+// boundary. The controller rebuilds its backend on the next play.
+{
+  let wasAuthenticated = false;
+  session.subscribe((m) => {
+    if (wasAuthenticated && m.state !== 'authenticated') {
+      void player.teardown();
+      queue.clear();
+    }
+    wasAuthenticated = m.state === 'authenticated';
+  });
+}
+
 /** Test/dev instrumentation exposed for Playwright + perf reporting. */
 export interface MusicPackDebug {
   api: ApiClient;

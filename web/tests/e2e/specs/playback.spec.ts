@@ -107,3 +107,87 @@ test('queue holds the album in order and removes items', async ({ page }) => {
   expect(items[0]).toContain('Big in Japan');
   await expect(page.locator('#main').getByRole('button', { name: /Big in Japan/ }).first()).toHaveAttribute('aria-current', 'true');
 });
+
+test('album seek past the current track switches to a later track', async ({ page }) => {
+  // Long Player: track 1 decodes to ~39 s (the manifest's 48 s is a
+  // placeholder); the model reports the REAL total duration.
+  await page.getByText('Long Player').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+
+  const titles = await page.evaluate(() => window.__musicpack?.queue.get().items.map((i) => i.track.title) ?? []);
+  const dur = (await playerState(page)).durationSeconds;
+  // seek well past track 1's real end so the target lives in a later track
+  const target = Math.max(dur * 0.95, dur - 2);
+
+  await setSeek(page, target);
+  // the cursor must leave track 1 and settle on a later track that matches
+  // the controller's current track
+  await waitFor(
+    page,
+    async () => {
+      const idx = await page.evaluate(() => window.__musicpack?.queue.get().index ?? -1);
+      if (idx < 1) return false;
+      const cur = await page.evaluate(() => window.__musicpack?.player.model.get().current?.track.title ?? null);
+      return cur === titles[idx];
+    },
+    { label: 'seek moved off track 1' },
+  );
+  const idx = await page.evaluate(() => window.__musicpack?.queue.get().index ?? -1);
+  const st = await playerState(page);
+  expect(st.currentTitle).toBe(titles[idx]);
+  // the reported position is in the target range, not the previous track
+  expect(st.positionSeconds).toBeGreaterThan(dur * 0.8);
+  expect(st.state).not.toBe('error');
+});
+
+test('clicking a disc-2 track selects the correct flattened queue index', async ({ page }) => {
+  await page.getByText('Two Disc Extravaganza').click();
+  await page.getByRole('button', { name: 'Side Two One' }).click();
+  // playAlbum sets the queue index synchronously, so capture it immediately
+  // (the ~1 s fixture tracks may advance before the state read).
+  const state = await page.evaluate(() => {
+    const q = window.__musicpack?.queue;
+    const items = q?.get().items ?? [];
+    return { index: q?.get().index ?? -1, items: items.map((i) => i.track.title) };
+  });
+  // flat index = disc 1 track count (4) + 0
+  expect(state.index).toBe(4);
+  expect(state.items[state.index]).toBe('Side Two One');
+});
+
+test('plays through every track (repeated worker teardown) without wedging', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  // Let the album play through all 4 short (~1 s) tracks: every gapless
+  // handoff tears down and re-spawns a decoder + network worker, so this
+  // exercises the teardown handshake repeatedly. Playback must reach the
+  // ended state without an error or a wedged controller.
+  await waitFor(page, async () => (await playerState(page)).state === 'ended', {
+    label: 'album played to the end',
+    timeout: 30_000,
+  });
+  const st = await playerState(page);
+  expect(st.state).toBe('ended');
+  expect(st.error).toBeUndefined();
+});
+
+test('signing out stops playback, disposes the backend and clears player state', async ({ page }) => {
+  await page.getByText('Long Player').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  expect((await playerState(page)).state).toBe('playing');
+
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible({ timeout: 20_000 });
+
+  const after = await page.evaluate(() => {
+    const p = window.__musicpack?.player;
+    const m = p?.model.get();
+    return { state: m?.state ?? 'idle', current: m?.current ?? null, backendKind: p?.getBackendKind() ?? null };
+  });
+  expect(after.state).toBe('idle');
+  expect(after.current).toBeNull();
+  expect(after.backendKind).toBeNull(); // decoder/AudioContext disposed
+});

@@ -10,7 +10,7 @@
     "build": "npm run sync:wasm && vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test:unit": "vitest run --dir tests/unit",
+    "test:unit": "vitest run",
     "test:node": "node tests/node/run.mjs",
     "test:e2e": "playwright test",
     "test": "npm run test:unit && npm run test:node"

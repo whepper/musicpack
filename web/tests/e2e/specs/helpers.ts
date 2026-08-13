@@ -30,6 +30,7 @@ export async function playerState(page: Page): Promise<{
   currentTitle: string | null;
   servedBytes: number;
   normDb: number;
+  error: string | undefined;
 }> {
   return page.evaluate(() => {
     const p = window.__musicpack?.player;
@@ -41,6 +42,7 @@ export async function playerState(page: Page): Promise<{
       currentTitle: m?.current?.track.title ?? null,
       servedBytes: p?.getServedBytes() ?? 0,
       normDb: m?.normDb ?? 0,
+      error: m?.error,
     };
   });
 }

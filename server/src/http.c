@@ -284,7 +284,10 @@ mp_http_serve(mp_library *lib, const mp_config *cfg, mp_job_state *jobs,
     sa.sa_handler = on_signal;
     sigaction(SIGINT, &sa, 0);
     sigaction(SIGTERM, &sa, 0);
-    sigaction(SIGPIPE, &sa, 0); /* MHD uses MSG_NOSIGNAL; be safe anyway */
+    /* A client that disconnects mid-response raises SIGPIPE on the writer.
+       MHD uses MSG_NOSIGNAL, but a stray SIGPIPE on any other write path
+       must never be able to stop the whole daemon, so ignore it outright. */
+    sigaction(SIGPIPE, &(struct sigaction){ .sa_handler = SIG_IGN }, 0);
 
     daemon = MHD_start_daemon(
         MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_POLL,

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { createDraftStore, chipState } from '../../app/src/lib/draft-store';
-import { encodeStaging, setEncodeStaging, validation } from '../../app/src/lib/authoring-state';
+import {
+  createResult,
+  encodeStaging,
+  setEncodeStaging,
+  validation,
+} from '../../app/src/lib/authoring-state';
 import type { Draft } from '../../app/src/lib/types';
 
 function sampleDraft(overrides: Partial<Draft> = {}): Draft {
@@ -75,6 +80,41 @@ describe('draft store', () => {
     expect(store.draft.get()?.artwork).toHaveLength(1);
     setEncodeStaging(null);
     expect(encodeStaging.get()).toBeNull();
+  });
+
+  it('persists the Sonic result even while encoded staging is active', () => {
+    const store = createDraftStore();
+    store.setDraft(sampleDraft());
+    setEncodeStaging('/tmp/stage');
+    store.updateSonicAnalysis((s) => {
+      s.status = 'ready';
+      s.path = 'analysis/sonic.json';
+    });
+    expect(store.draft.get()?.sonicAnalysis?.status).toBe('ready');
+    expect(store.draft.get()?.sonicAnalysis?.path).toBe('analysis/sonic.json');
+    // metadata edits stay locked (they would diverge from the encoded tags)
+    store.updateAlbum((a) => (a.title = 'Divergent'));
+    expect(store.draft.get()?.album.title).toBe('Example Album');
+    setEncodeStaging(null);
+  });
+
+  it('clears the create result when a new draft is loaded or cleared', () => {
+    const store = createDraftStore();
+    store.setDraft(sampleDraft());
+    createResult.set({ ok: true, outputPath: '/tmp/First.mpack' });
+    store.setDraft(
+      sampleDraft({
+        album: {
+          title: 'Second Album',
+          artists: [{ name: 'Second Artist', role: 'main' }],
+          releaseType: 'album',
+        },
+      }),
+    );
+    expect(createResult.get()).toBeNull();
+    createResult.set({ ok: false, error: { message: 'boom' } });
+    store.clear();
+    expect(createResult.get()).toBeNull();
   });
 
   it('ingests an inspect result (deep-cloned, immutable)', () => {

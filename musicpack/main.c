@@ -866,9 +866,10 @@ read_file_bounded(const char *path, size_t max, musicpack_status *status)
     return buf;
 }
 
-/* Fetches a URL into a NUL-terminated buffer (bounded). The URL is built
-   only from validated UUIDs / digit barcodes, so no shell metacharacters
-   can reach the command. Returns NULL on failure. */
+/* Fetches a URL into a NUL-terminated buffer (bounded). curl is invoked
+   through a shell, so every caller MUST validate its inputs (UUIDs /
+   digit-only barcodes) before building the URL; the identify-draft path
+   does this in cmd_identify_draft before this function is reached. */
 static char *
 curl_fetch(const char *url, size_t max)
 {
@@ -3879,6 +3880,31 @@ cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode
             json_error_out("invalid_draft", "cannot interpret draft");
         else
             fprintf(stderr, "identify-draft: cannot interpret draft\n");
+        return 1;
+    }
+
+    /* curl_fetch runs curl through a shell, so the MBID/barcode values must
+       be constrained to their grammars BEFORE they reach the command line
+       (same validation the plain `identify` path applies). */
+    if (mbid != 0 && !valid_uuid(mbid)) {
+        snprintf(err, sizeof err, "invalid MusicBrainz release id '%s' "
+                 "(expected a 36-character UUID)", mbid);
+        if (json)
+            json_error_out("invalid_input", err);
+        else
+            fprintf(stderr, "identify-draft: %s\n", err);
+        cJSON_Delete(draft);
+        musicpack_manifest_clear(&m);
+        return 1;
+    }
+    if (barcode != 0 && !all_digits(barcode)) {
+        snprintf(err, sizeof err, "invalid barcode '%s' (digits only)", barcode);
+        if (json)
+            json_error_out("invalid_input", err);
+        else
+            fprintf(stderr, "identify-draft: %s\n", err);
+        cJSON_Delete(draft);
+        musicpack_manifest_clear(&m);
         return 1;
     }
 

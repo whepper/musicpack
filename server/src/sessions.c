@@ -11,6 +11,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+# include <windows.h>
+# define MP_MSLEEP(ms) Sleep((DWORD) (ms))
+#else
+# include <unistd.h>
+# define MP_MSLEEP(ms) usleep((useconds_t) (ms) * 1000)
+#endif
+
 #include <musicpack/checksum.h>
 #include <sqlite3.h>
 
@@ -100,9 +108,27 @@ mp_session_create(mp_library *lib, const char *token_secret,
     sqlite3_bind_text(st, 1, session_hex, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 2, token_hex, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 3, "+30 days", -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(st) != SQLITE_DONE) {
-        sqlite3_finalize(st);
-        return MUSICPACK_ERR_IO;
+    /* The serving connection runs with busy_timeout(0), so a concurrent
+       scan/verify write can make this INSERT hit SQLITE_BUSY immediately.
+       That is contention, not an invalid token: retry briefly before the
+       caller reports a failure. */
+    {
+        int i, rc;
+        for (i = 0;; i++) {
+            rc = sqlite3_step(st);
+            if (rc == SQLITE_DONE)
+                break;
+            if (rc != SQLITE_BUSY && rc != SQLITE_LOCKED) {
+                sqlite3_finalize(st);
+                return MUSICPACK_ERR_IO;
+            }
+            if (i >= 39) { /* ~2 s budget */
+                sqlite3_finalize(st);
+                return MUSICPACK_ERR_IO;
+            }
+            sqlite3_reset(st);
+            MP_MSLEEP(50);
+        }
     }
     sqlite3_finalize(st);
     snprintf(out, cap, "%s", session_secret);

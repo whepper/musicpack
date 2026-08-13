@@ -18,6 +18,13 @@ export type PlayerState =
   | 'ended'
   | 'error';
 
+/** End-of-album tolerance (samples). The worklet renders 128 frames per
+ *  process call, so the final process can underrun with < 128 frames left in
+ *  the ring; the rendered counter then stops a few samples short of
+ *  totalLength. A `-2`-sample tolerance (as used originally) never fires and
+ *  the player would sit in `playing` forever after the last track. */
+const END_TOLERANCE_SAMPLES = 256;
+
 export interface PlayerModel {
   state: PlayerState;
   current: QueueItem | null;
@@ -236,6 +243,9 @@ export class PlayerController {
     if (!item) return;
     const seq = ++this.loadingSeq;
     this.pendingEnded = false;
+    // The queue may have been replaced (new album/edition): per-index lengths
+    // from a previous queue must never leak into the new one.
+    this.lengths.clear();
     this.model.update((m) => ({ ...m, state: 'loading', error: undefined }));
     try {
       const kind = this.chooseBackend(item.track);
@@ -318,12 +328,16 @@ export class PlayerController {
     const dur = this.totalLength();
     const qi = this.queue.get().index;
     const idx = this.currentIndexAt(pos);
-    if (idx !== qi && !this.pendingEnded) {
+    // onEos() owns forward advancement. Only a LATER index may be adopted
+    // here (never a regression): the worklet ring renders ahead, so at a
+    // gapless handoff the rendered position can still describe the previous
+    // track for a moment while the cursor has already advanced.
+    if (idx > qi && !this.pendingEnded) {
       this.mutating = true;
       this.queue.moveTo(idx);
       this.mutating = false;
     }
-    const ended = this.pendingEnded && pos >= dur - 2;
+    const ended = this.pendingEnded && pos >= dur - END_TOLERANCE_SAMPLES;
     this.model.update((m) => ({
       ...m,
       positionSeconds: pos / this.rate(),
@@ -378,12 +392,41 @@ export class PlayerController {
   async seek(seconds: number): Promise<void> {
     if (!this.backend || !this.model.get().current) return;
     const posSamples = Math.max(0, Math.floor(seconds * this.rate()));
-    const qi = this.queue.get().index;
-    const base = this.offsets()[qi] ?? 0;
-    const within = Math.max(0, posSamples - base);
-    if (this.backendKind === 'musepack') this.resetOffset = posSamples;
+    const items = this.queue.get().items;
+    if (items.length === 0) return;
+    // Resolve the album-absolute target to a (track, within-track offset) and
+    // seek there directly; a target in another track must switch to it rather
+    // than clamping inside the current track.
+    const offs = this.offsets();
+    let qi = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (posSamples >= (offs[i] ?? 0)) qi = i;
+    }
+    const base = offs[qi] ?? 0;
+    const trackLen = Math.max(0, this.lengthOf(qi) - 1);
+    const within = Math.min(Math.max(0, posSamples - base), trackLen);
+
+    if (qi !== this.queue.get().index) {
+      this.mutating = true;
+      this.queue.moveTo(qi);
+      this.mutating = false;
+      await this._load();
+      // _load() opened the target track, seeked to 0 and started pumping;
+      // now move inside it (and re-align the offset bookkeeping) so the
+      // reported position matches where the audio actually decodes from.
+      if (qi === this.queue.get().index) {
+        this.resetOffset = base + within;
+        this.setState('buffering');
+        this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
+        await this.backend!.seek(within);
+        this.backend!.startPumping();
+      }
+      return;
+    }
+
+    this.resetOffset = base + within;
     this.setState('buffering');
-    this.model.update((m) => ({ ...m, positionSeconds: posSamples / this.rate() }));
+    this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
     await this.backend.seek(within);
     this.backend.startPumping();
   }
@@ -393,6 +436,28 @@ export class PlayerController {
     await this.backend?.pause();
     this.pendingEnded = false;
     this.model.update((m) => ({ ...m, state: 'idle', positionSeconds: 0 }));
+  }
+
+  /** Stops playback and disposes the backend + Media Session state. Used on
+   *  sign-out / session expiry so audio never leaks across auth boundaries.
+   *  The controller stays usable: the next play rebuilds its backend. */
+  async teardown(): Promise<void> {
+    this.backend?.pausePumping();
+    this.pendingEnded = false;
+    this.lengths.clear();
+    this.resetOffset = 0;
+    await this.backend?.close();
+    this.backend = null;
+    this.backendKind = null;
+    setMediaMetadata(null);
+    this.model.update((m) => ({
+      ...m,
+      state: 'idle',
+      current: null,
+      positionSeconds: 0,
+      durationSeconds: 0,
+      error: undefined,
+    }));
   }
 
   // ---- settings --------------------------------------------------------------

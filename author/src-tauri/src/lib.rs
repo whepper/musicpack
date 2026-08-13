@@ -438,7 +438,11 @@ async fn sonic_analyze(
     });
     let final_event = reader.join().unwrap_or(None);
     let _ = std::fs::remove_file(&job_tmp);
-    *state.running.lock().unwrap() = None;
+    // Reap the child (mirrors encode_tracks). sonic_cancel may already have
+    // taken + reaped it, in which case take() returns None.
+    if let Some(mut child) = state.running.lock().unwrap().take() {
+        let _ = child.wait();
+    }
 
     let out_path = app
         .path()
@@ -488,16 +492,16 @@ fn sonic_model_status(state: State<AppState>) -> Result<sonic_model::ModelStatus
 
 /// Cancels whatever sonic work is in flight: an active model download or a
 /// running analysis. A cancelled download never leaves a partial model; a
-/// running analysis child is terminated.
+/// running analysis child is stopped gracefully (SIGTERM first so the
+/// analyzer can emit its `cancelled` event, then a bounded hard-kill
+/// fallback) and reaped, so the frontend sees a clean cancel, not an error.
 #[tauri::command]
 fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
     state.model_cancel.store(true, Ordering::Relaxed);
-    let mut running = state.running.lock().unwrap();
-    if let Some(child) = running.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
+    let child = state.running.lock().unwrap().take();
+    if let Some(mut child) = child {
+        stop_child(&mut child);
     }
-    *running = None;
     Ok(())
 }
 

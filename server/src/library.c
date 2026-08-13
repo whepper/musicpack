@@ -325,20 +325,20 @@ replace_group_artists(mp_library *lib, long long group_id,
 {
     sqlite3_stmt *st;
     size_t i;
-    if (sqlite3_exec(mp_db_sqlite(lib->db),
-                     "DELETE FROM group_artists WHERE group_id = ?1", 0, 0, 0)
-        != SQLITE_OK) {
-        /* not reached; prepared below */
-    }
     st = stmt_prepare(lib, "DELETE FROM group_artists WHERE group_id = ?1");
     if (st == 0)
         return -1;
     sqlite3_bind_int64(st, 1, group_id);
-    sqlite3_step(st);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
     sqlite3_finalize(st);
     for (i = 0; i < m->album_artist_count; i++) {
         long long artist_id = mp_library_upsert_artist(lib,
                                                         m->album_artists[i].name);
+        if (artist_id <= 0)
+            return -1;
 
         st = stmt_prepare(lib,
             "INSERT INTO group_artists(group_id, artist_id, position, role)"
@@ -349,7 +349,10 @@ replace_group_artists(mp_library *lib, long long group_id,
         sqlite3_bind_int64(st, 2, artist_id);
         sqlite3_bind_int64(st, 3, (long long) i);
         sqlite3_bind_text(st, 4, m->album_artists[i].role, -1, SQLITE_TRANSIENT);
-        sqlite3_step(st);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
         sqlite3_finalize(st);
     }
     return 0;
@@ -449,11 +452,16 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
         sqlite3_bind_text(st, 4, m->musicbrainz_release_group_id, -1,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 5, id);
-        sqlite3_step(st);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
         sqlite3_finalize(st);
     }
-    if (update_metadata)
-        replace_group_artists(lib, id, m);
+    if (update_metadata) {
+        if (replace_group_artists(lib, id, m) != 0)
+            return -1;
+    }
     return id;
 }
 
@@ -548,7 +556,10 @@ mp_library_upsert_release(mp_library *lib, const musicpack_manifest *m,
         sqlite3_bind_double(st, 18, m->album_loudness.true_peak_db);
         sqlite3_bind_int(st, 19, m->has_album_loudness);
         sqlite3_bind_text(st, 20, m->loudness_algorithm, -1, SQLITE_TRANSIENT);
-        sqlite3_step(st);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
         sqlite3_finalize(st);
     }
     return id;
@@ -570,7 +581,10 @@ insert_track_artists(mp_library *lib, long long track_id,
     size_t i;
     for (i = 0; i < t->artist_count; i++) {
         long long aid = mp_library_upsert_artist(lib, t->artists[i].name);
-        sqlite3_stmt *st = stmt_prepare(lib,
+        sqlite3_stmt *st;
+        if (aid <= 0)
+            return -1;
+        st = stmt_prepare(lib,
             "INSERT INTO track_artists(track_id, artist_id, position, role)"
             " VALUES (?1,?2,?3,?4)");
         if (st == 0)
@@ -579,7 +593,10 @@ insert_track_artists(mp_library *lib, long long track_id,
         sqlite3_bind_int64(st, 2, aid);
         sqlite3_bind_int64(st, 3, (long long) i);
         sqlite3_bind_text(st, 4, t->artists[i].role, -1, SQLITE_TRANSIENT);
-        sqlite3_step(st);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
         sqlite3_finalize(st);
     }
     return 0;
@@ -609,7 +626,10 @@ insert_asset_row(mp_library *lib, long long release_id, const char *root,
     sqlite3_bind_text(st, 5, sha, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 6, size);
     sqlite3_bind_text(st, 7, mp_mime_for_path(rel), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
     sqlite3_finalize(st);
     return 0;
 }
@@ -655,7 +675,23 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
     if (st == 0)
         return -1;
     sqlite3_bind_int64(st, 1, release_id);
-    sqlite3_step(st);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+
+    /* Assets reference the release (not media), so they survive the media
+       delete above. Remove them here so a re-ingest never leaves stale
+       artwork/booklet/lyrics/extras rows behind or serves old bytes. */
+    st = stmt_prepare(lib, "DELETE FROM assets WHERE release_id = ?1");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
     sqlite3_finalize(st);
 
     for (d = 0; d < m->disc_count; d++) {
@@ -750,18 +786,28 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
             sqlite3_bind_int(st, 7, ti != 0 ? ti->codec.stream_version : 0);
             sqlite3_bind_int64(st, 8, ti != 0 ? ti->codec.sample_rate : 0);
             sqlite3_bind_int64(st, 9, ti != 0 ? ti->codec.channels : 0);
-            sqlite3_step(st);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                sqlite3_finalize(st);
+                return -1;
+            }
             sqlite3_finalize(st);
+
+            if (insert_track_artists(lib, track_id, tr) != 0)
+                return -1;
         }
     }
 
-    insert_artwork(lib, release_id, root, m->artwork, m->artwork_count);
-    insert_asset_list(lib, release_id, root, "booklet", m->booklet,
-                      m->booklet_count);
-    insert_asset_list(lib, release_id, root, "lyrics", m->lyrics,
-                      m->lyrics_count);
-    insert_asset_list(lib, release_id, root, "extras", m->extras,
-                      m->extras_count);
+    if (insert_artwork(lib, release_id, root, m->artwork, m->artwork_count) != 0)
+        return -1;
+    if (insert_asset_list(lib, release_id, root, "booklet", m->booklet,
+                          m->booklet_count) != 0)
+        return -1;
+    if (insert_asset_list(lib, release_id, root, "lyrics", m->lyrics,
+                          m->lyrics_count) != 0)
+        return -1;
+    if (insert_asset_list(lib, release_id, root, "extras", m->extras,
+                          m->extras_count) != 0)
+        return -1;
     return 0;
 }
 

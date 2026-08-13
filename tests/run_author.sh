@@ -297,6 +297,36 @@ else
     fail "identify-draft applies the live MB release shape (label-info + release-group)"
 fi
 
+# 6d. identify-draft rejects non-UUID MBIDs and non-numeric barcodes BEFORE
+# the URL is built: the lookup runs curl through a shell, so the grammar
+# check is a hard precondition (no shell metacharacters may reach it).
+if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
+   --mbid "not-a-uuid" >/dev/null 2>&1; then
+    fail "identify-draft rejects a non-UUID MBID"
+else
+    pass "identify-draft rejects a non-UUID MBID"
+fi
+if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
+   --barcode "abc-123" >/dev/null 2>&1; then
+    fail "identify-draft rejects a non-numeric barcode"
+else
+    pass "identify-draft rejects a non-numeric barcode"
+fi
+MARK="/tmp/musicpack-shell-marker"
+rm -f "$MARK"
+if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
+   --barcode '$(touch /tmp/musicpack-shell-marker)' >/dev/null 2>&1; then
+    fail "identify-draft rejects a shell-metachar barcode"
+else
+    pass "identify-draft rejects a shell-metachar barcode"
+fi
+if [ -f "$MARK" ]; then
+    fail "identify-draft executed a shell command for an invalid barcode"
+    rm -f "$MARK"
+else
+    pass "identify-draft never executes a shell command for an invalid barcode"
+fi
+
 # 7. author-API capability handshake is machine-readable and versioned
 if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
    && $PY - "$TMP/api.json" <<'EOF'

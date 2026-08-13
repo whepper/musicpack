@@ -85,10 +85,17 @@ session_token_from_body(const char *body, size_t len, char *out, size_t cap)
     if (body == 0)
         return 0;
     end = body + len;
-    p = strstr(body, "\"token\"");
-    if (p == 0 || p >= end)
+    /* Bounded scan for `"token"`: never read past `end` (the buffer is not
+       NUL-terminated at `len`; calloc padding must not be relied on). */
+    p = body;
+    for (; p + 7 <= end; p++) {
+        if (p[0] == '"' && p[1] == 't' && p[2] == 'o' && p[3] == 'k' &&
+            p[4] == 'e' && p[5] == 'n' && p[6] == '"')
+            break;
+    }
+    if (p + 7 > end)
         return 0;
-    p += strlen("\"token\"");
+    p += 7;
     while (p < end && (*p == ' ' || *p == '\t' || *p == ':'))
         p++;
     if (p >= end || *p != '"')
@@ -1292,11 +1299,21 @@ handle_session_create(mp_server_ctx *srv, struct MHD_Connection *c,
         *st = 400;
         return error_response(400, "invalid_request", "malformed session body");
     }
-    if (mp_session_create(srv->lib, token, secret, sizeof secret)
-        != MUSICPACK_OK) {
-        *st = 401;
-        return error_response(401, "unauthorized",
-                              "invalid or expired token");
+    {
+        musicpack_status scr = mp_session_create(srv->lib, token, secret,
+                                                 sizeof secret);
+        if (scr == MUSICPACK_ERR_INVALID) {
+            *st = 401;
+            return error_response(401, "unauthorized",
+                                  "invalid or expired token");
+        }
+        if (scr != MUSICPACK_OK) {
+            /* A DB-layer failure (e.g. persistent SQLITE_BUSY during a scan)
+               must never be presented as invalid credentials. */
+            *st = 503;
+            return error_response(503, "service_unavailable",
+                                  "token store busy; retry shortly");
+        }
     }
     o = mp_json_obj();
     mp_json_str(o, "status", "authenticated");

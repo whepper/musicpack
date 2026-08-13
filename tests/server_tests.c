@@ -565,6 +565,123 @@ test_scanner(void)
     mp_library_close(lib_h);
 }
 
+/* Re-ingest must REPLACE, not accumulate, a release's assets. Editing a
+   package's manifest (a track title keeps the album identity stable) triggers
+   ingest_valid -> mp_library_replace_release_content, which must delete the
+   previous assets rows before re-inserting, so stale artwork/booklet/lyrics
+   rows never remain servable and rows never duplicate. */
+static void
+test_reingest_assets(void)
+{
+    char lib[4096], dbpath[4096];
+    char pkg[4096], mpath[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/relib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/re.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/Album.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "re-ingest: open db");
+    db = mp_library_sqlite(lib_h);
+
+    /* initial ingest: the fixture carries 1 artwork + 1 booklet + 1 extras */
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "re-ingest: first scan ok");
+    CHECK(res.added == 1, "re-ingest: first scan adds one");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM assets", -1) == 5,
+          "re-ingest: five asset rows after first ingest");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM assets WHERE kind='artwork'",
+                     -1) == 1, "re-ingest: one artwork row");
+
+    /* content change -> full re-ingest path; assets must be replaced */
+    replace_in_file(mpath, "\"title\": \"Alphaville - Big in Japan\"",
+                    "\"title\": \"Big in Japan (2016 mix)\"");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "re-ingest: rescan ok");
+    CHECK(res.updated == 1, "re-ingest: manifest change updates package");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM assets", -1) == 5,
+          "re-ingest: assets replaced, not duplicated");
+
+    /* repeated re-ingests must never accumulate stale rows */
+    replace_in_file(mpath, "\"title\": \"Big in Japan (2016 mix)\"",
+                    "\"title\": \"Big in Japan (2017 mix)\"");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "re-ingest: rescan 2 ok");
+    replace_in_file(mpath, "\"title\": \"Big in Japan (2017 mix)\"",
+                    "\"title\": \"Big in Japan (2018 mix)\"");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "re-ingest: rescan 3 ok");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM assets", -1) == 5,
+          "re-ingest: no accumulation after repeated re-ingests");
+
+    /* no duplicate (kind, relative_path) pairs survive */
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM (SELECT kind, relative_path FROM assets"
+        " GROUP BY kind, relative_path HAVING COUNT(*) > 1)", -1) == 0,
+        "re-ingest: no duplicate asset keys");
+
+    mp_library_close(lib_h);
+}
+
+/* A DB mutation failure during ingest must fail the ingest (roll back) and
+   never report a successful scan with partial rows. A second connection
+   holding the write lock forces every ingest write to hit SQLITE_BUSY. */
+static void
+test_ingest_busy_rollback(void)
+{
+    char lib[4096], dbpath[4096];
+    char pkg[4096];
+    mp_library *lib_h;
+    sqlite3 *other;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/bzlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/bz.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/Album.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "busy: open db");
+    db = mp_library_sqlite(lib_h);
+    /* fail fast on contention so the test is deterministic */
+    sqlite3_busy_timeout(db, 0);
+
+    CHECK(sqlite3_open(dbpath, &other) == SQLITE_OK, "busy: open second conn");
+    if (other != 0) {
+        /* hold the write lock across the whole scan */
+        CHECK(sqlite3_exec(other, "BEGIN IMMEDIATE;", 0, 0, 0) == SQLITE_OK,
+              "busy: second conn acquires write lock");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_ERR_IO,
+              "busy: scan fails, never reports success");
+        CHECK(count_rows(db, "SELECT COUNT(*) FROM packages", -1) == 0,
+              "busy: no package row after failed ingest");
+        CHECK(count_rows(db, "SELECT COUNT(*) FROM media", -1) == 0,
+              "busy: no partial media rows after failed ingest");
+        CHECK(count_rows(db, "SELECT COUNT(*) FROM assets", -1) == 0,
+              "busy: no partial asset rows after failed ingest");
+        CHECK(sqlite3_exec(other, "ROLLBACK;", 0, 0, 0) == SQLITE_OK,
+              "busy: release lock");
+        sqlite3_close(other);
+    }
+
+    /* once the lock is gone the same library ingests cleanly */
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "busy: scan succeeds after lock released");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM packages", -1) == 1,
+          "busy: one package after successful scan");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM media", -1) == 1,
+          "busy: one media after successful scan");
+    mp_library_close(lib_h);
+}
+
 /* ---------- MIME ---------------------------------------------------------- */
 
 static void
@@ -1164,6 +1281,8 @@ main(int argc, char **argv)
     test_sessions();
     test_verify();
     test_scanner();
+    test_reingest_assets();
+    test_ingest_busy_rollback();
     test_ownership_conflict();
     test_conflict_survives_verify();
     test_scan_fail_closed();

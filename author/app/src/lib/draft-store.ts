@@ -5,7 +5,7 @@
 // from a validated draft at "Create MusicPack".
 
 import { writable, type Writable } from './store';
-import { encodeStaging, invalidateValidation } from './authoring-state';
+import { createResult, encodeStaging, invalidateValidation } from './authoring-state';
 import type {
   ArtworkEntry,
   AssetEntry,
@@ -78,11 +78,13 @@ export function createDraftStore(): DraftStore {
     error,
     setDraft(d: Draft) {
       draft.set(structuredClone(d));
+      createResult.set(null);
       invalidateValidation();
     },
     clear() {
       draft.set(null);
       error.set(null);
+      createResult.set(null);
       invalidateValidation();
     },
     setBusy(b: boolean) {
@@ -143,11 +145,20 @@ export function createDraftStore(): DraftStore {
       });
     },
     updateSonicAnalysis(fn: (s: SonicAnalysis) => void) {
-      withDraft((d) => {
-        if (!d.sonicAnalysis)
-          d.sonicAnalysis = { status: 'not_analysed' };
-        fn(d.sonicAnalysis);
-      });
+      // Unlike metadata/track edits, a Sonic result is an analysis document
+      // path, not a source tag: it can never diverge from the encoded audio,
+      // so it must persist even while encode staging exists (Sonic may
+      // legitimately run after encoding).
+      const current = draft.get();
+      if (current) {
+        draft.set(
+          mutate(current, (d) => {
+            if (!d.sonicAnalysis) d.sonicAnalysis = { status: 'not_analysed' };
+            fn(d.sonicAnalysis);
+          }),
+        );
+        invalidateValidation();
+      }
     },
   };
 }

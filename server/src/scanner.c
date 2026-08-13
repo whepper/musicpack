@@ -755,24 +755,66 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
 {
     sqlite3_stmt *st;
     sqlite3 *db;
+    typedef struct {
+        long long id;
+        char *path;
+    } verify_entry;
+    verify_entry *entries = 0;
+    size_t n = 0, cap = 0, i;
 
     (void) root;
     if (res != 0)
         memset(res, 0, sizeof *res);
     db = mp_library_sqlite(lib);
-    if (mp_library_begin(lib) != 0)
-        return MUSICPACK_ERR_IO;
+    /* No enclosing write transaction: full-file SHA-256 hashing is slow and
+       must not hold the SQLite write lock for the whole library (that would
+       make concurrent session/token writes hit SQLITE_BUSY). Each per-package
+       pkg_set_verify() UPDATE below is its own short, atomic write, so a
+       crash mid-verify just leaves the remaining packages at their previous
+       verify_status and a re-run picks them up.
+
+       The package list is collected BEFORE any write: keeping the SELECT open
+       across autocommit writes makes the connection's read snapshot stale
+       once another connection commits, and the next UPDATE then fails with
+       SQLITE_BUSY_SNAPSHOT. */
     if (sqlite3_prepare_v2(db,
             "SELECT id, path FROM packages"
             " WHERE status NOT IN ('unavailable','invalid','conflict')"
             " ORDER BY id",
-            -1, &st, 0) != SQLITE_OK) {
-        mp_library_rollback(lib);
+            -1, &st, 0) != SQLITE_OK)
         return MUSICPACK_ERR_IO;
-    }
     while (sqlite3_step(st) == SQLITE_ROW) {
-        long long id = sqlite3_column_int64(st, 0);
         const char *path = (const char *) sqlite3_column_text(st, 1);
+        if (n == cap) {
+            size_t ncap = cap ? cap * 2 : 256;
+            verify_entry *ne = (verify_entry *) realloc(entries,
+                                                        ncap * sizeof *ne);
+            if (ne == 0) {
+                sqlite3_finalize(st);
+                for (i = 0; i < n; i++)
+                    free(entries[i].path);
+                free(entries);
+                return MUSICPACK_ERR_NOMEM;
+            }
+            entries = ne;
+            cap = ncap;
+        }
+        entries[n].id = sqlite3_column_int64(st, 0);
+        entries[n].path = strdup(path);
+        if (entries[n].path == 0) {
+            sqlite3_finalize(st);
+            for (i = 0; i < n; i++)
+                free(entries[i].path);
+            free(entries);
+            return MUSICPACK_ERR_NOMEM;
+        }
+        n++;
+    }
+    sqlite3_finalize(st);
+
+    for (i = 0; i < n; i++) {
+        long long id = entries[i].id;
+        const char *path = entries[i].path;
         musicpack_package *pkg = musicpack_package_open_dir(path, 0);
         const char *status = "valid", *vstat = "valid";
 
@@ -781,10 +823,8 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
             status = "warning";
             vstat = "unverified";
             if (pkg_set_verify(lib, id, status, vstat) != 0) {
-                sqlite3_finalize(st);
-                mp_library_rollback(lib);
                 MP_LOGE("verify: persistence failed for package %lld", id);
-                return MUSICPACK_ERR_IO;
+                goto fail;
             }
             res->failed++;
         } else {
@@ -801,23 +841,25 @@ mp_verify_library(mp_library *lib, const char *root, mp_verify_result *res,
                 res->passed++;
             }
             if (pkg_set_verify(lib, id, status, vstat) != 0) {
-                sqlite3_finalize(st);
                 musicpack_package_close(pkg);
-                mp_library_rollback(lib);
                 MP_LOGE("verify: persistence failed for package %lld", id);
-                return MUSICPACK_ERR_IO;
+                goto fail;
             }
             musicpack_package_close(pkg);
         }
         if (progress)
             progress(ctx, res);
     }
-    sqlite3_finalize(st);
-    if (mp_library_commit(lib) != 0) {
-        mp_library_rollback(lib);
-        return MUSICPACK_ERR_IO;
-    }
+    for (i = 0; i < n; i++)
+        free(entries[i].path);
+    free(entries);
     MP_LOGI("verify done: %d checked, %d passed, %d warnings, %d failed",
             res->total, res->passed, res->warnings, res->failed);
     return MUSICPACK_OK;
+
+fail:
+    for (i = 0; i < n; i++)
+        free(entries[i].path);
+    free(entries);
+    return MUSICPACK_ERR_IO;
 }

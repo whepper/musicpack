@@ -13,6 +13,18 @@
   } = $props();
 
   const discs = $derived([...release.media].sort((a, b) => a.disc - b.disc));
+  // Flattened queue index of the first track of each disc, so clicking a
+  // disc-2 track selects the correct album-absolute queue index (not the
+  // disc-local track number).
+  const discStarts = $derived.by(() => {
+    const starts: number[] = [];
+    let acc = 0;
+    for (const d of discs) {
+      starts.push(acc);
+      acc += d.tracks.length;
+    }
+    return starts;
+  });
 </script>
 
 <div class="tracklist">
@@ -28,7 +40,7 @@
         <button
           class="track"
           aria-current={track.id === currentTrackId ? 'true' : undefined}
-          onclick={() => onPlay(ti)}
+          onclick={() => onPlay((discStarts[di] ?? 0) + ti)}
         >
           <span class="num">{track.number}</span>
           <span class="tt">{track.title}</span>

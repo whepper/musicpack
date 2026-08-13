@@ -18,9 +18,22 @@
   let applying = $state(false);
   let message = $state<string | null>(null);
 
+  // MBIDs are 36-char UUIDs; barcodes are digit-only (EAN-13/GTIN).
+  function validMbid(v: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+  }
+
+  function validBarcode(v: string): boolean {
+    return /^[0-9]+$/.test(v);
+  }
+
   async function applyMbid(): Promise<void> {
     const d = draft.get();
     if (!d || !mbid.trim()) return;
+    if (!validMbid(mbid.trim())) {
+      message = 'That is not a valid MusicBrainz release ID (expected a UUID).';
+      return;
+    }
     applying = true;
     message = null;
     try {
@@ -36,6 +49,10 @@
   async function searchBarcode(): Promise<void> {
     const d = draft.get();
     if (!d || !barcode.trim()) return;
+    if (!validBarcode(barcode.trim())) {
+      message = 'A barcode contains digits only (e.g. 198704979941).';
+      return;
+    }
     searching = true;
     message = null;
     try {

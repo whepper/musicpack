@@ -167,6 +167,9 @@ self.onmessage = async (ev) => {
         eos = false;
         pumping = false;
         destroy();
+        /* Ack so the outer worker can be terminated only after the nested
+           demand-reader/network worker is gone (no per-track leak). */
+        post({ type: 'closed' });
         break;
     }
   } catch (e) {

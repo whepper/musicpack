@@ -144,7 +144,7 @@ export class MusepackEngine {
   /** Opens the first track in the current slot (fetches header + seek table). */
   async open(url: string, size: number): Promise<EngineStreamInfo> {
     await this.ensureContext();
-    this.closeCurrent();
+    await this.closeCurrent();
     const h = this.makeWorker();
     h.nextUrl = url;
     this.current = h;
@@ -157,7 +157,7 @@ export class MusepackEngine {
 
   /** Opens the next track in the standby slot, ahead of the current one. */
   async prepareNext(url: string, size: number): Promise<EngineStreamInfo | null> {
-    this.closeStandby();
+    await this.closeStandby();
     const h = this.makeWorker();
     h.nextUrl = url;
     this.standby = h;
@@ -165,7 +165,7 @@ export class MusepackEngine {
       const info = await this.openInWorker(h, url, size);
       return info;
     } catch {
-      this.closeStandby();
+      await this.closeStandby();
       return null;
     }
   }
@@ -208,7 +208,7 @@ export class MusepackEngine {
     if (!this.standby || !this.standby.info) return null;
     const promoted = this.standby;
     this.standby = null;
-    this.closeCurrent();
+    await this.closeCurrent();
     this.current = promoted;
     return promoted.info;
   }
@@ -286,25 +286,53 @@ export class MusepackEngine {
     return this.current?.info?.rate ?? 44100;
   }
 
-  private closeCurrent(): void {
+  /** Terminates a decoder worker, but only after its nested demand-reader/
+   *  network worker has been closed (the decoder acks `closed` after running
+   *  its teardown). A bounded timeout guards against a stuck worker.
+   *  Terminating the outer worker first would orphan the nested networker. */
+  private closeWorker(h: WorkerHandle): Promise<void> {
+    return new Promise((resolve) => {
+      const worker = h.worker;
+      const orig = worker.onmessage;
+      const done = () => {
+        clearTimeout(timer);
+        worker.onmessage = orig;
+        worker.terminate();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        worker.onmessage = orig;
+        worker.terminate();
+        resolve();
+      }, 500);
+      worker.onmessage = (ev: MessageEvent) => {
+        const msg = ev.data;
+        if (msg.type === 'closed') done();
+        else this.onWorkerMessage(h, msg);
+      };
+      worker.postMessage({ type: 'close' });
+    });
+  }
+
+  private async closeCurrent(): Promise<void> {
     if (this.current) {
-      this.current.worker.postMessage({ type: 'close' });
-      this.current.worker.terminate();
+      const h = this.current;
       this.current = null;
+      await this.closeWorker(h);
     }
   }
 
-  private closeStandby(): void {
+  private async closeStandby(): Promise<void> {
     if (this.standby) {
-      this.standby.worker.postMessage({ type: 'close' });
-      this.standby.worker.terminate();
+      const h = this.standby;
       this.standby = null;
+      await this.closeWorker(h);
     }
   }
 
   async close(): Promise<void> {
-    this.closeCurrent();
-    this.closeStandby();
+    await this.closeCurrent();
+    await this.closeStandby();
     if (this.ctx) {
       await this.ctx.close();
       this.ctx = null;
