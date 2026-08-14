@@ -165,6 +165,28 @@ in `docs/psy-optimization-milestone-3.md`.
 - Retained exact optimizations improve end-to-end encoding by about 5-10%
   while remaining byte-identical to the same-toolchain reference.
 
+## Encoder SIMD optimization track: closed
+
+The encoder SIMD optimization track is **complete**. The final measured step
+was CVD L/R cepstrum FFT batching and the fine-grained CVD/CEP profiling that
+followed it (see `docs/measurements/cvd-analysis-profile/`). The verdict:
+
+> Further encoder SIMD optimization is not justified at this point — expected
+> gains are now marginal relative to implementation complexity, portability
+> cost, and bit-exactness risk.
+
+Completed: decoder synthesis SIMD; encoder analysis-filterbank SIMD; psycho
+spectrum/windowing SIMD; lane-parallel FFT; CVD L/R cepstrum FFT batching;
+ARM64 NEON and x86-64 SSE2 validation; scalar/SIMD byte identity; frozen
+encoder compatibility; fine-grained psycho/CVD profiling; seek-table UB
+hardening.
+
+Deliberately not pursued: `CEP_correlation`/`CEP_maxsearch` SIMD, `logfast`
+optimization, `CalcUnpred`/`CalcTemporalThreshold`/broader scalar-psy loop
+vectorization, AVX2/AVX-512, FMA/reassociation, fast-math, approximate
+reciprocal/sqrt, and threading of the process-global psycho state. Reopening
+any of these requires new profiling evidence and a separate scope decision.
+
 ## Undefined behavior
 
 Both of these existed in pristine r475 and were fixed in the modernization

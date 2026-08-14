@@ -23,6 +23,7 @@
 #include "mpc/mpc_types.h"
 #include "mpc/mpcmath.h"
 #include "libmpcpsy.h"
+#include "psy_profile.h"
 
 void   Cepstrum2048  ( float* cep, const int );
 
@@ -86,6 +87,10 @@ CEP_Analyse2048 ( PsyModel* m,
     float         kkf;
     float         norm;
     const float*  x;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t cep_start = mpc_psy_profile_now ();
+    uint64_t region_start;
+#endif
 
     // cross-correlation with pulse shape
     // Calculate idx = MIN_ANALYZED_IDX-2  to  MAX_ANALYZED_IDX+2,
@@ -95,6 +100,9 @@ CEP_Analyse2048 ( PsyModel* m,
     *res1 = *res2 = 0. ;
     memset ( cc, 0, sizeof cc );
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    region_start = mpc_psy_profile_now ();
+#endif
     for ( n = MIN_ANALYZED_IDX - 2; n <= MAX_ANALYZED_IDX + 2; n++ ) {
         x    = cep + n;
         if ( x[0] > 0 ) {
@@ -119,10 +127,16 @@ CEP_Analyse2048 ( PsyModel* m,
             cc [n] = kkf * kkf / norm;         // calculate the square of ncc to avoid sqrt()
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CEP_CORRELATION, mpc_psy_profile_now () - region_start);
+#endif
 
     // search for the (relative) maximum
     ref  = 0.f;
     line = MED_ANALYZED_IDX;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    region_start = mpc_psy_profile_now ();
+#endif
     for ( n = MAX_ANALYZED_IDX; n >= MED_ANALYZED_IDX; n-- ) {
         if (
              cc[n] * cep[n] * cep[n] > ref      &&
@@ -138,6 +152,9 @@ CEP_Analyse2048 ( PsyModel* m,
             line = n;
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CEP_MAXSEARCH, mpc_psy_profile_now () - region_start);
+#endif
 
     // Calculating the center of the maximum (Interpolation)
     x        = cep + line;
@@ -162,8 +179,12 @@ CEP_Analyse2048 ( PsyModel* m,
     if ( ref > 0.015f )
         *res1 = line_sum / sum;
 
-    if ( m->CVD_used < 2 )
+    if ( m->CVD_used < 2 ) {
+#ifdef MPC_ENABLE_PSY_PROFILE
+        mpc_psy_profile_add_sub (MPC_PSY_SUB_CEP_ANALYSE, mpc_psy_profile_now () - cep_start);
+#endif
         return;
+    }
 
     // search for the (relative) maximum
     ref  = 0.f;
@@ -176,6 +197,9 @@ CEP_Analyse2048 ( PsyModel* m,
         cep [2*n+1] += 0.5 * (cep [n] + cep[n+1]);
     }
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    region_start = mpc_psy_profile_now ();
+#endif
     for ( n = 2*MED_ANALYZED_IDX; n >= 2*MIN_ANALYZED_IDX; n-- ) {
         if (
              cc[n] * cep[n] * cep[n] > ref      &&
@@ -191,6 +215,9 @@ CEP_Analyse2048 ( PsyModel* m,
             line = n;
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CEP_MAXSEARCH, mpc_psy_profile_now () - region_start);
+#endif
 
     // Calculating the center of the maximum (Interpolation)
     x        = cep + line;
@@ -208,6 +235,9 @@ CEP_Analyse2048 ( PsyModel* m,
     if ( ref >= 0.1f )
         *res2 = 0.5 * line_sum / sum;
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CEP_ANALYSE, mpc_psy_profile_now () - cep_start);
+#endif
     return;
 }
 
@@ -239,6 +269,9 @@ CVD2048_prepare ( const float* spec, float* cep )
 {
     const float*  win = CosWin;   // pointer to cos-roll-off
     int           n;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     // Calculating logarithmated, windowed spectrum cep[]
     // cep[512...1024] = 0 -- cep[1025...2047] doesn't matter, because the first have to be filled by fft
@@ -246,6 +279,9 @@ CVD2048_prepare ( const float* spec, float* cep )
         cep[n] = logfast (*spec++);
     for ( n = 256; n < 512; n++ )
         cep[n] = logfast (*spec++) * *win++;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_LOGFAST, mpc_psy_profile_now () - profile_start);
+#endif
 
     memset ( cep+512, 0, 513*sizeof(*cep) );
 }

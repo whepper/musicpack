@@ -26,6 +26,10 @@ const char* mpc_psy_sub_names[MPC_PSY_SUB_COUNT] = {
     "RaiseSMR_Signal",
     "CVD2048",
     "FindOptimalANS",
+    "CEP_Analyse2048",
+    "CEP_correlation",
+    "CEP_maxsearch",
+    "logfast",
 };
 
 uint64_t

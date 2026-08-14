@@ -1,0 +1,2068 @@
+{
+  "schema_version": 1,
+  "commit": "0df606f",
+  "dirty": true,
+  "timestamp_utc": "2026-08-14T09:50:54Z",
+  "host": {
+    "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "cpu": "arm"
+  },
+  "binary_sha256": "af4a8a0c36c9847bc1b4428ece93992892f1690391e819ed709a2a2495d43b2c",
+  "build": {},
+  "workload": {
+    "path": "long_60s_44100.wav",
+    "sha256": "df1402c93c8b70bf5266c3af2be01073f30e59d2e0affe1740d6c7776514dba8",
+    "sample_rate": 44100,
+    "channels": 2,
+    "samples_per_channel": 2646000,
+    "audio_seconds": 60.0
+  },
+  "method": {
+    "clock": "CLOCK_PROCESS_CPUTIME_ID",
+    "warmup_runs": 1,
+    "measured_runs": 5
+  },
+  "qualities": [
+    {
+      "quality": 5,
+      "psy_impl": "scalar",
+      "runs": [
+        {
+          "model_ns": 222642000,
+          "raise_smr_ns": 4606000,
+          "ns_analyse_ns": 7658000,
+          "fft_ns": 68374000,
+          "spectrum_ns": 98483000,
+          "spectrum_fft_ns": 55743000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 286830000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4163000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4259000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2306000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8752000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4562000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 2994000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1136000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6600000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2372000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 3861000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3181000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5808000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1018000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5796000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2183000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 37173000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6120000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 17816000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9496000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4062000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1590000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 289322500,
+          "total_psy_ns": 234906000,
+          "powspec_nonfft_ns": 42740000,
+          "other_psy_ns": 123792000,
+          "fft_share_pct": 29.106961933709655,
+          "powspec_nonfft_share_pct": 18.19451184729211,
+          "other_psy_share_pct": 52.69852621899824,
+          "psy_share_of_wall_pct": 81.19174969108866,
+          "fft_share_of_encoder_pct": 23.837813338911552,
+          "psy_share_of_encoder_pct": 81.89729107833908
+        },
+        {
+          "model_ns": 235634000,
+          "raise_smr_ns": 5185000,
+          "ns_analyse_ns": 7954000,
+          "fft_ns": 70337000,
+          "spectrum_ns": 102442000,
+          "spectrum_fft_ns": 57471000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 300978000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4386000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4577000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2524000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8884000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4837000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3216000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1255000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7091000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2529000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4258000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3327000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 6079000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1096000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5999000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2469000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 39039000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6286000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18793000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9686000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4266000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1729000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 306246542,
+          "total_psy_ns": 248773000,
+          "powspec_nonfft_ns": 44971000,
+          "other_psy_ns": 133465000,
+          "fft_share_pct": 28.273566665192767,
+          "powspec_nonfft_share_pct": 18.077122517314983,
+          "other_psy_share_pct": 53.64931081749225,
+          "psy_share_of_wall_pct": 81.23291723568262,
+          "fft_share_of_encoder_pct": 23.369482154841883,
+          "psy_share_of_encoder_pct": 82.65487842965267
+        },
+        {
+          "model_ns": 224212000,
+          "raise_smr_ns": 4658000,
+          "ns_analyse_ns": 7663000,
+          "fft_ns": 68408000,
+          "spectrum_ns": 99004000,
+          "spectrum_fft_ns": 55672000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 288520000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4143000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4379000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2374000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8635000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4549000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3049000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1129000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6709000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2423000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 3818000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3236000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5782000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1028000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5793000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2216000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 37409000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6106000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 17956000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9487000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4008000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1620000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 291005667,
+          "total_psy_ns": 236533000,
+          "powspec_nonfft_ns": 43332000,
+          "other_psy_ns": 124793000,
+          "fft_share_pct": 28.921123056825053,
+          "powspec_nonfft_share_pct": 18.319642502314686,
+          "other_psy_share_pct": 52.75923444086026,
+          "psy_share_of_wall_pct": 81.28123498021088,
+          "fft_share_of_encoder_pct": 23.709968113129072,
+          "psy_share_of_encoder_pct": 81.98149175100512
+        },
+        {
+          "model_ns": 234237000,
+          "raise_smr_ns": 5147000,
+          "ns_analyse_ns": 7892000,
+          "fft_ns": 69928000,
+          "spectrum_ns": 102336000,
+          "spectrum_fft_ns": 57101000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 299495000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4439000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4461000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2487000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8847000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4747000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3159000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1254000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6887000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2560000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4113000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3422000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5947000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1104000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5906000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2365000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38806000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6215000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18789000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9635000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4300000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1755000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 302061875,
+          "total_psy_ns": 247276000,
+          "powspec_nonfft_ns": 45235000,
+          "other_psy_ns": 132113000,
+          "fft_share_pct": 28.279331597081804,
+          "powspec_nonfft_share_pct": 18.29332405894628,
+          "other_psy_share_pct": 53.42734434397192,
+          "psy_share_of_wall_pct": 81.86269783301849,
+          "fft_share_of_encoder_pct": 23.34863687206798,
+          "psy_share_of_encoder_pct": 82.56431659960934
+        },
+        {
+          "model_ns": 228251000,
+          "raise_smr_ns": 4829000,
+          "ns_analyse_ns": 7809000,
+          "fft_ns": 69119000,
+          "spectrum_ns": 100293000,
+          "spectrum_fft_ns": 56369000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 293029000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4205000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4459000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2388000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8846000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4684000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3045000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1195000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6797000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2419000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4012000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3376000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5876000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1040000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5925000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2261000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 37920000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6150000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18234000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9550000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4119000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1584000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 298146541,
+          "total_psy_ns": 240889000,
+          "powspec_nonfft_ns": 43924000,
+          "other_psy_ns": 127846000,
+          "fft_share_pct": 28.693298573201766,
+          "powspec_nonfft_share_pct": 18.234124430754413,
+          "other_psy_share_pct": 53.07257699604382,
+          "psy_share_of_wall_pct": 80.79550384587557,
+          "fft_share_of_encoder_pct": 23.58776776360019,
+          "psy_share_of_encoder_pct": 82.20653928450767
+        }
+      ],
+      "median": {
+        "wall_ns": 298146541,
+        "total_psy_ns": 240889000,
+        "fft_ns": 69119000,
+        "powspec_nonfft_ns": 43924000,
+        "other_psy_ns": 127846000,
+        "fft_share_pct": 28.693298573201766,
+        "powspec_nonfft_share_pct": 18.234124430754413,
+        "other_psy_share_pct": 53.07257699604382,
+        "psy_share_of_wall_pct": 81.23291723568262,
+        "fft_share_of_encoder_pct": 23.58776776360019,
+        "psy_share_of_encoder_pct": 82.20653928450767
+      },
+      "fft_ge_35_percent_of_psy": false,
+      "fft_ge_35_percent_of_encoder": false,
+      "fft_share_range_pct": [
+        28.273566665192767,
+        29.106961933709655
+      ]
+    },
+    {
+      "quality": 6,
+      "psy_impl": "scalar",
+      "runs": [
+        {
+          "model_ns": 225425000,
+          "raise_smr_ns": 4807000,
+          "ns_analyse_ns": 7619000,
+          "fft_ns": 68991000,
+          "spectrum_ns": 99496000,
+          "spectrum_fft_ns": 56221000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 291049000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4090000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4429000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2276000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8828000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4630000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3086000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1215000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6905000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2339000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4005000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3156000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5811000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1052000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5815000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2281000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 37568000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6112000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18035000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9538000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4136000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1635000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 293592375,
+          "total_psy_ns": 237851000,
+          "powspec_nonfft_ns": 43275000,
+          "other_psy_ns": 125585000,
+          "fft_share_pct": 29.00597432846614,
+          "powspec_nonfft_share_pct": 18.194163572993176,
+          "other_psy_share_pct": 52.799862098540686,
+          "psy_share_of_wall_pct": 81.0140249725491,
+          "fft_share_of_encoder_pct": 23.70425598438751,
+          "psy_share_of_encoder_pct": 81.72197808616419
+        },
+        {
+          "model_ns": 229112000,
+          "raise_smr_ns": 4970000,
+          "ns_analyse_ns": 7689000,
+          "fft_ns": 69300000,
+          "spectrum_ns": 100529000,
+          "spectrum_fft_ns": 56447000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 295687000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4297000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4430000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2354000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8836000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4718000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3203000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1210000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7051000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2382000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 3996000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3359000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5887000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1068000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5875000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2338000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38105000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6108000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18300000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9634000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4192000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1681000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 298202667,
+          "total_psy_ns": 241771000,
+          "powspec_nonfft_ns": 44082000,
+          "other_psy_ns": 128389000,
+          "fft_share_pct": 28.663487349599414,
+          "powspec_nonfft_share_pct": 18.232955979004927,
+          "other_psy_share_pct": 53.10355667139566,
+          "psy_share_of_wall_pct": 81.07606898096589,
+          "fft_share_of_encoder_pct": 23.43694514807888,
+          "psy_share_of_encoder_pct": 81.76585375752062
+        },
+        {
+          "model_ns": 229677000,
+          "raise_smr_ns": 5081000,
+          "ns_analyse_ns": 7768000,
+          "fft_ns": 69395000,
+          "spectrum_ns": 100873000,
+          "spectrum_fft_ns": 56538000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 296574000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4402000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4368000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2446000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8933000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4595000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3101000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1190000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6990000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2358000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 3960000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3293000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5913000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1066000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5867000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2399000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38055000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6184000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18328000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9614000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4132000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1704000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 299017541,
+          "total_psy_ns": 242526000,
+          "powspec_nonfft_ns": 44335000,
+          "other_psy_ns": 128796000,
+          "fft_share_pct": 28.61342701401087,
+          "powspec_nonfft_share_pct": 18.280514254141824,
+          "other_psy_share_pct": 53.106058731847305,
+          "psy_share_of_wall_pct": 81.10761635886772,
+          "fft_share_of_encoder_pct": 23.398881897941155,
+          "psy_share_of_encoder_pct": 81.77588055594893
+        },
+        {
+          "model_ns": 233131000,
+          "raise_smr_ns": 5206000,
+          "ns_analyse_ns": 7849000,
+          "fft_ns": 70148000,
+          "spectrum_ns": 101938000,
+          "spectrum_fft_ns": 57210000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 300046000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4331000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4566000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2437000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8886000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4694000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3197000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1270000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7090000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2419000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4110000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3372000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5945000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1142000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5943000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2479000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38634000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6176000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18638000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9631000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4282000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1712000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 302769125,
+          "total_psy_ns": 246186000,
+          "powspec_nonfft_ns": 44728000,
+          "other_psy_ns": 131310000,
+          "fft_share_pct": 28.493902983922727,
+          "powspec_nonfft_share_pct": 18.168376755786277,
+          "other_psy_share_pct": 53.337720260291,
+          "psy_share_of_wall_pct": 81.3114613321289,
+          "fft_share_of_encoder_pct": 23.379081874112636,
+          "psy_share_of_encoder_pct": 82.04941908907301
+        },
+        {
+          "model_ns": 231751000,
+          "raise_smr_ns": 5189000,
+          "ns_analyse_ns": 7777000,
+          "fft_ns": 69756000,
+          "spectrum_ns": 101366000,
+          "spectrum_fft_ns": 57032000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 298349000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4346000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4422000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2458000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8872000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4754000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3125000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1170000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7006000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2480000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4000000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3472000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5933000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1136000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5886000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2462000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38399000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 6146000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18492000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9596000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4159000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1656000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 303305208,
+          "total_psy_ns": 244717000,
+          "powspec_nonfft_ns": 44334000,
+          "other_psy_ns": 130627000,
+          "fft_share_pct": 28.504762644197175,
+          "powspec_nonfft_share_pct": 18.116436536897723,
+          "other_psy_share_pct": 53.378800818905106,
+          "psy_share_of_wall_pct": 80.6834151031129,
+          "fft_share_of_encoder_pct": 23.38067162953454,
+          "psy_share_of_encoder_pct": 82.02373730094621
+        }
+      ],
+      "median": {
+        "wall_ns": 299017541,
+        "total_psy_ns": 242526000,
+        "fft_ns": 69395000,
+        "powspec_nonfft_ns": 44334000,
+        "other_psy_ns": 128796000,
+        "fft_share_pct": 28.61342701401087,
+        "powspec_nonfft_share_pct": 18.194163572993176,
+        "other_psy_share_pct": 53.106058731847305,
+        "psy_share_of_wall_pct": 81.07606898096589,
+        "fft_share_of_encoder_pct": 23.398881897941155,
+        "psy_share_of_encoder_pct": 81.77588055594893
+      },
+      "fft_ge_35_percent_of_psy": false,
+      "fft_ge_35_percent_of_encoder": false,
+      "fft_share_range_pct": [
+        28.493902983922727,
+        29.00597432846614
+      ]
+    },
+    {
+      "quality": 7,
+      "psy_impl": "scalar",
+      "runs": [
+        {
+          "model_ns": 238116000,
+          "raise_smr_ns": 5392000,
+          "ns_analyse_ns": 7194000,
+          "fft_ns": 70645000,
+          "spectrum_ns": 103396000,
+          "spectrum_fft_ns": 57780000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 309302000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4449000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4610000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2534000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8995000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4879000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3270000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1299000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7220000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2472000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4202000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3576000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 6106000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1200000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 6051000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2527000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 39338000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 5534000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18935000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9666000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4307000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1785000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 311816625,
+          "total_psy_ns": 250702000,
+          "powspec_nonfft_ns": 45616000,
+          "other_psy_ns": 134441000,
+          "fft_share_pct": 28.178873722586975,
+          "powspec_nonfft_share_pct": 18.19530757632568,
+          "other_psy_share_pct": 53.62581870108735,
+          "psy_share_of_wall_pct": 80.40045972532735,
+          "fft_share_of_encoder_pct": 22.840136824204176,
+          "psy_share_of_encoder_pct": 81.05411539530944
+        },
+        {
+          "model_ns": 228113000,
+          "raise_smr_ns": 4969000,
+          "ns_analyse_ns": 7074000,
+          "fft_ns": 69124000,
+          "spectrum_ns": 100284000,
+          "spectrum_fft_ns": 56401000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 298408000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4289000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4382000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2347000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8832000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4678000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3061000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1218000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6969000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2437000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 3972000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3226000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5780000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1037000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5957000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2362000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 37951000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 5414000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18203000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9604000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4119000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1684000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 300907375,
+          "total_psy_ns": 240156000,
+          "powspec_nonfft_ns": 43883000,
+          "other_psy_ns": 127149000,
+          "fft_share_pct": 28.78295774413298,
+          "powspec_nonfft_share_pct": 18.272706074384985,
+          "other_psy_share_pct": 52.944336181482036,
+          "psy_share_of_wall_pct": 79.8106061707527,
+          "fft_share_of_encoder_pct": 23.164258330875846,
+          "psy_share_of_encoder_pct": 80.47907562799925
+        },
+        {
+          "model_ns": 230993000,
+          "raise_smr_ns": 5119000,
+          "ns_analyse_ns": 7040000,
+          "fft_ns": 69900000,
+          "spectrum_ns": 101344000,
+          "spectrum_fft_ns": 56989000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 301932000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4368000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4452000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2411000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8878000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4735000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3145000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1250000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6959000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2369000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4092000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3394000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5880000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1090000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5960000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2459000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38330000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 5420000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18432000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9628000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4198000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1679000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 304542834,
+          "total_psy_ns": 243152000,
+          "powspec_nonfft_ns": 44355000,
+          "other_psy_ns": 128897000,
+          "fft_share_pct": 28.747450154635782,
+          "powspec_nonfft_share_pct": 18.241675988681976,
+          "other_psy_share_pct": 53.01087385668224,
+          "psy_share_of_wall_pct": 79.8416422433371,
+          "fft_share_of_encoder_pct": 23.15090815150431,
+          "psy_share_of_encoder_pct": 80.53204032696104
+        },
+        {
+          "model_ns": 234231000,
+          "raise_smr_ns": 5262000,
+          "ns_analyse_ns": 7174000,
+          "fft_ns": 70149000,
+          "spectrum_ns": 102227000,
+          "spectrum_fft_ns": 57324000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 305141000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4313000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4640000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2477000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8938000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4760000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3152000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1290000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 7054000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2516000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4139000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3563000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 5969000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1137000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5999000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2556000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38731000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 5559000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18728000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9693000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4256000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1749000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 307641791,
+          "total_psy_ns": 246667000,
+          "powspec_nonfft_ns": 44903000,
+          "other_psy_ns": 131615000,
+          "fft_share_pct": 28.43874535304682,
+          "powspec_nonfft_share_pct": 18.20389431906173,
+          "other_psy_share_pct": 53.35736032789145,
+          "psy_share_of_wall_pct": 80.17993888223073,
+          "fft_share_of_encoder_pct": 22.989044408978145,
+          "psy_share_of_encoder_pct": 80.83705565623761
+        },
+        {
+          "model_ns": 233154000,
+          "raise_smr_ns": 5160000,
+          "ns_analyse_ns": 7178000,
+          "fft_ns": 69939000,
+          "spectrum_ns": 101749000,
+          "spectrum_fft_ns": 57046000,
+          "model_calls": 2298,
+          "raise_smr_calls": 2298,
+          "ns_analyse_calls": 2298,
+          "fft_calls": 64344,
+          "spectrum_calls": 20682,
+          "total_cpu_ns": 303915000,
+          "sub": [
+            {
+              "name": "SubbandEnergy",
+              "ns": 4383000,
+              "calls": 9192
+            },
+            {
+              "name": "PartitionEnergy",
+              "ns": 4415000,
+              "calls": 9192
+            },
+            {
+              "name": "WeightedPartitionEnergy",
+              "ns": 2469000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcUnpred",
+              "ns": 8940000,
+              "calls": 9192
+            },
+            {
+              "name": "SpreadingSignal",
+              "ns": 4785000,
+              "calls": 9192
+            },
+            {
+              "name": "ApplyTonalityOffset",
+              "ns": 3073000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptLtq",
+              "ns": 1261000,
+              "calls": 4596
+            },
+            {
+              "name": "CalcTemporalThreshold",
+              "ns": 6980000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcMSThreshold",
+              "ns": 2428000,
+              "calls": 4596
+            },
+            {
+              "name": "ApplyLtq",
+              "ns": 4075000,
+              "calls": 9192
+            },
+            {
+              "name": "CalculateSMR",
+              "ns": 3399000,
+              "calls": 9192
+            },
+            {
+              "name": "CalcShortThreshold",
+              "ns": 6006000,
+              "calls": 9192
+            },
+            {
+              "name": "PreechoControl",
+              "ns": 1191000,
+              "calls": 4596
+            },
+            {
+              "name": "AdaptThresholds",
+              "ns": 5866000,
+              "calls": 9192
+            },
+            {
+              "name": "RaiseSMR_Signal",
+              "ns": 2432000,
+              "calls": 9192
+            },
+            {
+              "name": "CVD2048",
+              "ns": 38647000,
+              "calls": 2298
+            },
+            {
+              "name": "FindOptimalANS",
+              "ns": 5516000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_Analyse2048",
+              "ns": 18563000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_correlation",
+              "ns": 9679000,
+              "calls": 4596
+            },
+            {
+              "name": "CEP_maxsearch",
+              "ns": 4209000,
+              "calls": 9192
+            },
+            {
+              "name": "logfast",
+              "ns": 1692000,
+              "calls": 4596
+            }
+          ],
+          "wall_ns": 306427792,
+          "total_psy_ns": 245492000,
+          "powspec_nonfft_ns": 44703000,
+          "other_psy_ns": 130850000,
+          "fft_share_pct": 28.48931940755707,
+          "powspec_nonfft_share_pct": 18.209554690173203,
+          "other_psy_share_pct": 53.301125902269725,
+          "psy_share_of_wall_pct": 80.11414317145228,
+          "fft_share_of_encoder_pct": 23.01268446769656,
+          "psy_share_of_encoder_pct": 80.77653291216293
+        }
+      ],
+      "median": {
+        "wall_ns": 306427792,
+        "total_psy_ns": 245492000,
+        "fft_ns": 69939000,
+        "powspec_nonfft_ns": 44703000,
+        "other_psy_ns": 130850000,
+        "fft_share_pct": 28.48931940755707,
+        "powspec_nonfft_share_pct": 18.209554690173203,
+        "other_psy_share_pct": 53.301125902269725,
+        "psy_share_of_wall_pct": 80.11414317145228,
+        "fft_share_of_encoder_pct": 23.01268446769656,
+        "psy_share_of_encoder_pct": 80.77653291216293
+      },
+      "fft_ge_35_percent_of_psy": false,
+      "fft_ge_35_percent_of_encoder": false,
+      "fft_share_range_pct": [
+        28.178873722586975,
+        28.78295774413298
+      ]
+    }
+  ]
+}
