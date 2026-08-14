@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // MusicPack PCM AudioWorkletProcessor (Phase 6).
 //
 // Consumes already-decoded interleaved PCM delivered as transferred

@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // The Musepack playback engine: owns the AudioContext, the PCM AudioWorklet
 // (with its bounded ring), and TWO decoder workers so the next track is
 // already opened when the current one ends (gapless). The playback controller

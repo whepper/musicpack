@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Bootstrap the MusicPack Sonic research environment (macOS / Linux).
 #
 # Creates a CPython 3.11 venv (see requirements-openl3.txt for why 3.11),

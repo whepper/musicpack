@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // The authoring draft store: in-memory editable state for the album being
 // authored. Plain TS + the minimal store primitive, so the editing logic is
 // unit-testable without the Svelte runtime (web-client convention). The GUI

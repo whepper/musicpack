@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Phase 2 bit-exact encoder regression: the built encoder must produce
 # byte-identical MPC output for the extended encoder corpus (q5/q6/q7).
 #

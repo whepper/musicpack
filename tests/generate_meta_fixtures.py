@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Generate deterministic FLAC metadata fixtures under tests/reference/meta/.
 
 Phase 3A slice 1 fixtures for the libmusicpack tag readers (musicpack_vorbis_*

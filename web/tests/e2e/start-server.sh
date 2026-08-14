@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Starts a musicpack-server with a fixture library for the Playwright e2e
 # suite. Builds the library (two albums, one with three editions), creates a
 # token, and serves the built client from web/app/dist.

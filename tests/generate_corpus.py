@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Generate deterministic adversarial stereo WAV corpus for codec audits.
 
 Covers the signal categories required by the compatibility audit:

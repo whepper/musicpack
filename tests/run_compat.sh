@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Compatibility test: the built encoder must be byte-identical to the
 # pristine reference encoder (r475 / git 05d97a5).
 #

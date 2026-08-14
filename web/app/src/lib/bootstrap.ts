@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Application composition root: wires the API client, session, stores,
 // playback controller and router into singletons the Svelte components use.
 import { ApiClient } from './api/client';

@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Error mapping: the API never exposes raw C/SQLite/WASM strings, and the
 // client maps the typed error codes to human-friendly copy.
 

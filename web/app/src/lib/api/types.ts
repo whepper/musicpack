@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Typed views of the MusicPack HTTP API v1 resources (specs/musicpack-api-v1.md).
 
 export interface ArtistRef {

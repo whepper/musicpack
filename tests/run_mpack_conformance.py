@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Run generated MusicPack v1 conformance cases with explicit expectations."""
 
 import argparse

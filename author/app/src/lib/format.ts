@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Small pure formatting helpers (shared style with the web client's
 // lib/format.ts — no date/time library).
 

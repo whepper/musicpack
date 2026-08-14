@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Generate the MusicPack Author development fixture album.
 
 Produces a small, fully tagged, two-disc FLAC album under

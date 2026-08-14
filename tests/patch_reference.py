@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Patch the pristine reference CMakeLists so only the encoder builds.
 
 The upstream r475 build tree (git 05d97a5) cannot configure on a modern

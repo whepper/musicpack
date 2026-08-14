@@ -3,6 +3,7 @@ name = "musicpack-author"
 version = "0.1.0"
 description = "MusicPack Author — the desktop GUI for authoring .mpack releases"
 authors = ["The MusicPack Development Team"]
+license = "BSD-3-Clause"
 edition = "2021"
 rust-version = "1.77"
 

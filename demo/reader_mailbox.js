@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 /*
  * SharedArrayBuffer mailbox layout + error codes for the demand-driven
  * Musepack browser reader (Phase 5).

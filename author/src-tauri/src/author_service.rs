@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // AuthorService: the only place that touches the `musicpack` CLI.
 //
 // MusicPack Author does not reimplement any .mpack semantics; it calls the

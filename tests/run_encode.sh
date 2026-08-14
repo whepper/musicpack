@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Integration tests for the MusicPack Author encode stage: `encode-draft`
 # turns a lossless FLAC album into tagged Musepack SV8 in a staging
 # directory, then `build-draft` assembles a valid .mpack from it.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Generate the deterministic encoder regression corpus (Phase 2).
 
 Extends the existing generate_corpus.py signal set with the categories the

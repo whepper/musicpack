@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Composition root for the MusicPack Author frontend. Mirrors the web
 // client's bootstrap pattern: singletons are constructed here and imported
 // by components; the Svelte runtime is kept out of the plain-TS modules.

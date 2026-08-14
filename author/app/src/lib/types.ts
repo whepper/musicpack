@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Types for the MusicPack Author draft model and the Tauri command surface.
 //
 // The draft is application state (not a MusicPack format): it mirrors the

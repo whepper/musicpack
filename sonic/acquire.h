@@ -1,6 +1,7 @@
 /*
   Copyright (c) 2026, The MusicPack Development Team
-  All rights reserved. (BSD-2-Clause; see the top-level headers.)
+  All rights reserved. (BSD-3-Clause; see LICENSES/BSD-3-Clause.txt for the full text.)
+  SPDX-License-Identifier: BSD-3-Clause
 
   Model resolution for the analyzer. The post-frontend ONNX is an immutable,
   SHA-256-pinned artifact (derived from the profile's pinned OpenL3 weights

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """Compare two 16-bit stereo WAV files with a small tolerance.
 
 The Musepack decoder's float output can differ in the last bit across libm

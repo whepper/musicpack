@@ -1,7 +1,16 @@
 /*
  *  Encoder tag handling
  *
- *  (C) Frank Klemm 2002. Janne Hyv�inen 2002. All rights reserved.
+ *  (C) Frank Klemm 2002. Janne Hyvänen 2002. All rights reserved.
+ *
+ *  Musepack audio compression. This library is free software; you can
+ *  redistribute it and/or modify it under the terms of the GNU Lesser
+ *  General Public License as published by the Free Software Foundation;
+ *  either version 2.1 of the License, or (at your option) any later
+ *  version.
+ *
+ *  Modified by the MusicPack Development Team, 2026.
+ *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
  *  Principles:
  *

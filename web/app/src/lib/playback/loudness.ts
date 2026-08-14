@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // BS.1770 playback normalization (client policy — .mpack values are never
 // modified). gain = playback target - measured loudness, constrained so the
 // output true peak never exceeds TRUE_PEAK_CAP_DB.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Fuzz-lite for the libmusicpack tag readers (Phase 3A): truncations and
 # bit-flips of a valid FLAC metadata fixture run through
 # `mpc_mpack_tests --parse-meta`. The parser must reject every input without

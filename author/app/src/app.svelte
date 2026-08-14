@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026, The MusicPack Development Team
+SPDX-License-Identifier: BSD-3-Clause
+-->
+
 <script lang="ts">
   import { api, draft, busy, draftStore, error } from './lib/bootstrap';
   import { encodeStaging, setEncodeStaging } from './lib/authoring-state';

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Bootstrap the LAION-CLAP (decision-gate) research environment.
 #
 # CLAP needs PyTorch, which conflicts with openl3's numpy<2 / TF 2.15 stack,

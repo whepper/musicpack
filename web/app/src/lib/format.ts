@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Small formatting helpers for the record-shelf UI.
 
 export function fmtTime(seconds: number): string {

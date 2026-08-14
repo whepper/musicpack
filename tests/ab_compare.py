@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 """A/B encoder comparison harness.
 
 Encodes every .wav in a corpus with encoder A and encoder B across a quality

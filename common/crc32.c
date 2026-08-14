@@ -3,6 +3,10 @@
 *
 *  code from http://www.w3.org/TR/PNG/#D-CRCAppendix
 *
+*  Reference CRC-32 implementation published in the W3C PNG
+*  specification; provided without restriction.
+*  SPDX-License-Identifier: LicenseRef-Public-Domain
+*
 */
 
 /* Table of CRCs of all 8-bit messages. */

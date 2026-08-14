@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Integration tests for the MusicPack Author backend: the `musicpack` CLI
 # draft commands (inspect / validate-draft / build-draft / identify-draft)
 # that power the MusicPack Author desktop GUI.

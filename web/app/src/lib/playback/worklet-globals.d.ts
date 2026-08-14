@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Ambient types for the AudioWorklet global scope (bundled worklet entry).
 // The standard DOM/WebWorker libs do not model AudioWorkletProcessor.
 

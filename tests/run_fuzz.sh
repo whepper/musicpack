@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Robustness tests: the decoder must not crash on malformed input.
 #
 # Truncates a valid MPC file at every length and bit-flips random bytes,

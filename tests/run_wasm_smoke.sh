@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # WASM smoke test: decode a known fixture in node via libmusepack.wasm and
 # compare the PCM against the golden WAV with the tolerance comparator.
 #

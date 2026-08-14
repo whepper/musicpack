@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Build the decoder benchmark corpus: deterministic WAV signals (from
 # tests/generate_corpus.py) encoded to SV8 at several qualities, plus the
 # committed correctness fixtures.

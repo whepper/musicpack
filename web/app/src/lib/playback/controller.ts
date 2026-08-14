@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // The unified playback controller: a single state machine over two backends
 // (Musepack demand-driven WASM, and browser-native codecs), the queue, BS.1770
 // normalization, and Media Session. The UI talks only to this controller.

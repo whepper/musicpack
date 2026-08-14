@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "MusicPack Phase 6 web client — the digital record shelf",
+  "license": "BSD-3-Clause",
   "scripts": {
     "sync:wasm": "bash scripts/sync-wasm.sh",
     "dev": "npm run sync:wasm && vite",

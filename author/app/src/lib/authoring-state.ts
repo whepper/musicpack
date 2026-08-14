@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Shared authoring-session state (validation result, create flow, encode
 // staging) shared by the album view and the fixed footer/status bar. Plain
 // TS + writable.

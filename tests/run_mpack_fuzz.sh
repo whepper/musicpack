@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Fuzz-lite for the .mpack parser: truncations and bit-flips of a valid
 # manifest, plus malicious path injections, run through `musicpack verify`.
 # The tool must reject every input without crashing.

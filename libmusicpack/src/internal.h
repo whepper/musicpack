@@ -1,7 +1,8 @@
 /*
   Copyright (c) 2026, The MusicPack Development Team
   All rights reserved.
-  (BSD-2-Clause; see the top-level headers for the full text.)
+  (BSD-3-Clause; see LICENSES/BSD-3-Clause.txt for the full text.)
+  SPDX-License-Identifier: BSD-3-Clause
 */
 /// \file internal.h
 /// Internal declarations shared between libmusicpack translation units.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Repeatable Phase 3 psychoacoustic encoder benchmark.
 #
 # Times the mpcenc CLI (wall clock) for each corpus WAV x quality, for both

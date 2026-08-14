@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026, The MusicPack Development Team
+SPDX-License-Identifier: BSD-3-Clause
+-->
+
 <script lang="ts">
   // Album artwork is content, not decoration: meaningful alt text, graceful
   // placeholder with a deterministically derived monogram tile when the

@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Native-codec backend: plays browser-supported formats (FLAC, Vorbis, WAV,
 // ...) through HTMLMediaElement routed into the shared gain pipeline.
 //

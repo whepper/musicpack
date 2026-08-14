@@ -1,7 +1,8 @@
 /*
   Copyright (c) 2026, The MusicPack Development Team
   All rights reserved.
-  (BSD-2-Clause; see include/musicpack/meta.h for the full text.)
+  (BSD-3-Clause; see include/musicpack/meta.h for the full text.)
+  SPDX-License-Identifier: BSD-3-Clause
 */
 /// \file mapping.c
 /// Tag-set -> canonical manifest mapping and manifest -> APEv2 projection.

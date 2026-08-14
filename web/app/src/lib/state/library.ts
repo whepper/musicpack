@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 import { writable } from '../store';
 import type { ApiClient } from '../api/client';
 import type { AlbumDetail, AlbumSummary, ArtistDetail, ReleaseDetail } from '../api/types';

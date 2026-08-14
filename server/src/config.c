@@ -1,6 +1,7 @@
 /*
   Copyright (c) 2026, The MusicPack Development Team
   All rights reserved.
+  SPDX-License-Identifier: BSD-3-Clause
   (BSD 3-clause, see config.h)
 */
 #include "config.h"

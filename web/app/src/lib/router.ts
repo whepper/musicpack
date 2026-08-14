@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Minimal History-API router for the SPA (server provides SPA fallback for
 // deep links). Routes:
 //   /                     albums shelf

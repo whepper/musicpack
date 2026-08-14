@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # OPTIONAL: bootstrap the Discogs-EffNet comparator environment.
 #
 # Essentia is AGPL-3.0 and the MTG models are CC BY-NC-SA 4.0 — this is

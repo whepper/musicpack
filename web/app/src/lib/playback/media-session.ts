@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Media Session integration: lock-screen / headset / browser controls plus
 // metadata so the client behaves like a proper media app.
 import type { QueueItem } from '../state/queue';

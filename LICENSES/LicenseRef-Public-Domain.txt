@@ -1,0 +1,10 @@
+This file is distributed without any copyright restrictions. It is either:
+
+  - a reference implementation published in a public specification
+    (e.g. the W3C PNG specification's CRC-32 code), provided without
+    restriction, or
+  - a work that has been explicitly dedicated to the public domain by
+    its author (e.g. SQLite, dr_flac, AT&T's public-domain getopt).
+
+You may use, copy, modify, and redistribute it freely. No warranty is
+provided, express or implied.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Bounded interleaved PCM ring buffer shared by the AudioWorklet and the
 // decode feed. Pure TS so it runs both in the bundled worklet and in Node
 // unit tests. Tracks absolute read/write positions; the worklet consumes

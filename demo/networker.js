@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 /*
  * Network worker for the demand-driven Musepack reader (Phase 5).
  *

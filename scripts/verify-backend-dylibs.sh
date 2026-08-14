@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Verify that a binary references only macOS system dynamic libraries.
 #
 # MusicPack Author ships its authoring backend fully static so the .app needs

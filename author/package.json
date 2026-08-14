@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "MusicPack Author — the desktop GUI for authoring .mpack releases",
+  "license": "BSD-3-Clause",
   "scripts": {
     "dev": "vite",
     "build:web": "vite build",

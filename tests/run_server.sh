@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Phase 4 integration tests for musicpack-server: builds a small library from
 # the reference fixtures, scans it, serves it, and exercises the HTTP API v1
 # (JSON endpoints, collector hierarchy, HTTP Range streaming, HEAD, errors,

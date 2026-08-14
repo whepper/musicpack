@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026, The MusicPack Development Team
+SPDX-License-Identifier: BSD-3-Clause
+-->
+
 <script lang="ts">
   import type { ReleaseSummary } from '../api/types';
   import { formatDate, mediumLabel, yearOf } from '../format';

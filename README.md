@@ -457,7 +457,27 @@ ctest --test-dir build
 
 ## License
 
-The codec layer: `libmpcdec` is BSD-licensed; `libmpcenc`, `libmpcpsy`, and the
-codec tools are LGPL-licensed. The MusicPack layer (`libmusicpack`, the
-`musicpack` CLI, and `musicpack-server`) is BSD 3-clause licensed. See
-`LICENSE` for details.
+MusicPack is a mixed-license repository. The historical Musepack notices are
+preserved verbatim in the files they apply to; individual files carry their
+own copyright and SPDX license identifier.
+
+* **LGPL-2.1-or-later** — the Musepack encoder core and its derivatives:
+  `libmpcenc`, `libmpcpsy`, `mpcenc`, the encoder-side SIMD kernels
+  (`libmpcenc/analy_filter_simd.c`, `libmpcpsy/fft4g_simd.c`,
+  `libmpcpsy/fft_routines_simd.c`), `libmpcpsy/psy_profile.*`, and the
+  encoder-side `common/` sources (`fastmath.c`, `tags.c`). Musepack files
+  modified by the MusicPack project carry a
+  "Modified by the MusicPack Development Team" notice per LGPL 2.1 §2.
+* **BSD-3-Clause** — the Musepack decoder and its tools: `libmpcdec`,
+  `libwavformat`, `mpcdec`, `mpccut`, `mpc2sv8`, `mpcgain`, `mpcchap`,
+  `wavcmp`, and the `include/mpc/` decoder headers. The MusicPack ecosystem
+  is also BSD-3-Clause: `libmusicpack`, the `musicpack` CLI,
+  `musicpack-server`, `sonic`, `wasm`, `web`, `author`, `demo`, `tests`,
+  and `bench`.
+* **MIT** — vendored `cJSON`, `libebur128`, and `mpcchap`'s `iniparser`.
+* **Public domain** — vendored `SQLite`, `dr_flac`, AT&T's `getopt`, and the
+  PNG-spec CRC-32 reference in `common/crc32.c`.
+
+Full license texts live in `LICENSES/`; `libmpcdec/COPYING` carries the
+decoder's BSD notice. The top-level `LICENSE` is the GNU Lesser General
+Public License version 2.1.

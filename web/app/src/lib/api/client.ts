@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 import { ApiError, NetworkError } from './errors';
 import type {
   AlbumDetail,

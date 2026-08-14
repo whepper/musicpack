@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Minimal observable store (Svelte-store-compatible `subscribe`, but plain
 // TS so the core logic is unit-testable without the Svelte runtime).
 

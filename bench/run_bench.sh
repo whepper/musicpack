@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
 # Repeatable native decoder benchmark.
 #
 # Runs bench/decode_bench over the corpus with an optional --impl filter,

@@ -1,7 +1,25 @@
 /*
  * Musepack audio compression
+ * Copyright (c) 2005-2009, The Musepack Development Team
+ * Copyright (C) 1999-2004 Buschmann/Klemm/Piecha/Wolf
  * Copyright (c) 2026, The MusicPack Development Team
- * All rights reserved. (BSD-2-Clause; see the top-level headers.)
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
+ * Modified by the MusicPack Development Team, 2026.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * Four-lane (lane = independent FFT) real FFT, bit-exact.
  *

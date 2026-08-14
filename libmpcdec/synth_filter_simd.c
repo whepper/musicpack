@@ -1,6 +1,8 @@
 /*
+  Copyright (c) 2005-2009, The Musepack Development Team
   Copyright (c) 2026, The MusicPack Development Team
   All rights reserved.
+  SPDX-License-Identifier: BSD-3-Clause
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are
@@ -14,7 +16,7 @@
   disclaimer in the documentation and/or other materials provided
   with the distribution.
 
-  * Neither the name of the The MusicPack Development Team nor the
+  * Neither the name of the MusicPack Development Team nor the
   names of its contributors may be used to endorse or promote
   products derived from this software without specific prior
   written permission.

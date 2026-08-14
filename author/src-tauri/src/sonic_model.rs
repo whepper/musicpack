@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // Sonic model management for MusicPack Author.
 //
 // The `musicpack-sonic` analyzer is deliberately offline: it only locates and

@@ -1,3 +1,6 @@
+// Copyright (c) 2026, The MusicPack Development Team
+// SPDX-License-Identifier: BSD-3-Clause
+
 // The Author API: a thin typed facade over the Tauri command surface.
 //
 // The `musicpack` CLI is only ever invoked by the Rust `AuthorService`; the

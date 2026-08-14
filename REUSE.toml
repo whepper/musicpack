@@ -1,0 +1,194 @@
+version = 1
+SPDX-PackageName = "MusicPack"
+SPDX-PackageSupplier = "The MusicPack Development Team"
+SPDX-PackageDownloadLocation = "https://github.com/whepper/musicpack"
+
+# Default: MusicPack-owned non-code files are BSD-3-Clause. The patterns
+# below deliberately avoid source files (.c/.h), which carry their own SPDX
+# tags or are covered by the specific annotations further down. More specific
+# annotations (matched last) override this default.
+
+[[annotations]]
+path = [
+    "**/*.md",
+    "**/CMakeLists.txt",
+    "**/Cargo.toml",
+    "**/*.cmake.in",
+    "**/*.pc.in",
+    "**/*.json",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.lock",
+    "docs/**",
+    "research/sonic/**",
+    "specs/**",
+    "packaging/**",
+    ".github/**",
+    ".opencode/**",
+    ".gitignore",
+    ".gitattributes",
+    "author/.gitignore",
+    "web/.gitignore",
+    "web/tests/**",
+    "author/tests/**",
+    "author/src-tauri/icons/**",
+    "author/src-tauri/build.rs",
+    "author/src-tauri/capabilities/**",
+    "web/playwright.config.ts",
+    "web/vite.config.ts",
+    "web/svelte.config.js",
+    "author/vite.config.ts",
+    "author/svelte.config.js",
+    "web/app/public/**",
+    "demo/index.html",
+    "bench/profile_psy.py",
+    "bench/summarize_bench.py",
+    "bench/wasm_bench.mjs",
+    "server/vendor/sqlite/README",
+    "libmpcdec/cmake/**",
+    "libmusicpack/cmake/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The MusicPack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+# ---------------------------------------------------------------------------
+# Vendored third-party code. Each retains its upstream license and copyright.
+# ---------------------------------------------------------------------------
+
+[[annotations]]
+path = "libmusicpack/vendor/cjson/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2009-2017 Dave Gamble and cJSON contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["libmusicpack/vendor/ebur128/ebur128.c", "libmusicpack/vendor/ebur128/ebur128.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2011 Jan Kokemüller"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "libmusicpack/vendor/ebur128/queue/sys/queue.h"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "1991, 1993 The Regents of the University of California"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = "common/huffman-bcl.c"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2003-2006 Marcus Geelnard"
+SPDX-License-Identifier = "Zlib"
+
+[[annotations]]
+path = "sonic/vendor/dr_flac.h"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "David Reid"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+[[annotations]]
+path = "server/vendor/sqlite/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The SQLite authors"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+[[annotations]]
+path = ["win32/dirent.c", "win32/dirent.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2002-2006 Matthew Wilson and Synesis Software"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["win32/attgetopt.c", "win32/getopt.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "AT&T (getopt implementation); Kannel Team (getopt.h)"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+[[annotations]]
+path = ["win32/basename.c", "win32/libgen.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The MinGW project"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+# ---------------------------------------------------------------------------
+# Inherited Musepack decoder and its tools (BSD-3-Clause). Historical notices
+# are preserved verbatim in each file.
+# ---------------------------------------------------------------------------
+
+[[annotations]]
+path = ["include/mpc/mpc_types.h", "include/mpc/mpcdec.h", "include/mpc/reader.h", "include/mpc/streaminfo.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["libmpcdec/decoder.h", "libmpcdec/huffman.c", "libmpcdec/huffman.h", "libmpcdec/internal.h", "libmpcdec/mpc_bits_reader.c", "libmpcdec/mpc_bits_reader.h", "libmpcdec/mpc_decoder.c", "libmpcdec/mpc_demux.c", "libmpcdec/mpc_reader.c", "libmpcdec/mpcdec_math.h", "libmpcdec/requant.c", "libmpcdec/requant.h", "libmpcdec/streaminfo.c", "libmpcdec/synth_filter.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["mpc2sv8/mpc2sv8.c", "mpcchap/mpcchap.c", "mpccut/mpccut.c", "mpcdec/mpcdec.c", "mpcgain/mpcgain.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = ["libmpcdec/AUTHORS", "libmpcdec/ChangeLog", "libmpcdec/README", "libmpcdec/COPYING"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+# ---------------------------------------------------------------------------
+# Inherited Musepack encoder core (LGPL-2.1-or-later).
+# ---------------------------------------------------------------------------
+
+[[annotations]]
+path = ["include/mpc/datatypes.h", "include/mpc/minimax.h", "include/mpc/mpcmath.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team, 1999-2004 Buschmann/Klemm/Piecha/Wolf"
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["libmpcenc/huffsv7.c", "libmpcenc/libmpcenc.h", "libmpcpsy/libmpcpsy.h"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team, 1999-2004 Buschmann/Klemm/Piecha/Wolf"
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["mpcenc/config.h", "mpcenc/winmsg.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2005-2009 The Musepack Development Team, 1999-2004 Buschmann/Klemm/Piecha/Wolf"
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["common/tags.c", "mpcenc/keyboard.c", "mpcenc/pipeopen.c", "mpcenc/stderr.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2002 Frank Klemm, Janne Hyvänen"
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = "common/crc32.c"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "LicenseRef-Public-Domain"
+
+# ---------------------------------------------------------------------------
+# Retired upstream build files (kept for reference only).
+# ---------------------------------------------------------------------------
+
+[[annotations]]
+path = ["legacy/**", "libmpc.kdevelop"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The Musepack Development Team"
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+# ---------------------------------------------------------------------------
+# Generated test fixtures and reference packages (synthesized test data).
+# ---------------------------------------------------------------------------
+
+[[annotations]]
+path = ["tests/fixtures/**", "tests/reference/**", "tests/reference_manifest.txt", "tests/encoder_reference_manifest.txt"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The MusicPack Development Team"
+SPDX-License-Identifier = "BSD-3-Clause"
