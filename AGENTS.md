@@ -15,6 +15,48 @@ This is a **modernized** copy of upstream Musepack r475 (git `05d97a5`).
 The working rule is: **modernize the ecosystem aggressively, change the codec
 conservatively.** Any risky codec change must be proven behavior-preserving.
 
+## Licensing and copyright rules
+
+MusicPack is a mixed-license repository.
+
+- Inherited and derivative Musepack encoder code is licensed under
+  `LGPL-2.1-or-later`.
+- MusicPack-owned permissive code uses `BSD-3-Clause`.
+- Third-party/vendored code retains its upstream license.
+- Public-domain material uses the repository's explicit public-domain
+  LicenseRef where applicable.
+- Do not introduce `BSD-2-Clause` for MusicPack-owned code.
+
+For materially modified LGPL Musepack files:
+
+- preserve all original copyright notices;
+- retain `SPDX-License-Identifier: LGPL-2.1-or-later`;
+- retain/add `Modified by the MusicPack Development Team, 2026.`;
+- do not replace historical attribution with MusicPack attribution.
+
+New files under codec directories are not automatically BSD: if code is
+derived from, transcribed from, or closely adapted from Musepack LGPL
+implementation, it must remain `LGPL-2.1-or-later`. In particular, the SIMD
+files `libmpcpsy/fft4g_simd.c`, `libmpcpsy/fft_routines_simd.c`, and
+`libmpcenc/analy_filter_simd.c` are LGPL-derived code, not BSD code — do not
+relicense them.
+
+Generic independently written infrastructure and MusicPack ecosystem code may
+use `BSD-3-Clause` where appropriate.
+
+Do not rewrite vendored or historical notices merely for style consistency.
+
+The repository is REUSE-compliant. New files must keep that compliance: use
+SPDX copyright/license metadata and ensure the corresponding license is
+present under `LICENSES/`. Before committing licensing-related changes, run:
+
+    reuse lint
+
+Current intended license files include `BSD-3-Clause`, `LGPL-2.1-or-later`,
+`MIT`, `Zlib`, and `LicenseRef-Public-Domain`.
+
+Licensing changes must not be mixed with functional codec changes.
+
 ## Stable decoder API (`libmusepack`)
 
 Since Phase 1, the canonical decoder-facing API lives in `include/musepack/`
@@ -96,6 +138,9 @@ Key details:
   The committed manifest (`tests/reference_manifest.txt`) is a `-O0` clang
   fallback for local runs and only matches a `-O0` build of the encoder under
   test.
+- **License/header-only changes to codec sources must be verified to contain
+  no executable-code differences** (strip comments and diff). Never mix
+  licensing changes with functional codec changes.
 
 ## The reference encoder and `compat`
 
