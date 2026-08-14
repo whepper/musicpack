@@ -1813,11 +1813,12 @@ mainloop ( int argc, char** argv )
                 stderr_printf ( "cannot write psychoacoustic profile '%s'\n", profile_path );
                 return 1;
             }
+            int i;
             fprintf (profile_file,
                      "{\"model_ns\":%llu,\"raise_smr_ns\":%llu,\"ns_analyse_ns\":%llu,"
                      "\"fft_ns\":%llu,\"spectrum_ns\":%llu,\"spectrum_fft_ns\":%llu,\"model_calls\":%llu,"
                      "\"raise_smr_calls\":%llu,\"ns_analyse_calls\":%llu,"
-                     "\"fft_calls\":%llu,\"spectrum_calls\":%llu,\"total_cpu_ns\":%llu}\n",
+                     "\"fft_calls\":%llu,\"spectrum_calls\":%llu,\"total_cpu_ns\":%llu",
                      (unsigned long long) p.model_ns,
                      (unsigned long long) p.raise_smr_ns,
                      (unsigned long long) p.ns_analyse_ns,
@@ -1830,6 +1831,14 @@ mainloop ( int argc, char** argv )
                      (unsigned long long) p.fft_calls,
                      (unsigned long long) p.spectrum_calls,
                      (unsigned long long) (mpc_psy_profile_now () - p.total_start_ns));
+            fprintf (profile_file, ",\"sub\":[");
+            for ( i = 0; i < MPC_PSY_SUB_COUNT; i++ )
+                fprintf (profile_file, "%s{\"name\":\"%s\",\"ns\":%llu,\"calls\":%llu}",
+                         i ? "," : "",
+                         mpc_psy_sub_names[i],
+                         (unsigned long long) p.sub_ns[i],
+                         (unsigned long long) p.sub_calls[i]);
+            fprintf (profile_file, "]}\n");
             fclose (profile_file);
         }
     }

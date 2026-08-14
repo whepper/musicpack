@@ -8,6 +8,26 @@
 static mpc_psy_profile_t profile;
 static unsigned int spectrum_depth;
 
+const char* mpc_psy_sub_names[MPC_PSY_SUB_COUNT] = {
+    "SubbandEnergy",
+    "PartitionEnergy",
+    "WeightedPartitionEnergy",
+    "CalcUnpred",
+    "SpreadingSignal",
+    "ApplyTonalityOffset",
+    "AdaptLtq",
+    "CalcTemporalThreshold",
+    "CalcMSThreshold",
+    "ApplyLtq",
+    "CalculateSMR",
+    "CalcShortThreshold",
+    "PreechoControl",
+    "AdaptThresholds",
+    "RaiseSMR_Signal",
+    "CVD2048",
+    "FindOptimalANS",
+};
+
 uint64_t
 mpc_psy_profile_now ( void )
 {
@@ -39,6 +59,12 @@ mpc_psy_profile_set_total_start ( uint64_t ns )
 ADD_PROFILE(model)
 ADD_PROFILE(raise_smr)
 ADD_PROFILE(ns_analyse)
+void
+mpc_psy_profile_add_sub ( mpc_psy_sub_kind kind, uint64_t ns )
+{
+    profile.sub_ns[kind] += ns;
+    profile.sub_calls[kind]++;
+}
 void
 mpc_psy_profile_add_fft ( uint64_t ns )
 {

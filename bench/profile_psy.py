@@ -115,6 +115,28 @@ def build_metadata(build):
     return json.loads(output)
 
 
+def sub_ranked(runs):
+    names = []
+    for run in runs:
+        for entry in run.get("sub", []):
+            if entry["name"] not in names:
+                names.append(entry["name"])
+
+    def values(name, key):
+        return [entry[key] for run in runs
+                for entry in run.get("sub", []) if entry["name"] == name]
+
+    rows = []
+    for name in names:
+        rows.append({
+            "name": name,
+            "ns": statistics.median(values(name, "ns")),
+            "calls": statistics.median(values(name, "calls")),
+        })
+    rows.sort(key=lambda row: -row["ns"])
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mpcenc", required=True)
@@ -139,6 +161,23 @@ def main():
                median["powspec_nonfft_share_pct"], median["other_psy_share_pct"],
                median["psy_share_of_encoder_pct"],
                "YES" if quality["fft_ge_35_percent_of_encoder"] else "NO"))
+
+        model_ns = statistics.median(run["model_ns"] for run in quality["runs"])
+        total_psy = median["total_psy_ns"]
+        total_cpu = statistics.median(run["total_cpu_ns"] for run in quality["runs"])
+        model_calls = statistics.median(run["model_calls"] for run in quality["runs"])
+        print("  fine-grained model profile (q%d):" % quality["quality"])
+        print("  %-24s %14s %8s %8s %8s %8s" %
+              ("function", "ns", "%model", "%psy", "%enc", "calls/fr"))
+        for row in sub_ranked(quality["runs"]):
+            ns = row["ns"]
+            calls_per_frame = row["calls"] / model_calls if model_calls else 0.0
+            print("  %-24s %14.0f %7.2f%% %7.2f%% %7.2f%% %8.2f" %
+                  (row["name"], ns,
+                   ns * 100.0 / model_ns if model_ns else 0.0,
+                   ns * 100.0 / total_psy if total_psy else 0.0,
+                   ns * 100.0 / total_cpu if total_cpu else 0.0,
+                   calls_per_frame))
 
 
 if __name__ == "__main__":

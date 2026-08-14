@@ -167,12 +167,18 @@ RaiseSMR_Signal ( const int MaxBand, float* signal, float tmp )
 {
     int    Band;
     float  z = 0.;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     for ( Band = MaxBand; Band >= 0; Band-- ) {
         if ( z < signal [Band]  ) z = signal [Band];
         if ( z > tmp            ) z = tmp;
         if ( signal [Band]  < z ) signal [Band] = z;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_RAISE_SMR_SIGNAL, mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 
@@ -260,6 +266,9 @@ SubbandEnergy ( const int     MaxBand,
     int    alias;
     float  tmp0;
     float  tmp1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
 
     // Is this here correct for FFT-based data or is this calculation rule only for MDCTs???
@@ -285,6 +294,9 @@ SubbandEnergy ( const int     MaxBand,
         *erg0++ = tmp0;
         *erg1++ = tmp1;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_SUBBAND_ENERGY, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -301,6 +313,9 @@ PartitionEnergy ( float*        erg0,
     unsigned int  k;
     float         e0;
     float         e1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     n = 0;
 
@@ -339,6 +354,9 @@ PartitionEnergy ( float*        erg0,
         *erg0++ = e0;
         *erg1++ = e1;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_PARTITION_ENERGY, mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 
@@ -356,6 +374,9 @@ WeightedPartitionEnergy ( float*        erg0,
     unsigned int  k;
     float         e0;
     float         e1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     n = 0;
 
@@ -394,6 +415,9 @@ WeightedPartitionEnergy ( float*        erg0,
         *erg0++ = e0;
         *erg1++ = e1;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_WEIGHTED_PARTITION_ENERGY, mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 // input : masking thresholds, first half of the arrays *shaped0 and *shaped1
@@ -413,6 +437,9 @@ AdaptThresholds ( const int MaxLine, float* shaped0, float* shaped1 )
     const float*  thr1 = shaped1 - 512;
     float         tmp0;
     float         tmp1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
 
     // should be able to optimize it with coasting.  [ 9 ] + n * [ 7 + 7 + 2 ] + [ 7 ]
@@ -439,6 +466,9 @@ AdaptThresholds ( const int MaxLine, float* shaped0, float* shaped1 )
         *shaped0++ = tmp0;
         *shaped1++ = tmp1;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_ADAPT_THRESHOLDS, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -462,11 +492,17 @@ CalcUnpred (PsyModel* m,
     int     n;
     float   amp;
     float   tmp;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start;
+#endif
 #define amp1  ((amp0) +  512)           // amp[ 512...1023] contains data of frame-1
 #define amp2  ((amp0) + 1024)           // amp[1024...1535] contains data of frame-2
 #define phs1  ((phs0) +  512)           // phs[ 512...1023] contains data of frame-1
 #define phs2  ((phs0) + 1024)           // phs[1024...1535] contains data of frame-2
 
+#ifdef MPC_ENABLE_PSY_PROFILE
+    profile_start = mpc_psy_profile_now ();
+#endif
 
     for ( n = 0; n < MaxLine; n++ ) {
         tmp     = COSF  ((phs0[n] = phase[n]) - 2*phs1[n] + phs2[n]);   // copy phase to output-array, predict phase and calculate predictive error
@@ -483,6 +519,10 @@ CalcUnpred (PsyModel* m,
             if ( *vocal != 0  &&  *cw > CVD_UNPRED * 0.01 * *vocal )
                 *cw = CVD_UNPRED * 0.01 * *vocal;
     }
+
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CALC_UNPRED, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -506,6 +546,9 @@ SpreadingSignal ( const float* erg, const float* werg, float* res,
     const float*  sprd;
     float         e;
     float         ew;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
 
     for (k=0; k<PART_LONG; ++k, ++erg, ++werg) { // Source (masking partition)
@@ -520,6 +563,9 @@ SpreadingSignal ( const float* erg, const float* werg, float* res,
             wres[n] += *sprd * ew;      // spreading weighted signal
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_SPREADING_SIGNAL, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -532,6 +578,9 @@ ApplyTonalityOffset ( float* erg0, float* erg1, const float* werg0, const float*
     int    n;
     float  Offset;
     float  quot;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
 
     // calculation of the masked threshold in the partition range
@@ -548,6 +597,9 @@ ApplyTonalityOffset ( float* erg0, float* erg1, const float* werg0, const float*
         else                             Offset = O_MIN;
 		*erg1++ *= iw[n] * minf(MinVal[n], Offset);
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_APPLY_TONALITY_OFFSET, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -560,6 +612,10 @@ AdaptLtq ( PsyModel* m, const float* erg0, const float* erg1 )
 	float*        weight = Loudness;
 	float         sum    = 0.f;
 	int           n;
+	float         offset;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     // calculate loudness
     for ( n = 0; n < PART_LONG; n++ )
@@ -570,7 +626,11 @@ AdaptLtq ( PsyModel* m, const float* erg0, const float* erg1 )
     m->state.loud = 0.98 * m->state.loud + 0.02 * (0.5 * sum);
 
     // calculate dynamic offset for threshold in quiet, 0...+20 dB, at 96 dB loudness, an offset of 20 dB is assumed
-    return 1.f + m->varLtq * m->state.loud * 5.023772e-08f;
+    offset = 1.f + m->varLtq * m->state.loud * 5.023772e-08f;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_ADAPT_LTQ, mpc_psy_profile_now () - profile_start);
+#endif
+    return offset;
 }
 
 // input : simultaneous masking threshold *frqthr,
@@ -582,6 +642,9 @@ CalcTemporalThreshold ( float* a, float* b, float* tau, float* frqthr, float* tm
 {
     int    n;
     float  tmp;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
 
     for ( n = 0; n < PART_LONG; n++ ) {
@@ -602,6 +665,9 @@ CalcTemporalThreshold ( float* a, float* b, float* tau, float* frqthr, float* tm
         // use post-masking of (Re-Normalization)
 		tmpthr[n] = maxf (frqthr[n], tmp) * partLtq[n];
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CALC_TEMPORAL_THRESHOLD, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -624,6 +690,9 @@ CalcMSThreshold ( PsyModel* m,
     int    n;
     float  norm;
     float  tmp;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     // All hardcoded numbers here should be pulled from somewhere,
     // the "4.", the -2 dB, the 0.0625 and the 0.9375, as well as all bands where this is done
@@ -762,6 +831,9 @@ CalcMSThreshold ( PsyModel* m,
             break;
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CALC_MS_THRESHOLD, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -780,6 +852,9 @@ ApplyLtq ( float*        thr0,
 {
     int     n, k;
     float   ms, ltq, tmp, tmpThr0, tmpThr1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     ms = AdaptedLTQ * (MSflag ? 0.125f : 0.25f);
     for( n = 0; n < PART_LONG; n++ )
@@ -797,6 +872,9 @@ ApplyLtq ( float*        thr0,
             *thr1 = tmp * tmp;
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_APPLY_LTQ, mpc_psy_profile_now () - profile_start);
+#endif
 }
 
 // input : Subband energies *erg0, *erg1
@@ -815,6 +893,9 @@ CalculateSMR ( const int     MaxBand,
     int    k;
     float  tmp0;
     float  tmp1;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     // calculation of the masked thresholds in the subbands
     for (n = 0; n <= MaxBand; n++ ) {
@@ -827,6 +908,9 @@ CalculateSMR ( const int     MaxBand,
         *smr0++ = 0.0625f * *erg0++ / tmp0;
         *smr1++ = 0.0625f * *erg1++ / tmp1;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CALCULATE_SMR, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -853,6 +937,9 @@ CalcShortThreshold ( PsyModel* m,
     float         new_erg;
 	float         th, TransDetect = m->TransDetect;
     const float*  ep;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     for ( k = 0; k < PART_SHORT; k++ ) {
         transient [k] = 0;
@@ -880,6 +967,9 @@ CalcShortThreshold ( PsyModel* m,
         }
         thr [k] = th * ShortThr * *iwidth++;  // pull out and multiply only when transient[k]=1
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_CALC_SHORT_THRESHOLD, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
@@ -897,6 +987,9 @@ PreechoControl ( float*        partThr0,
                  const float*  simThr1 )
 {
     int  n;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     for ( n = 0; n < PART_LONG; n++ ) {
         *partThr0++ = minf ( *simThr0, *preThr0 * PREFAC_LONG);
@@ -904,6 +997,9 @@ PreechoControl ( float*        partThr0,
         *preThr0++  = *simThr0++;
         *preThr1++  = *simThr1++;
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_PREECHO_CONTROL, mpc_psy_profile_now () - profile_start);
+#endif
     return;
 }
 
@@ -974,8 +1070,14 @@ Psychoakustisches_Modell ( PsyModel* m,
 
         // left + right (batched 2-lane FFT)
         PowSpec2048_2 ( &data->L[0], &data->R[0], Xerg, Xerg2 );
+#ifdef MPC_ENABLE_PSY_PROFILE
+        uint64_t cvd_profile_start = mpc_psy_profile_now ();
+#endif
         isvoc_L = CVD2048 ( m, Xerg, m->state.Vocal_L );
         isvoc_R = CVD2048 ( m, Xerg2, m->state.Vocal_R );
+#ifdef MPC_ENABLE_PSY_PROFILE
+        mpc_psy_profile_add_sub (MPC_PSY_SUB_CVD2048, mpc_psy_profile_now () - cvd_profile_start);
+#endif
     }
 
     // calculation of the spectral energy via FFT

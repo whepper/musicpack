@@ -177,6 +177,9 @@ FindOptimalANS ( const int             MaxBand,
     float         actSMR;
     int           max;
     const float*  tmp;
+#ifdef MPC_ENABLE_PSY_PROFILE
+    uint64_t profile_start = mpc_psy_profile_now ();
+#endif
 
     for ( Band = 0; Band <= MaxBand  &&  maxANSOrder[Band]; Band++ ) {
 
@@ -267,6 +270,9 @@ FindOptimalANS ( const int             MaxBand,
             }
         }
     }
+#ifdef MPC_ENABLE_PSY_PROFILE
+    mpc_psy_profile_add_sub (MPC_PSY_SUB_FIND_OPTIMAL_ANS, mpc_psy_profile_now () - profile_start);
+#endif
 
     return;
 }
