@@ -86,6 +86,7 @@ extern float partLtq [PART_LONG];
 
 void   Generate_FFT_Tables ( const int, int*, float* );
 void   rdft                ( const int, float*, int*, float* );
+void   Cepstrum2048        ( float* cep, const int MaxLine );
 
 
 //////////////////////////////
@@ -281,10 +282,12 @@ void PowSpec256_4_scalar    ( const float* x0, const float* x1, const float* x2,
 void PowSpec1024_2_scalar   ( const float* x0, const float* x1, float* e0, float* e1 );
 void PowSpec2048_2_scalar   ( const float* x0, const float* x1, float* e0, float* e1 );
 void PolarSpec1024_2_scalar ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 );
+void Cepstrum2048_2_scalar  ( float* cepL, float* cepR, const int MaxLine );
 static mpc_powspec4_fn  powspec256_4_impl   = PowSpec256_4_scalar;
 static mpc_powspec2_fn  powspec1024_2_impl  = PowSpec1024_2_scalar;
 static mpc_powspec2_fn  powspec2048_2_impl  = PowSpec2048_2_scalar;
 static mpc_polar2_fn    polarspec1024_2_impl = PolarSpec1024_2_scalar;
+static mpc_cepstrum2_fn cepstrum2048_2_impl = Cepstrum2048_2_scalar;
 
 // scalar batch wrappers (reference)
 void
@@ -319,6 +322,13 @@ PolarSpec1024_2_scalar ( const float* x0, const float* x1, float* e0, float* e1,
 }
 
 void
+Cepstrum2048_2_scalar ( float* cepL, float* cepR, const int MaxLine )
+{
+    Cepstrum2048 (cepL, MaxLine);
+    Cepstrum2048 (cepR, MaxLine);
+}
+
+void
 mpc_psy_set_impl ( int impl )
 {
 #ifdef MPC_ENABLE_PSY_SIMD_KERNEL
@@ -332,6 +342,7 @@ mpc_psy_set_impl ( int impl )
         powspec1024_2_impl = mpc_powspec1024_2_simd;
         powspec2048_2_impl = mpc_powspec2048_2_simd;
         polarspec1024_2_impl = mpc_polarspec1024_2_simd;
+        cepstrum2048_2_impl = mpc_cepstrum2048_2_simd;
         return;
     }
 #endif
@@ -344,6 +355,7 @@ mpc_psy_set_impl ( int impl )
     powspec1024_2_impl = PowSpec1024_2_scalar;
     powspec2048_2_impl = PowSpec2048_2_scalar;
     polarspec1024_2_impl = PolarSpec1024_2_scalar;
+    cepstrum2048_2_impl = Cepstrum2048_2_scalar;
 }
 
 int
@@ -449,6 +461,12 @@ void
 PolarSpec1024 ( const float* x, float* erg, float* phs )
 {
     polarspec1024_impl ( x, erg, phs );
+}
+
+void
+Cepstrum2048_2 ( float* cepL, float* cepR, const int MaxLine )
+{
+    cepstrum2048_2_impl ( cepL, cepR, MaxLine );
 }
 
 // input : logarithmized energy spectrum *cep

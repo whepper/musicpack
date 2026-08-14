@@ -169,11 +169,42 @@ main ( void )
                 if ( !same_bits (p4a[l][i], p4b[l][i]) ) report_div ("PowSpec2048_2", l * 1024 + i, p4a[l][i], p4b[l][i]);
     }
 
+    // ---- cepstrum batch level (Phase 4: CVD cepstrum FFT) ------------------
+    {
+        static float cepL_a[4096], cepR_a[4096];
+        static float cepL_b[4096], cepR_b[4096];
+        int n;
+
+        // Build a log-spectrum-style input as CVD2048_prepare would, then
+        // zero the tail (cep[512..1024]). Any deterministic input proves the
+        // scalar/SIMD identity; this mirrors the CVD input shape.
+        for ( n = 0; n < 512; n++ ) {
+            cepL_a[n] = cepL_b[n] = 0.5f + 0.01f * x[n];
+            cepR_a[n] = cepR_b[n] = 0.25f + 0.02f * x[n + 1];
+        }
+        memset ( cepL_a + 512, 0, 513 * sizeof *cepL_a );
+        memset ( cepR_a + 512, 0, 513 * sizeof *cepR_a );
+        memset ( cepL_b + 512, 0, 513 * sizeof *cepL_b );
+        memset ( cepR_b + 512, 0, 513 * sizeof *cepR_b );
+
+        mpc_psy_set_impl ( MPC_PSY_SCALAR );
+        Cepstrum2048_2 ( cepL_a, cepR_a, MAX_ANALYZED_IDX );
+        mpc_psy_set_impl ( MPC_PSY_SIMD );
+        Cepstrum2048_2 ( cepL_b, cepR_b, MAX_ANALYZED_IDX );
+
+        for ( n = 0; n <= MAX_ANALYZED_IDX && !failures; n++ ) {
+            if ( !same_bits (cepL_a[n], cepL_b[n]) )
+                report_div ("Cepstrum2048_2.L", n, cepL_a[n], cepL_b[n]);
+            if ( !same_bits (cepR_a[n], cepR_b[n]) )
+                report_div ("Cepstrum2048_2.R", n, cepR_a[n], cepR_b[n]);
+        }
+    }
+
     if ( failures ) {
         printf ( "psy_ab: kernel-level divergence\n" );
         return 1;
     }
-    printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches)\n" );
+    printf ( "psy_ab: kernel level bit-identical (PowSpec256/1024/2048, PolarSpec1024+phs, batches, Cepstrum2048_2)\n" );
 
     // ---- model level (evolving state, q5/q6/q7) ---------------------------
     for ( q = 5; q <= 7 && !failures; q++ ) {

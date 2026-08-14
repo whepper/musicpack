@@ -159,6 +159,18 @@ void PowSpec1024_2   ( const float* x0, const float* x1, float* e0, float* e1 );
 void PowSpec2048_2   ( const float* x0, const float* x1, float* e0, float* e1 );
 void PolarSpec1024_2 ( const float* x0, const float* x1, float* e0, float* e1, float* p0, float* p1 );
 
+// Batched L/R cepstrum FFT (Phase 4): the two independent 2048-point
+// cepstrum FFTs consumed by CVD2048 run in one lane-parallel call. Scalar
+// default; SIMD when MPC_ENABLE_PSY_SIMD_KERNEL.
+typedef void (*mpc_cepstrum2_fn) ( float* cepL, float* cepR, const int MaxLine );
+void Cepstrum2048_2 ( float* cepL, float* cepR, const int MaxLine );
+
+// Batched Clear Voice Detection: shared spectrum preparation + one lane-
+// parallel cepstrum FFT for both channels; the cepstral analysis (and the
+// rest of CVD) stays scalar.
+void CVD2048_2 ( PsyModel* m, const float* specL, const float* specR,
+                 int* vocalL, int* vocalR, int* isvocL, int* isvocR );
+
 #ifdef MPC_ENABLE_PSY_SIMD_KERNEL
 void mpc_powspec256_simd   ( const float* x, float* erg );
 void mpc_powspec1024_simd  ( const float* x, float* erg );
@@ -170,4 +182,5 @@ void mpc_powspec1024_2_simd  ( const float* x0, const float* x1, float* e0, floa
 void mpc_powspec2048_2_simd  ( const float* x0, const float* x1, float* e0, float* e1 );
 void mpc_polarspec1024_2_simd ( const float* x0, const float* x1,
                                 float* e0, float* e1, float* p0, float* p1 );
+void mpc_cepstrum2048_2_simd ( float* cepL, float* cepR, const int MaxLine );
 #endif

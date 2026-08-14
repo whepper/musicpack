@@ -231,15 +231,13 @@ logfast ( float x )
 // ClearVoiceDetection for spectrum *spec
 // input : Spectrum *spec
 // output: Array *vocal contains information if the FFT-Line is a harmonic component
-int
-CVD2048 ( PsyModel* m, const float* spec, int* vocal )
+
+// Prepare the logarithmated, windowed spectrum cep[] (indices 0..511) and
+// zero the rest. Shared by the scalar and batched CVD paths.
+static void
+CVD2048_prepare ( const float* spec, float* cep )
 {
-    float         cep [4096];     // cep[4096] -- array, which is also used for the 2048 FFT
     const float*  win = CosWin;   // pointer to cos-roll-off
-    float         res1;
-    float         res2;
-    float         qual1;
-    float         qual2;
     int           n;
 
     // Calculating logarithmated, windowed spectrum cep[]
@@ -250,11 +248,17 @@ CVD2048 ( PsyModel* m, const float* spec, int* vocal )
         cep[n] = logfast (*spec++) * *win++;
 
     memset ( cep+512, 0, 513*sizeof(*cep) );
+}
 
-    // Calculating cepstrum of cep[] (the function Cepstrum() outputs the cepstrum in-place)
-    Cepstrum2048 ( cep, MAX_ANALYZED_IDX );
+// Search the harmonic and set the voice lines (unchanged scalar analysis).
+static int
+CVD2048_analyse ( PsyModel* m, float* cep, int* vocal )
+{
+    float         res1;
+    float         res2;
+    float         qual1;
+    float         qual2;
 
-    // search the harmonic
 	CEP_Analyse2048 ( m, &res1, &res2, &qual1, &qual2, cep );
 //#include "cvd.h"
     if ( res1 > 0.f  ||  res2 > 0.f ) {
@@ -263,4 +267,34 @@ CVD2048 ( PsyModel* m, const float* spec, int* vocal )
         return 1;
     }
     return 0;
+}
+
+int
+CVD2048 ( PsyModel* m, const float* spec, int* vocal )
+{
+    float         cep [4096];     // cep[4096] -- array, which is also used for the 2048 FFT
+
+    CVD2048_prepare ( spec, cep );
+
+    // Calculating cepstrum of cep[] (the function Cepstrum() outputs the cepstrum in-place)
+    Cepstrum2048 ( cep, MAX_ANALYZED_IDX );
+
+    return CVD2048_analyse ( m, cep, vocal );
+}
+
+// Batched L/R cepstrum (Phase 4): the two independent 2048-point cepstrum
+// FFTs run in one lane-parallel call; the cepstral analysis stays scalar.
+void
+CVD2048_2 ( PsyModel* m, const float* specL, const float* specR,
+            int* vocalL, int* vocalR, int* isvocL, int* isvocR )
+{
+    float         cepL [4096];
+    float         cepR [4096];
+
+    CVD2048_prepare ( specL, cepL );
+    CVD2048_prepare ( specR, cepR );
+    Cepstrum2048_2 ( cepL, cepR, MAX_ANALYZED_IDX );
+
+    *isvocL = CVD2048_analyse ( m, cepL, vocalL );
+    *isvocR = CVD2048_analyse ( m, cepR, vocalR );
 }

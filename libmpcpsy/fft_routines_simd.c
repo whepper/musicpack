@@ -183,3 +183,41 @@ mpc_polarspec1024_2_simd ( const float* x0, const float* x1,
         p1[i] = ATAN2F (mpc_simd_extract_lane (im, 1), mpc_simd_extract_lane (re, 1));
     }
 }
+
+// Cepstrum2048 for L and R in a 2-lane rdft4 batch. The scalar Cepstrum2048
+// (fft_routines.c) symmetrizes the log spectrum, runs a 2048-point rdft and
+// extracts the even samples scaled; here the same preprocessing and
+// postprocessing are preserved exactly and only the two independent FFTs are
+// batched. Lanes 2 and 3 are dummy (0.0f) and discarded, matching the
+// established PowSpec2048_2 lane strategy.
+void
+mpc_cepstrum2048_2_simd ( float* cepL, float* cepR, const int MaxLine )
+{
+    int i, j;
+
+    // real, even spectrum (symmetric around 1024), identical to Cepstrum2048
+    for ( i = 0, j = 1024; i < 1024; ++i, --j ) {
+        cepL[1024 + j] = cepL[i];
+        cepR[1024 + j] = cepR[i];
+    }
+
+    // pack the two independent streams into the lane-parallel layout
+    for ( i = 0; i < 2048; i++ )
+        mpc_simd_storeu (&A4buf[4 * i], mpc_simd_set4 (cepL[i], cepR[i], 0.0f, 0.0f));
+
+    rdft4 (2048, A4buf, ip, w);
+
+    // unpack back into the scalar-compatible layout
+    for ( i = 0; i < 2048; i++ ) {
+        mpc_f32x4 v = mpc_simd_loadu (&A4buf[4 * i]);
+        cepL[i] = mpc_simd_extract_lane (v, 0);
+        cepR[i] = mpc_simd_extract_lane (v, 1);
+    }
+
+    // only real part as outcome (all even indexes of cep[]), identical to
+    // Cepstrum2048
+    for ( i = 0; i < MaxLine + 1; i++ ) {
+        cepL[i] = cepL[i * 2] * (float) (0.9888 / 2048);
+        cepR[i] = cepR[i * 2] * (float) (0.9888 / 2048);
+    }
+}

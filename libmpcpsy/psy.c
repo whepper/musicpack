@@ -1073,8 +1073,8 @@ Psychoakustisches_Modell ( PsyModel* m,
 #ifdef MPC_ENABLE_PSY_PROFILE
         uint64_t cvd_profile_start = mpc_psy_profile_now ();
 #endif
-        isvoc_L = CVD2048 ( m, Xerg, m->state.Vocal_L );
-        isvoc_R = CVD2048 ( m, Xerg2, m->state.Vocal_R );
+        CVD2048_2 ( m, Xerg, Xerg2, m->state.Vocal_L, m->state.Vocal_R,
+                    &isvoc_L, &isvoc_R );
 #ifdef MPC_ENABLE_PSY_PROFILE
         mpc_psy_profile_add_sub (MPC_PSY_SUB_CVD2048, mpc_psy_profile_now () - cvd_profile_start);
 #endif
