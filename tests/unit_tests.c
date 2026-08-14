@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include <mpc/mpcdec.h>
 #include "../libmpcdec/internal.h"
@@ -111,6 +112,24 @@ static void test_size_roundtrip(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* seek-table delta signed-magnitude mapping                           */
+/* ------------------------------------------------------------------ */
+static void test_seek_delta(void)
+{
+    /* The seek delta is encoded as (2*|diff|) | sign, sign in the LSB. */
+    CHECK(mpc_enc_seek_delta(0) == 0u, "seek delta 0 -> 0");
+    CHECK(mpc_enc_seek_delta(1) == 2u, "seek delta +1 -> 2");
+    CHECK(mpc_enc_seek_delta(-1) == 3u, "seek delta -1 -> 3");
+    CHECK(mpc_enc_seek_delta(5) == 10u, "seek delta +5 -> 10");
+    CHECK(mpc_enc_seek_delta(-5) == 11u, "seek delta -5 -> 11");
+    CHECK(mpc_enc_seek_delta(12345) == 24690u, "seek delta +12345 -> 24690");
+    CHECK(mpc_enc_seek_delta(-12345) == 24691u, "seek delta -12345 -> 24691");
+    /* Boundary values: the negation-free formulation stays defined. */
+    CHECK(mpc_enc_seek_delta(INT64_MIN) == 1u, "seek delta INT64_MIN -> 1");
+    CHECK(mpc_enc_seek_delta(INT64_MAX) == 0xFFFFFFFEu, "seek delta INT64_MAX -> 0xFFFFFFFE");
+}
+
+/* ------------------------------------------------------------------ */
 /* Cnk table consistency: Cnk[k][n] = C(n, k+1) ("n choose k+1")       */
 /* ------------------------------------------------------------------ */
 static void test_cnk_tables(void)
@@ -163,6 +182,7 @@ int main(void)
     test_crc32();
     test_bits_roundtrip();
     test_size_roundtrip();
+    test_seek_delta();
     test_cnk_tables();
     test_huffman_luts();
 

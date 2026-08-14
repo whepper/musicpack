@@ -209,10 +209,12 @@ void writeSeekTable (mpc_encoder_t * e)
 	}
 
 	for( i = 2; i < e->seek_pos; i++){
-		mpc_int64_t code = (mpc_int64_t)(table[i] - 2 * table[i-1] + table[i-2]) << 1;
-		if (code < 0)
-			code = -code | 1;
-		encodeGolomb(e, (mpc_uint32_t) code, 12);
+		// Signed second difference of the seek positions, computed in the
+		// unsigned 64-bit domain and then reinterpreted so the subtraction
+		// cannot overflow a signed type; the magnitude is then encoded as
+		// (2*|diff|) with the sign in the least-significant bit.
+		mpc_int64_t diff = (mpc_int64_t)(table[i] - 2 * table[i-1] + table[i-2]);
+		encodeGolomb(e, mpc_enc_seek_delta(diff), 12);
 	}
 }
 

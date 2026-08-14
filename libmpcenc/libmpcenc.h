@@ -143,6 +143,22 @@ typedef struct {
 	 e->bitsBuff = (e->bitsBuff << bits) | input;
 	 e->bitsCount += bits;
  }
+
+ /// Signed seek-table delta -> unsigned Golomb code (signed-magnitude: the
+ /// magnitude occupies all bits except the least significant, which carries
+ /// the sign). The magnitude is formed without negating diff (so diff ==
+ /// INT64_MIN stays well-defined) and the shift operates on an unsigned value,
+ /// avoiding the undefined left shift of a negative signed integer that the
+ /// historical `code = (mpc_int64_t)diff << 1` performed.
+ static mpc_inline mpc_uint32_t
+ mpc_enc_seek_delta ( mpc_int64_t diff )
+ {
+	 mpc_uint64_t magnitude = diff < 0
+		 ? (mpc_uint64_t)(-(diff + 1)) + 1
+		 : (mpc_uint64_t)diff;
+	 return (mpc_uint32_t)((magnitude << 1) | (diff < 0 ? 1u : 0u));
+ }
+
  void writeSeekTable (mpc_encoder_t * e);
  void writeBitstream_SV8 ( mpc_encoder_t*, int);
 
