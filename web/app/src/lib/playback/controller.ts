@@ -104,6 +104,7 @@ export class PlayerController {
   private resetOffset = 0;
   private pendingEnded = false;
   private loadingSeq = 0;
+  private transportSeq = 0;
   private mutating = false;
   private pauseIntent = false;
   private backendFactory: ControllerOptions['backendFactory'];
@@ -246,10 +247,11 @@ export class PlayerController {
 
   // ---- load / playback -----------------------------------------------------
 
-  private async _load(): Promise<void> {
+  private async _load(): Promise<boolean> {
     const item = this.queue.current();
-    if (!item) return;
+    if (!item) return false;
     const seq = ++this.loadingSeq;
+    ++this.transportSeq;
     this.pendingEnded = false;
     // The queue may have been replaced (new album/edition): per-index lengths
     // from a previous queue must never leak into the new one.
@@ -258,16 +260,16 @@ export class PlayerController {
     try {
       const kind = this.chooseBackend(item.track);
       await this.ensureBackend(kind);
-      if (seq !== this.loadingSeq) return;
+      if (seq !== this.loadingSeq) return false;
       const info = await this.backend!.open(item.track.audio.url, item.track.audio.size);
-      if (seq !== this.loadingSeq) return;
+      if (seq !== this.loadingSeq) return false;
       const qi = this.queue.get().index;
       this.lengths.set(qi, info.lengthSamples);
       // prepare the next track ahead of time (gapless)
       const next = this.queue.at(qi + 1);
       if (next) {
         const ni = await this.backend!.prepareNext(next.track.audio.url, next.track.audio.size);
-        if (seq !== this.loadingSeq) return;
+        if (seq !== this.loadingSeq) return false;
         if (ni) this.lengths.set(qi + 1, ni.lengthSamples);
       }
       this.resetOffset = this.offsets()[qi] ?? 0;
@@ -281,9 +283,12 @@ export class PlayerController {
         durationSeconds: this.totalLength() / this.rate(),
       }));
       await this.backend!.seek(0);
-      this.backend!.startPumping();
+      if (seq !== this.loadingSeq) return false;
+      if (!this.pauseIntent) this.backend!.startPumping();
+      return true;
     } catch (e) {
       if (seq === this.loadingSeq) this.fail(e instanceof Error ? e.message : String(e));
+      return false;
     }
   }
 
@@ -299,6 +304,7 @@ export class PlayerController {
       // Last track decoded; let the ring drain, then end.
       this.pendingEnded = true;
       this.backend.pausePumping();
+      this.tick();
       return;
     }
     const qi = this.queue.get().index;
@@ -314,20 +320,54 @@ export class PlayerController {
     this.model.update((m) => ({
       ...m,
       current: item,
-      state: m.state === 'paused' ? 'paused' : 'playing',
+      state: this.pauseIntent || m.state === 'paused' ? 'paused' : 'buffering',
       durationSeconds: this.totalLength() / this.rate(),
     }));
-    this.backend.startPumping();
+    if (!this.pauseIntent) {
+      const backend = this.backend;
+      const transportSeq = this.transportSeq;
+      backend.startPumping();
+      try {
+        await backend.play();
+        if (
+          seq === this.loadingSeq &&
+          transportSeq === this.transportSeq &&
+          !this.pauseIntent &&
+          this.backend === backend
+        ) {
+          this.setState('playing');
+        }
+      } catch {
+        if (
+          seq === this.loadingSeq &&
+          transportSeq === this.transportSeq &&
+          this.backend === backend
+        ) {
+          this.setState('paused');
+        }
+      }
+    }
   }
 
   private onPrimed(): void {
     const m = this.model.get();
     if (m.state === 'loading' || m.state === 'buffering') {
-      this.backend
+      const seq = this.loadingSeq;
+      const transportSeq = this.transportSeq;
+      const backend = this.backend;
+      backend
         ?.play()
         .then(() => {
           const state = this.model.get().state;
-          if (state === 'loading' || state === 'buffering') this.setState('playing');
+          if (
+            seq === this.loadingSeq &&
+            transportSeq === this.transportSeq &&
+            !this.pauseIntent &&
+            this.backend === backend &&
+            (state === 'loading' || state === 'buffering')
+          ) {
+            this.setState('playing');
+          }
         })
         .catch(() => undefined);
     }
@@ -398,6 +438,7 @@ export class PlayerController {
   }
 
   async pause(): Promise<void> {
+    ++this.transportSeq;
     this.pauseIntent = true;
     this.setState('paused');
     this.backend?.pausePumping();
@@ -406,14 +447,19 @@ export class PlayerController {
 
   async resume(): Promise<void> {
     if (!this.backend) return;
+    const seq = ++this.transportSeq;
+    const backend = this.backend;
     this.pauseIntent = false;
-    this.backend.startPumping();
-    await this.backend.play();
+    backend.startPumping();
+    await backend.play();
+    if (seq !== this.transportSeq || this.pauseIntent || this.backend !== backend) return;
     this.setState('playing');
   }
 
   async seek(seconds: number): Promise<void> {
     if (!this.backend || !this.model.get().current) return;
+    ++this.transportSeq;
+    let seq = ++this.loadingSeq;
     const posSamples = Math.max(0, Math.floor(seconds * this.rate()));
     const items = this.queue.get().items;
     if (items.length === 0) return;
@@ -433,7 +479,8 @@ export class PlayerController {
       this.mutating = true;
       this.queue.moveTo(qi);
       this.mutating = false;
-      await this._load();
+      if (!(await this._load())) return;
+      seq = this.loadingSeq;
       // _load() opened the target track, seeked to 0 and started pumping;
       // now move inside it (and re-align the offset bookkeeping) so the
       // reported position matches where the audio actually decodes from.
@@ -442,7 +489,8 @@ export class PlayerController {
         this.setState(this.pauseIntent ? 'paused' : 'buffering');
         this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
         await this.backend!.seek(within);
-        this.backend!.startPumping();
+        if (seq !== this.loadingSeq) return;
+        if (!this.pauseIntent) this.backend!.startPumping();
       }
       return;
     }
@@ -451,16 +499,21 @@ export class PlayerController {
     this.setState(this.pauseIntent ? 'paused' : 'buffering');
     this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
     await this.backend.seek(within);
-    this.backend.startPumping();
+    if (seq !== this.loadingSeq) return;
+    if (!this.pauseIntent) this.backend.startPumping();
   }
 
   async stop(): Promise<void> {
-    ++this.loadingSeq;
-    this.pauseIntent = false;
-    this.backend?.pausePumping();
-    await this.backend?.pause();
+    const seq = ++this.loadingSeq;
+    ++this.transportSeq;
+    const backend = this.backend;
+    this.pauseIntent = true;
+    backend?.pausePumping();
     this.pendingEnded = false;
     this.model.update((m) => ({ ...m, state: 'idle', positionSeconds: 0 }));
+    await backend?.pause();
+    if (seq !== this.loadingSeq || this.backend !== backend) return;
+    await backend?.seek(0);
   }
 
   /** Stops playback and disposes the backend + Media Session state. Used on
@@ -468,6 +521,7 @@ export class PlayerController {
    *  The controller stays usable: the next play rebuilds its backend. */
   async teardown(): Promise<void> {
     ++this.loadingSeq;
+    ++this.transportSeq;
     this.pauseIntent = false;
     this.backend?.pausePumping();
     this.pendingEnded = false;

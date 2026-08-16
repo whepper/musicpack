@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { RingBuffer } from '../../app/src/lib/playback/ring-buffer';
+import { StreamingResampler } from '../../app/src/lib/playback/streaming-resampler';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -70,7 +71,7 @@ describe('wasm + ring (gapless feed)', () => {
     expect(fixtureB).toBeTruthy();
   });
 
-  it('feeds two decoded tracks through the ring losslessly at the boundary', async () => {
+  it('feeds two decoded tracks through the fixed-rate playback ring at the boundary', async () => {
     if (!wasm || !fixtureA || !fixtureB) return;
     const Module = await wasm();
     const A = await decode(Module, fixtureA);
@@ -78,28 +79,32 @@ describe('wasm + ring (gapless feed)', () => {
     expect(A.channels).toBe(B.channels);
     expect(A.rate).toBe(B.rate);
 
-    // The controller's gapless handoff: track A PCM followed immediately by
-    // track B PCM into the same ring. Exactly like the AudioWorklet path.
-    const ring = new RingBuffer(A.rate * 8, A.channels);
-    expect(ring.writeInterleaved(A.pcm)).toBe(A.pcm.length / A.channels);
-    expect(ring.writeInterleaved(B.pcm)).toBe(B.pcm.length / A.channels);
+    const outputRate = 48000;
+    const outputChannels = 2;
+    const outputFramesA = Math.ceil((A.length * outputRate) / A.rate);
+    const outputFramesB = Math.ceil((B.length * outputRate) / B.rate);
+    const ring = new RingBuffer(outputFramesA + outputFramesB, outputChannels);
 
-    const drained = new Float32Array(A.pcm.length + B.pcm.length);
-    expect(ring.readInterleaved(drained, drained.length / A.channels)).toBe(
-      (A.pcm.length + B.pcm.length) / A.channels,
-    );
-
-    let same = true;
-    for (let i = 0; i < drained.length; i++) {
-      const expectVal = i < A.pcm.length ? A.pcm[i] : B.pcm[i - A.pcm.length];
-      if (drained[i] !== expectVal) {
-        same = false;
-        break;
-      }
+    for (const track of [A, B]) {
+      const resampler = new StreamingResampler(
+        track.rate,
+        track.channels,
+        outputRate,
+        outputChannels,
+      );
+      expect(resampler.process(track.pcm, 0, ring)).toBe(track.length);
+      expect(resampler.finish(ring)).toBe(true);
     }
-    expect(same).toBe(true);
-    // The exact boundary sample adjacency.
-    expect(drained[A.pcm.length - 1]).toBe(A.pcm[A.pcm.length - 1]);
-    expect(drained[A.pcm.length]).toBe(B.pcm[0]);
+
+    expect(ring.availableFrames).toBe(outputFramesA + outputFramesB);
+    const drained = new Float32Array(ring.availableFrames * outputChannels);
+    expect(ring.readInterleaved(drained, outputFramesA + outputFramesB)).toBe(
+      outputFramesA + outputFramesB,
+    );
+    expect(drained[0]).toBe(A.pcm[0]);
+    expect(drained[outputFramesA * outputChannels]).toBe(B.pcm[0]);
+    expect(drained[(outputFramesA + outputFramesB - 1) * outputChannels]).toBe(
+      B.pcm[(B.length - 1) * B.channels],
+    );
   });
 });

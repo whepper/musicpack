@@ -20,7 +20,11 @@ if(TEST_PKG_CONFIG)
       ${INSTALLED_MUSICPACK_STATIC_CFLAGS_OTHER})
   target_include_directories(pkg_config_consumer PRIVATE
       ${INSTALLED_MUSICPACK_STATIC_INCLUDE_DIRS})
+  target_link_directories(pkg_config_consumer PRIVATE
+      ${INSTALLED_MUSICPACK_STATIC_LIBRARY_DIRS})
   target_link_libraries(pkg_config_consumer PRIVATE
-      ${INSTALLED_MUSICPACK_STATIC_LDFLAGS})
+      ${INSTALLED_MUSICPACK_STATIC_LIBRARIES})
+  target_link_options(pkg_config_consumer PRIVATE
+      ${INSTALLED_MUSICPACK_STATIC_LDFLAGS_OTHER})
   add_test(NAME pkg_config_consumer_run COMMAND pkg_config_consumer)
 endif()

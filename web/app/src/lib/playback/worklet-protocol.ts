@@ -11,8 +11,17 @@ export const PRIME_FRACTION = 0.2;   // enough buffered before resuming the cloc
 
 export interface WorkletConfig {
   type: 'config';
-  rate: number;
-  channels: number;
+  sourceRate: number;
+  sourceChannels: number;
+  outputRate: number;
+  outputChannels: number;
+  generation: number;
+}
+
+export interface WorkletTrack {
+  type: 'track';
+  sourceRate: number;
+  sourceChannels: number;
   generation: number;
 }
 
@@ -27,10 +36,23 @@ export interface WorkletReset {
   generation: number;
 }
 
+export interface WorkletEnd {
+  type: 'end';
+  generation: number;
+}
+
 // worklet -> main
 export interface WorkletReport {
-  type: 'rendered' | 'primed' | 'need' | 'full' | 'underrun' | 'accepted' | 'error';
-  frames: number; // cumulative rendered frames (for 'rendered')
+  type:
+    | 'rendered'
+    | 'primed'
+    | 'need'
+    | 'full'
+    | 'underrun'
+    | 'accepted'
+    | 'trackEnded'
+    | 'error';
+  frames: number; // cumulative AudioContext-rate frames since reset
   generation: number;
   available?: number;
   message?: string;

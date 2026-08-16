@@ -30,7 +30,7 @@ MusicPack is a mixed-license repository.
 For materially modified LGPL Musepack files:
 
 - preserve all original copyright notices;
-- retain `SPDX-License-Identifier: LGPL-2.1-or-later`;
+- retain the SPDX license identifier `LGPL-2.1-or-later`;
 - retain/add `Modified by the MusicPack Development Team, 2026.`;
 - do not replace historical attribution with MusicPack attribution.
 

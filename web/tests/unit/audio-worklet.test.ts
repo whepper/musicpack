@@ -42,13 +42,22 @@ beforeEach(() => {
 });
 
 function createProcessor(
-  rate = 10,
-  channels = 1,
+  sourceRate = 10,
+  sourceChannels = 1,
   generation = 1,
+  outputRate = sourceRate,
+  outputChannels = sourceChannels,
 ): { processor: Processor; port: FakePort } {
   const processor = new ProcessorCtor();
   const port = processor.port as unknown as FakePort;
-  port.send({ type: 'config', rate, channels, generation });
+  port.send({
+    type: 'config',
+    sourceRate,
+    sourceChannels,
+    outputRate,
+    outputChannels,
+    generation,
+  });
   return { processor, port };
 }
 
@@ -102,6 +111,17 @@ describe('MusicPackPcmProcessor backpressure', () => {
     ]);
   });
 
+  it('primes a short stream when EOS arrives below the normal watermark', () => {
+    const { port } = createProcessor(); // 80-frame ring, 16-frame prime threshold
+    const pcm = samples(5, 1);
+    port.send({ type: 'samples', buffer: pcm.buffer, generation: 1 });
+    expect(port.messages.some((message) => message.type === 'primed')).toBe(false);
+
+    port.send({ type: 'end', generation: 1 });
+    expect(port.messages.filter((message) => message.type === 'primed')).toHaveLength(1);
+    expect(port.messages.filter((message) => message.type === 'trackEnded')).toHaveLength(1);
+  });
+
   it('ignores stale PCM and stale resets from an earlier generation', () => {
     const { processor, port } = createProcessor();
     const current = samples(4, 10);
@@ -114,5 +134,49 @@ describe('MusicPackPcmProcessor backpressure', () => {
     expect(port.messages.filter((message) => message.type === 'accepted')).toEqual([
       expect.objectContaining({ type: 'accepted', generation: 2 }),
     ]);
+  });
+
+  it('renders 44.1 kHz source at the duration and pitch implied by a 48 kHz context', () => {
+    const { processor, port } = createProcessor(44100, 1, 1, 48000, 1);
+    const pcm = samples(441);
+    port.send({ type: 'samples', buffer: pcm.buffer, generation: 1 });
+    port.send({ type: 'end', generation: 1 });
+
+    const output = render(processor, 480);
+    expect(output).toHaveLength(480);
+    expect(output[160]).toBeCloseTo(147, 5);
+    expect(output[320]).toBeCloseTo(294, 5);
+    expect(output[479]).toBeCloseTo(440, 5);
+    expect(port.messages).toContainEqual(expect.objectContaining({ type: 'trackEnded' }));
+  });
+
+  it('renders 48 kHz source at the duration implied by a 44.1 kHz context', () => {
+    const { processor, port } = createProcessor(48000, 1, 1, 44100, 1);
+    const pcm = samples(480);
+    port.send({ type: 'samples', buffer: pcm.buffer, generation: 1 });
+    port.send({ type: 'end', generation: 1 });
+
+    const output = render(processor, 441);
+    expect(output[147]).toBeCloseTo(160, 5);
+    expect(output[294]).toBeCloseTo(320, 5);
+    expect(output[440]).toBeCloseTo((440 * 48000) / 44100, 5);
+    expect(port.messages).toContainEqual(expect.objectContaining({ type: 'trackEnded' }));
+  });
+
+  it('keeps normalized output queued across tracks with different rates and channels', () => {
+    const { processor, port } = createProcessor(10, 1, 1, 20, 2);
+    const mono = Float32Array.of(1, 2, 3);
+    port.send({ type: 'samples', buffer: mono.buffer, generation: 1 });
+    port.send({ type: 'end', generation: 1 });
+    port.send({ type: 'track', sourceRate: 20, sourceChannels: 2, generation: 1 });
+    const stereo = Float32Array.of(10, 20, 11, 21);
+    port.send({ type: 'samples', buffer: stereo.buffer, generation: 1 });
+    port.send({ type: 'end', generation: 1 });
+
+    const left = new Float32Array(8);
+    const right = new Float32Array(8);
+    processor.process([], [[left, right]]);
+    expect(Array.from(left)).toEqual([1, 1.5, 2, 2.5, 3, 3, 10, 11]);
+    expect(Array.from(right)).toEqual([1, 1.5, 2, 2.5, 3, 3, 20, 21]);
   });
 });

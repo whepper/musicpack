@@ -12,7 +12,10 @@
 // Bundled as a standalone entry by Vite (imported via `?url`); the ring
 // buffer module is inlined at build time.
 import { RingBuffer } from './ring-buffer';
+import { StreamingResampler } from './streaming-resampler';
 import { HIGH_WATER, LOW_WATER, PRIME_FRACTION, RING_SECONDS } from './worklet-protocol';
+
+const CALLBACK_REFILL_FRAMES = 512;
 
 interface PendingPcm {
   data: Float32Array;
@@ -21,14 +24,16 @@ interface PendingPcm {
 
 export class MusicPackPcmProcessor extends AudioWorkletProcessor {
   private ring: RingBuffer | null = null;
-  private rate = 44100;
-  private channels = 2;
+  private outputRate = 44100;
+  private outputChannels = 2;
+  private resampler: StreamingResampler | null = null;
   private lastRenderedReport = -1;
   private primed = false;
   private lastFull = false;
   private lastLow = true;
   private underrunning = false;
   private pending: PendingPcm | null = null;
+  private ending = false;
   private generation = 0;
 
   constructor() {
@@ -39,38 +44,44 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
         case 'config': {
           if (msg.generation < this.generation) break;
           this.generation = msg.generation;
-          this.rate = msg.rate;
-          this.channels = msg.channels;
-          this.ring = new RingBuffer(Math.round(this.rate * RING_SECONDS), this.channels);
-          this.primed = false;
-          this.lastFull = false;
-          this.lastLow = true;
-          this.underrunning = false;
-          this.pending = null;
-          this.lastRenderedReport = -1;
+          this.outputRate = msg.outputRate;
+          this.outputChannels = msg.outputChannels;
+          this.ring = new RingBuffer(
+            Math.round(this.outputRate * RING_SECONDS),
+            this.outputChannels,
+          );
+          this.resetState(msg.sourceRate, msg.sourceChannels);
+          break;
+        }
+        case 'track': {
+          if (!this.ring || msg.generation !== this.generation) break;
+          if (this.pending || this.ending) {
+            this.reportError('track format changed before the previous track was accepted');
+            break;
+          }
+          this.resampler = new StreamingResampler(
+            msg.sourceRate,
+            msg.sourceChannels,
+            this.outputRate,
+            this.outputChannels,
+          );
           break;
         }
         case 'reset': {
           if (msg.generation < this.generation) break;
           this.generation = msg.generation;
           this.ring?.reset();
-          this.primed = false;
-          this.lastFull = false;
-          this.lastLow = true;
-          this.underrunning = false;
-          this.pending = null;
-          this.lastRenderedReport = -1;
+          if (this.resampler) {
+            this.resetState(this.resampler.sourceRate, this.resampler.sourceChannels);
+          } else {
+            this.clearFlowState();
+          }
           break;
         }
         case 'samples': {
-          if (!this.ring || msg.generation !== this.generation) break;
+          if (!this.ring || !this.resampler || msg.generation !== this.generation) break;
           if (this.pending) {
-            this.port.postMessage({
-              type: 'error',
-              frames: this.ring.renderedFrames,
-              generation: this.generation,
-              message: 'received PCM without an available producer credit',
-            });
+            this.reportError('received PCM without an available producer credit');
             break;
           }
           const data = new Float32Array(msg.buffer);
@@ -80,6 +91,17 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
           if (accepted) this.reportAccepted();
           break;
         }
+        case 'end': {
+          if (!this.ring || !this.resampler || msg.generation !== this.generation) break;
+          if (this.pending) {
+            this.reportError('received track end before the PCM credit was accepted');
+            break;
+          }
+          this.ending = true;
+          this.flushEnd();
+          this.reportLevel();
+          break;
+        }
       }
     };
   }
@@ -87,21 +109,80 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
   private flushPending(): boolean {
     const ring = this.ring;
     const chunk = this.pending;
-    if (!ring || !chunk) return false;
-    while (ring.freeFrames > 0) {
-      const totalFrames = Math.floor(chunk.data.length / this.channels);
-      if (chunk.frameOffset >= totalFrames) {
-        this.pending = null;
-        return true;
-      }
-      const samples = chunk.data.subarray(chunk.frameOffset * this.channels);
-      const written = ring.writeInterleaved(samples);
-      chunk.frameOffset += written;
-      if (written === 0) break;
-    }
-    const complete = chunk.frameOffset >= Math.floor(chunk.data.length / this.channels);
+    const resampler = this.resampler;
+    if (!ring || !chunk || !resampler) return false;
+    chunk.frameOffset = resampler.process(chunk.data, chunk.frameOffset, ring);
+    const complete =
+      chunk.frameOffset >= Math.floor(chunk.data.length / resampler.sourceChannels);
     if (complete) this.pending = null;
     return complete;
+  }
+
+  private flushPendingBounded(): boolean {
+    const ring = this.ring;
+    const chunk = this.pending;
+    const resampler = this.resampler;
+    if (!ring || !chunk || !resampler) return false;
+    chunk.frameOffset = resampler.process(
+      chunk.data,
+      chunk.frameOffset,
+      ring,
+      CALLBACK_REFILL_FRAMES,
+      CALLBACK_REFILL_FRAMES,
+    );
+    const complete =
+      chunk.frameOffset >= Math.floor(chunk.data.length / resampler.sourceChannels);
+    if (complete) this.pending = null;
+    return complete;
+  }
+
+  private flushEnd(maxOutputFrames = Number.POSITIVE_INFINITY): void {
+    if (!this.ending || !this.ring || !this.resampler) return;
+    if (!this.resampler.finish(this.ring, maxOutputFrames)) return;
+    this.ending = false;
+    if (this.ring.availableFrames > 0 && !this.primed) {
+      this.primed = true;
+      this.port.postMessage({
+        type: 'primed',
+        frames: this.ring.renderedFrames,
+        generation: this.generation,
+      });
+    }
+    this.port.postMessage({
+      type: 'trackEnded',
+      frames: this.ring.renderedFrames,
+      generation: this.generation,
+      available: this.ring.availableFrames,
+    });
+  }
+
+  private resetState(sourceRate: number, sourceChannels: number): void {
+    this.resampler = new StreamingResampler(
+      sourceRate,
+      sourceChannels,
+      this.outputRate,
+      this.outputChannels,
+    );
+    this.clearFlowState();
+  }
+
+  private clearFlowState(): void {
+    this.primed = false;
+    this.lastFull = false;
+    this.lastLow = true;
+    this.underrunning = false;
+    this.pending = null;
+    this.ending = false;
+    this.lastRenderedReport = -1;
+  }
+
+  private reportError(message: string): void {
+    this.port.postMessage({
+      type: 'error',
+      frames: this.ring?.renderedFrames ?? 0,
+      generation: this.generation,
+      message,
+    });
   }
 
   private reportAccepted(): void {
@@ -191,7 +272,8 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
       ring.readPlanar(output, frames);
       this.underrunning = false;
     }
-    const accepted = this.flushPending();
+    const accepted = this.flushPendingBounded();
+    this.flushEnd(CALLBACK_REFILL_FRAMES);
     this.reportLevel();
     if (accepted) this.reportAccepted();
     this.reportRendered();

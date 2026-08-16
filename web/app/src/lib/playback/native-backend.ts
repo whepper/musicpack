@@ -25,6 +25,8 @@ export class NativeBackend {
   rate = 44100;
   private channels = 2;
   private token: string | null = null;
+  private playRequest = 0;
+  private shouldPlay = false;
 
   // events wired by the controller
   onEos: (() => void) | null = null;
@@ -66,6 +68,8 @@ export class NativeBackend {
 
   async open(url: string, size: number): Promise<EngineStreamInfo> {
     void size;
+    this.playRequest++;
+    this.shouldPlay = false;
     const slot = this.makeSlot();
     this.disposeCurrent();
     this.current = slot;
@@ -125,20 +129,17 @@ export class NativeBackend {
   async advance(): Promise<EngineStreamInfo | null> {
     if (!this.standby) return null;
     const promoted = this.standby;
+    this.playRequest++;
+    this.shouldPlay = false;
     this.standby = null;
     this.disposeCurrent();
     this.current = promoted;
-    try {
-      await promoted.el.play();
-    } catch {
-      /* autoplay policy — the controller retries on the next gesture */
-    }
-    this.onPrimed?.();
     return this.infoOf(promoted);
   }
 
   startPumping(): void {
-    if (this.current) void this.current.el.play();
+    // Browser-managed decoding needs no producer pump. The controller owns
+    // the single audible play() request through the shared Backend contract.
   }
 
   pausePumping(): void {
@@ -146,21 +147,27 @@ export class NativeBackend {
   }
 
   async play(): Promise<void> {
+    const slot = this.current;
+    if (!slot) return;
+    this.shouldPlay = true;
+    const request = ++this.playRequest;
     if (this.ctx && this.ctx.state !== 'running') await this.ctx.resume();
-    if (this.current) await this.current.el.play();
-    this.onPrimed?.();
+    if (request !== this.playRequest || !this.shouldPlay || this.current !== slot) return;
+    await slot.el.play();
+    if (!this.shouldPlay || this.current !== slot) slot.el.pause();
   }
 
   async pause(): Promise<void> {
+    this.shouldPlay = false;
+    this.playRequest++;
     if (this.current) this.current.el.pause();
   }
 
   async seek(sample: number): Promise<void> {
     if (!this.current) return;
+    this.shouldPlay = false;
+    this.playRequest++;
     this.current.el.currentTime = sample / this.rate;
-    if (this.current.el.paused) {
-      await this.current.el.play().catch(() => undefined);
-    }
     this.onPrimed?.();
   }
 
@@ -205,6 +212,8 @@ export class NativeBackend {
   }
 
   async close(): Promise<void> {
+    this.shouldPlay = false;
+    this.playRequest++;
     this.disposeCurrent();
     this.disposeStandby();
     if (this.ctx) {

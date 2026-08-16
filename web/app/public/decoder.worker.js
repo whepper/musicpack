@@ -168,11 +168,13 @@ self.onmessage = async (ev) => {
         break;
       case 'seek':
         if (handle >= 0) {
-          generation++;
-          reportGeneration = msg.generation;
+          const seekGeneration = ++generation;
+          const outputGeneration = msg.generation;
+          reportGeneration = outputGeneration;
           await Module._mpc_wasm_seek_sample(handle, msg.sample);
+          if (seekGeneration !== generation) break;
           eos = false;
-          post({ type: 'seeked', sample: msg.sample, generation: reportGeneration });
+          post({ type: 'seeked', sample: msg.sample, generation: outputGeneration });
           postStats();
         }
         break;

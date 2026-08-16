@@ -31,6 +31,7 @@ export interface EngineEvents {
 interface WorkerHandle {
   worker: Worker;
   info: EngineStreamInfo | null;
+  sourceInfo: EngineStreamInfo | null;
   eos: boolean;
   nextUrl: string | null;
   cancelOpen: (() => void) | null;
@@ -59,6 +60,8 @@ export class MusepackEngine {
   private seekResolve: (() => void) | null = null;
   private transitioning = false;
   private standbyRequest = 0;
+  private trackEndResolve: (() => void) | null = null;
+  private contextShouldRun = false;
 
   constructor(events: EngineEvents) {
     this.events = events;
@@ -71,7 +74,12 @@ export class MusepackEngine {
     this.gain = this.ctx.createGain();
     this.gain.connect(this.ctx.destination);
     await this.ctx.audioWorklet.addModule(WORKLET_URL);
-    this.node = new AudioWorkletNode(this.ctx, 'musicpack-pcm');
+    this.node = new AudioWorkletNode(this.ctx, 'musicpack-pcm', {
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      channelCount: 2,
+      channelCountMode: 'explicit',
+    });
     this.node.connect(this.gain);
     this.node.port.onmessage = (ev: MessageEvent<WorkletReport>) => {
       this.onWorkletMessage(ev.data);
@@ -85,7 +93,14 @@ export class MusepackEngine {
 
   private makeWorker(): WorkerHandle {
     const worker = new Worker(DECODER_WORKER_URL, { type: 'classic' });
-    const h: WorkerHandle = { worker, info: null, eos: false, nextUrl: null, cancelOpen: null };
+    const h: WorkerHandle = {
+      worker,
+      info: null,
+      sourceInfo: null,
+      eos: false,
+      nextUrl: null,
+      cancelOpen: null,
+    };
     worker.onmessage = (ev: MessageEvent) => {
       this.onWorkerMessage(h, ev.data);
     };
@@ -109,12 +124,13 @@ export class MusepackEngine {
     }
     switch (msg.type) {
       case 'info':
-        h.info = {
+        h.sourceInfo = {
           rate: msg.rate as number,
           channels: msg.channels as number,
           version: msg.version as number,
           lengthSamples: msg.lengthSamples as number,
         };
+        h.info = this.normalizedInfo(h.sourceInfo);
         break;
       case 'pcm':
         if (h === this.current) {
@@ -137,8 +153,10 @@ export class MusepackEngine {
         break;
       case 'eos':
         this.pullInFlight = false;
-        h.eos = true;
-        if (h === this.current) this.events.onEos();
+        if (!h.eos) {
+          h.eos = true;
+          if (h === this.current) this.events.onEos();
+        }
         break;
       case 'error':
         this.pullInFlight = false;
@@ -174,6 +192,12 @@ export class MusepackEngine {
         this.pullInFlight = false;
         this.resumePumpingIfRequested();
         break;
+      case 'trackEnded': {
+        const resolve = this.trackEndResolve;
+        this.trackEndResolve = null;
+        resolve?.();
+        break;
+      }
       case 'error':
         this.pullInFlight = false;
         this.events.onError(msg.message ?? 'Audio worklet protocol error.');
@@ -190,8 +214,12 @@ export class MusepackEngine {
     this.pullInFlight = false;
     this.seekResolve?.();
     this.seekResolve = null;
+    this.trackEndResolve?.();
+    this.trackEndResolve = null;
     this.node?.port.postMessage({ type: 'reset', generation });
+    ++this.standbyRequest;
     await this.closeCurrent();
+    await this.closeStandby();
     if (generation !== this.generation) throw new Error('Playback open was superseded.');
     const h = this.makeWorker();
     h.nextUrl = url;
@@ -206,7 +234,7 @@ export class MusepackEngine {
         await this.closeWorker(h);
         throw new Error('Playback open was superseded.');
       }
-      this.configureWorklet(info, generation);
+      this.configureWorklet(h.sourceInfo ?? info, generation);
       this.transitioning = false;
       return info;
     } catch (error) {
@@ -266,12 +294,18 @@ export class MusepackEngine {
       h.worker.onmessage = (ev: MessageEvent) => {
         const msg = ev.data;
         if (msg.type === 'info') {
-          h.info = {
+          h.sourceInfo = {
             rate: msg.rate,
             channels: msg.channels,
             version: msg.version,
             lengthSamples: msg.lengthSamples,
           };
+          if (h.sourceInfo.channels < 1 || h.sourceInfo.channels > 2) {
+            finish();
+            reject(new Error(`Unsupported Musepack channel count: ${h.sourceInfo.channels}`));
+            return;
+          }
+          h.info = this.normalizedInfo(h.sourceInfo);
           finish();
           resolve(h.info);
         } else if (msg.type === 'error') {
@@ -284,11 +318,13 @@ export class MusepackEngine {
     return infoPromise;
   }
 
-  private configureWorklet(info: EngineStreamInfo, generation: number): void {
+  private configureWorklet(sourceInfo: EngineStreamInfo, generation: number): void {
     this.node?.port.postMessage({
       type: 'config',
-      rate: info.rate,
-      channels: info.channels,
+      sourceRate: sourceInfo.rate,
+      sourceChannels: sourceInfo.channels,
+      outputRate: this.outputRate,
+      outputChannels: 2,
       generation,
     });
     this.node?.port.postMessage({ type: 'reset', generation });
@@ -297,10 +333,15 @@ export class MusepackEngine {
 
   /** Promotes the standby worker to current (gapless handoff at EOS). */
   async advance(): Promise<EngineStreamInfo | null> {
-    if (!this.standby || !this.standby.info) return null;
-    ++this.standbyRequest;
     const generation = this.generation;
-    const promoted = this.standby;
+    await this.finishTrack(generation);
+    if (generation !== this.generation) return null;
+    const standby = this.standby;
+    if (!standby || !standby.info) return null;
+    const promotedSourceInfo = standby.sourceInfo;
+    if (!promotedSourceInfo) return null;
+    ++this.standbyRequest;
+    const promoted = standby;
     this.standby = null;
     const previous = this.current;
     if (previous) this.current = null;
@@ -310,7 +351,22 @@ export class MusepackEngine {
       return null;
     }
     this.current = promoted;
+    this.node?.port.postMessage({
+      type: 'track',
+      sourceRate: promotedSourceInfo.rate,
+      sourceChannels: promotedSourceInfo.channels,
+      generation,
+    });
     return promoted.info;
+  }
+
+  private finishTrack(generation: number): Promise<void> {
+    if (!this.node) return Promise.resolve();
+    this.trackEndResolve?.();
+    return new Promise((resolve) => {
+      this.trackEndResolve = resolve;
+      this.node?.port.postMessage({ type: 'end', generation });
+    });
   }
 
   startPumping(): void {
@@ -338,11 +394,16 @@ export class MusepackEngine {
 
   /** Starts the audio clock (call after a user gesture or after priming). */
   async play(): Promise<void> {
-    if (this.ctx && this.ctx.state !== 'running') await this.ctx.resume();
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this.contextShouldRun = true;
+    if (ctx.state !== 'running') await ctx.resume();
+    if (!this.contextShouldRun && ctx.state === 'running') await ctx.suspend();
   }
 
   async pause(): Promise<void> {
-    if (this.ctx && this.ctx.state === 'running') await this.ctx.suspend();
+    this.contextShouldRun = false;
+    if (this.ctx && this.ctx.state !== 'closed') await this.ctx.suspend();
   }
 
   async seek(sample: number): Promise<void> {
@@ -353,12 +414,16 @@ export class MusepackEngine {
     this.pullInFlight = false;
     this.seekResolve?.();
     this.seekResolve = null;
+    this.trackEndResolve?.();
+    this.trackEndResolve = null;
+    this.current.eos = false;
     this.node?.port.postMessage({ type: 'reset', generation });
     this.resetBase = sample;
     this.streamSamples = sample;
-    await this.postSeek(sample, generation);
+    const sourceSample = this.outputToSourceSample(sample, this.current.sourceInfo);
+    await this.postSeek(sourceSample, generation);
     if (generation !== this.generation) return;
-    this.startPumping();
+    if (this.pumpingRequested) this.startPumping();
   }
 
   private postSeek(sample: number, generation: number): Promise<void> {
@@ -378,7 +443,7 @@ export class MusepackEngine {
     return this.streamSamples;
   }
 
-  /** Raw frames rendered since the last ring reset (seek/open). */
+  /** AudioContext-rate timeline frames rendered since the last reset. */
   getRenderedSamples(): number {
     return this.streamSamples - this.resetBase;
   }
@@ -397,6 +462,27 @@ export class MusepackEngine {
 
   get rate(): number {
     return this.current?.info?.rate ?? 44100;
+  }
+
+  private get outputRate(): number {
+    return this.ctx?.sampleRate ?? 44100;
+  }
+
+  private normalizedInfo(sourceInfo: EngineStreamInfo): EngineStreamInfo {
+    return {
+      rate: this.outputRate,
+      channels: 2,
+      version: sourceInfo.version,
+      lengthSamples: Math.ceil((sourceInfo.lengthSamples * this.outputRate) / sourceInfo.rate),
+    };
+  }
+
+  private outputToSourceSample(sample: number, sourceInfo: EngineStreamInfo | null): number {
+    if (!sourceInfo) return sample;
+    return Math.min(
+      sourceInfo.lengthSamples,
+      Math.max(0, Math.floor((sample * sourceInfo.rate) / this.outputRate)),
+    );
   }
 
   /** Terminates a decoder worker, but only after its nested demand-reader/
@@ -445,12 +531,15 @@ export class MusepackEngine {
   }
 
   async close(): Promise<void> {
+    this.contextShouldRun = false;
     this.pumpingRequested = false;
     this.backpressured = false;
     this.pullInFlight = false;
     this.transitioning = false;
     this.seekResolve?.();
     this.seekResolve = null;
+    this.trackEndResolve?.();
+    this.trackEndResolve = null;
     ++this.standbyRequest;
     await this.closeCurrent();
     await this.closeStandby();

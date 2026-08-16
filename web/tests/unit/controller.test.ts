@@ -53,8 +53,10 @@ class FakeBackend implements Backend {
   closed = false;
   playGate: Promise<void> | null = null;
   seekGate: Promise<void> | null = null;
+  pauseGate: Promise<void> | null = null;
   advanceGate: Promise<{ rate: number; channels: number; version: number; lengthSamples: number } | null> | null = null;
   plays = 0;
+  seeks: number[] = [];
 
   constructor(_kind: 'musepack' | 'native', events: BackendEvents) {
     this.events = events;
@@ -89,8 +91,11 @@ class FakeBackend implements Backend {
     this.plays++;
     await this.playGate;
   }
-  async pause() {}
+  async pause() {
+    await this.pauseGate;
+  }
   async seek(sample: number) {
+    this.seeks.push(sample);
     this.resetBase = sample;
     this.rendered = 0; // ring reset: rendered counter restarts
     await this.seekGate;
@@ -238,6 +243,30 @@ describe('PlayerController', () => {
     expect(player.model.get().state).toBe('ended');
   });
 
+  it('ends immediately when final EOS arrives after the native-style position reached duration', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.setRendered(LENGTH);
+    backend.emitEos();
+    await flush();
+    expect(player.model.get().state).toBe('ended');
+  });
+
+  it('does not report playing when promoted-track play is rejected', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.emitPrimed();
+    await flush();
+    backend.playGate = Promise.reject(new Error('play rejected'));
+
+    backend.emitEos();
+    await flush(6);
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(player.model.get().state).toBe('paused');
+  });
+
   it('pause stops pumping and keeps the position', async () => {
     const { player, getBackend } = make();
     await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
@@ -308,6 +337,28 @@ describe('PlayerController', () => {
     expect(player.model.get().current?.track.title).toBe('T2');
   });
 
+  it('ignores a stale EOS continuation after a seek resets the stream', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    let finishAdvance = (_value: EngineStreamInfo | null) => {};
+    backend.advanceGate = new Promise((resolve) => {
+      finishAdvance = resolve;
+    });
+
+    backend.emitEos();
+    await flush();
+    await player.seek(2);
+    finishAdvance(null);
+    await flush();
+
+    expect(queue.get().index).toBe(0);
+    expect(player.model.get().current?.track.title).toBe('T1');
+    backend.setRendered(2 * LENGTH);
+    backend.emitPosition();
+    expect(player.model.get().state).not.toBe('ended');
+  });
+
   it('keeps the controller and audio context paused while a seek reprimes', async () => {
     const { player, getBackend } = make();
     await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
@@ -334,6 +385,71 @@ describe('PlayerController', () => {
     await flush();
     expect(player.model.get().state).toBe('paused');
     expect(backend.plays).toBe(playsBeforeSeek);
+  });
+
+  it('does not let a superseded seek resume pumping after stop', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.emitPrimed();
+    await flush();
+    let finishSeek = () => {};
+    backend.seekGate = new Promise<void>((resolve) => {
+      finishSeek = resolve;
+    });
+
+    const seeking = player.seek(5);
+    await flush();
+    const stopping = player.stop();
+    await flush();
+    expect(player.model.get().state).toBe('idle');
+    finishSeek();
+    await Promise.all([seeking, stopping]);
+    expect(player.model.get().state).toBe('idle');
+    expect(backend.paused).toBe(true);
+  });
+
+  it('does not let a stale resume completion override a later pause', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.emitPrimed();
+    await flush();
+    await player.pause();
+    let finishPlay = () => {};
+    backend.playGate = new Promise<void>((resolve) => {
+      finishPlay = resolve;
+    });
+
+    const resuming = player.resume();
+    await flush();
+    const pausing = player.pause();
+    finishPlay();
+    await Promise.all([resuming, pausing]);
+    expect(player.model.get().state).toBe('paused');
+    expect(backend.paused).toBe(true);
+  });
+
+  it('does not let a stale stop seek a newly loaded track', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'First', 'Artist');
+    const backend = getBackend();
+    let finishPause = () => {};
+    backend.pauseGate = new Promise<void>((resolve) => {
+      finishPause = resolve;
+    });
+
+    const stopping = player.stop();
+    await flush();
+    const loading = player.playAlbum(release(10, ['T2']), 'Second', 'Artist');
+    await loading;
+    const seeksBeforeStopCompletes = backend.seeks.length;
+    finishPause();
+    await stopping;
+
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(player.model.get().state).toBe('buffering');
+    expect(backend.seeks).toHaveLength(seeksBeforeStopCompletes);
   });
 
   it('reports friendly errors on backend failure', async () => {

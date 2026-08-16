@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { MusepackEngine } from '../../app/src/lib/playback/musepack-engine';
+import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
 import type { WorkletReport } from '../../app/src/lib/playback/worklet-protocol';
 
 interface EngineHarness {
@@ -10,11 +11,13 @@ interface EngineHarness {
   transitioning: boolean;
   current: {
     worker: { postMessage: ReturnType<typeof vi.fn> };
-    info: null;
-    eos: false;
+    info: EngineStreamInfo | null;
+    sourceInfo: EngineStreamInfo | null;
+    eos: boolean;
     nextUrl: null;
     cancelOpen?: (() => void) | null;
   };
+  standby: EngineHarness['current'] | null;
   ctx: AudioContext | null;
   node: { port: { postMessage: ReturnType<typeof vi.fn> } } | null;
   makeWorker(): EngineHarness['current'];
@@ -32,6 +35,16 @@ class AsyncWorker {
     this.messages.push(message);
     if (message.type === 'close') {
       queueMicrotask(() => this.onmessage?.({ data: { type: 'closed' } } as MessageEvent));
+    } else if (message.type === 'seek') {
+      queueMicrotask(() =>
+        this.onmessage?.({
+          data: {
+            type: 'seeked',
+            sample: message.sample,
+            generation: message.generation,
+          },
+        } as MessageEvent),
+      );
     }
   }
 
@@ -39,9 +52,9 @@ class AsyncWorker {
     this.terminated = true;
   }
 
-  emitInfo(generation: number): void {
+  emitInfo(generation: number, rate = 44100, channels = 2, lengthSamples = rate * 10): void {
     this.onmessage?.({
-      data: { type: 'info', rate: 44100, channels: 2, version: 8, lengthSamples: 441000, generation },
+      data: { type: 'info', rate, channels, version: 8, lengthSamples, generation },
     } as MessageEvent);
   }
 }
@@ -65,6 +78,7 @@ describe('MusepackEngine backpressure reports', () => {
       return {
         worker: worker as unknown as { postMessage: ReturnType<typeof vi.fn> },
         info: null,
+        sourceInfo: null,
         eos: false,
         nextUrl: null,
         cancelOpen: null,
@@ -103,6 +117,7 @@ describe('MusepackEngine backpressure reports', () => {
     harness.current = {
       worker: { postMessage },
       info: null,
+      sourceInfo: null,
       eos: false,
       nextUrl: null,
     };
@@ -137,6 +152,7 @@ describe('MusepackEngine backpressure reports', () => {
     harness.current = {
       worker: { postMessage: workerPost },
       info: null,
+      sourceInfo: null,
       eos: false,
       nextUrl: null,
     };
@@ -175,6 +191,7 @@ describe('MusepackEngine backpressure reports', () => {
     harness.current = {
       worker: { postMessage },
       info: null,
+      sourceInfo: null,
       eos: false,
       nextUrl: null,
     };
@@ -183,5 +200,185 @@ describe('MusepackEngine backpressure reports', () => {
     harness.onWorkletMessage({ type: 'underrun', frames: 0, generation: 3, available: 0 });
     harness.onWorkletMessage({ type: 'need', frames: 0, generation: 3, available: 0 });
     expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('normalizes stream timing to the AudioContext rate and converts seeks to source frames', async () => {
+    const onPosition = vi.fn();
+    const engine = new MusepackEngine({
+      onPrimed: vi.fn(),
+      onBuffering: vi.fn(),
+      onEos: vi.fn(),
+      onError: vi.fn(),
+      onPosition,
+    });
+    const harness = engine as unknown as EngineHarness;
+    const workers: AsyncWorker[] = [];
+    harness.ctx = { sampleRate: 48000 } as AudioContext;
+    harness.node = { port: { postMessage: vi.fn() } };
+    harness.makeWorker = () => {
+      const worker = new AsyncWorker();
+      workers.push(worker);
+      return {
+        worker: worker as unknown as { postMessage: ReturnType<typeof vi.fn> },
+        info: null,
+        sourceInfo: null,
+        eos: false,
+        nextUrl: null,
+        cancelOpen: null,
+      };
+    };
+
+    const opening = engine.open('/441.mpc', 100);
+    await vi.waitFor(() => expect(workers).toHaveLength(1));
+    workers[0]?.emitInfo(1, 44100, 2, 441000);
+    await expect(opening).resolves.toMatchObject({ rate: 48000, channels: 2, lengthSamples: 480000 });
+    if (workers[0]) {
+      workers[0].onmessage = (event) => harness.onWorkerMessage(harness.current, event.data);
+    }
+
+    const seeking = engine.seek(48000);
+    const seekMessage = workers[0]?.messages.find((message) => message.type === 'seek');
+    expect(seekMessage).toMatchObject({ sample: 44100, generation: 2 });
+    await seeking;
+
+    harness.onWorkletMessage({ type: 'rendered', frames: 4800, generation: 2 });
+    expect(engine.getPositionSamples()).toBe(52800);
+    expect(engine.getRenderedSamples()).toBe(4800);
+    expect(onPosition).toHaveBeenLastCalledWith(52800);
+  });
+
+  it('does not resume decoder pumping after a paused seek', async () => {
+    const engine = new MusepackEngine({
+      onPrimed: vi.fn(),
+      onBuffering: vi.fn(),
+      onEos: vi.fn(),
+      onError: vi.fn(),
+      onPosition: vi.fn(),
+    });
+    const harness = engine as unknown as EngineHarness;
+    const postMessage = vi.fn();
+    harness.generation = 4;
+    harness.current = {
+      worker: { postMessage },
+      info: null,
+      sourceInfo: { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 },
+      eos: false,
+      nextUrl: null,
+    };
+    harness.node = { port: { postMessage: vi.fn() } };
+    engine.pausePumping();
+    postMessage.mockClear();
+
+    const seeking = engine.seek(48000);
+    harness.onWorkerMessage(harness.current, { type: 'seeked', sample: 44100, generation: 5 });
+    await seeking;
+    expect(postMessage.mock.calls.map(([message]) => message.type)).toEqual(['seek']);
+  });
+
+  it('does not restore pumping when pause arrives during an in-flight seek', async () => {
+    const engine = new MusepackEngine({
+      onPrimed: vi.fn(),
+      onBuffering: vi.fn(),
+      onEos: vi.fn(),
+      onError: vi.fn(),
+      onPosition: vi.fn(),
+    });
+    const harness = engine as unknown as EngineHarness;
+    const postMessage = vi.fn();
+    harness.generation = 8;
+    harness.current = {
+      worker: { postMessage },
+      info: null,
+      sourceInfo: { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 },
+      eos: false,
+      nextUrl: null,
+    };
+    harness.node = { port: { postMessage: vi.fn() } };
+    engine.startPumping();
+    postMessage.mockClear();
+
+    const seeking = engine.seek(44100);
+    engine.pausePumping();
+    harness.onWorkerMessage(harness.current, { type: 'seeked', sample: 44100, generation: 9 });
+    await seeking;
+    expect(postMessage.mock.calls.map(([message]) => message.type)).toEqual(['seek', 'pause']);
+  });
+
+  it('re-suspends the AudioContext when pause wins an in-flight resume race', async () => {
+    const engine = new MusepackEngine({
+      onPrimed: vi.fn(),
+      onBuffering: vi.fn(),
+      onEos: vi.fn(),
+      onError: vi.fn(),
+      onPosition: vi.fn(),
+    });
+    const harness = engine as unknown as EngineHarness;
+    let finishResume = () => {};
+    const ctx = {
+      state: 'suspended',
+      resume: vi.fn(() => new Promise<void>((resolve) => {
+        finishResume = () => {
+          ctx.state = 'running';
+          resolve();
+        };
+      })),
+      suspend: vi.fn(async () => {
+        ctx.state = 'suspended';
+      }),
+    };
+    harness.ctx = ctx as unknown as AudioContext;
+
+    const playing = engine.play();
+    const pausing = engine.pause();
+    finishResume();
+    await Promise.all([playing, pausing]);
+    expect(ctx.state).toBe('suspended');
+    expect(ctx.suspend).toHaveBeenCalled();
+  });
+
+  it('finishes the prior track before switching a gapless stream to a new source format', async () => {
+    const engine = new MusepackEngine({
+      onPrimed: vi.fn(),
+      onBuffering: vi.fn(),
+      onEos: vi.fn(),
+      onError: vi.fn(),
+      onPosition: vi.fn(),
+    });
+    const harness = engine as unknown as EngineHarness;
+    const portPost = vi.fn();
+    const currentWorker = new AsyncWorker();
+    const standbyWorker = new AsyncWorker();
+    harness.generation = 7;
+    harness.node = { port: { postMessage: portPost } };
+    harness.current = {
+      worker: currentWorker as unknown as { postMessage: ReturnType<typeof vi.fn> },
+      info: { rate: 48000, channels: 2, version: 8, lengthSamples: 480000 },
+      sourceInfo: { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 },
+      eos: true,
+      nextUrl: null,
+    };
+    harness.standby = {
+      worker: standbyWorker as unknown as { postMessage: ReturnType<typeof vi.fn> },
+      info: { rate: 48000, channels: 2, version: 8, lengthSamples: 240000 },
+      sourceInfo: { rate: 48000, channels: 1, version: 8, lengthSamples: 240000 },
+      eos: false,
+      nextUrl: null,
+    };
+
+    const advancing = engine.advance();
+    expect(portPost).toHaveBeenCalledWith({ type: 'end', generation: 7 });
+    expect(harness.current.worker).toBe(
+      currentWorker as unknown as { postMessage: ReturnType<typeof vi.fn> },
+    );
+
+    harness.onWorkletMessage({ type: 'trackEnded', frames: 100, generation: 7 });
+    await expect(advancing).resolves.toMatchObject({ rate: 48000, lengthSamples: 240000 });
+    expect(portPost).toHaveBeenLastCalledWith({
+      type: 'track',
+      sourceRate: 48000,
+      sourceChannels: 1,
+      generation: 7,
+    });
+    expect(portPost.mock.calls.some(([message]) => message.type === 'reset')).toBe(false);
   });
 });
