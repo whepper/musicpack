@@ -15,6 +15,14 @@ CI runner without help:
 Commenting out the other subdirectories keeps configure green everywhere
 while leaving the mpcenc target (and its static-lib dependencies) intact.
 
+In addition to build fixes, the patch normalizes the encoder version
+identity (`mpcenc/config.h`) to the MusicPack-maintained release version.
+The encoder version is embedded in the SV8 "EI" (encoder info) block of
+every encoded file; whole-file comparisons between the reference and the
+modernized encoder are only byte-identical when both report the same
+version. This is a metadata identity normalization only - it does not
+change any algorithmic behavior of the historical reference.
+
 Usage: patch_reference.py <reference-source-dir>
 """
 
@@ -153,6 +161,16 @@ def main():
         os.path.join(top, "libmpcenc", "encode_sv7.c"),
         [("int k = 0, idx = 1, cnt = 0, sng;", "int k = 0, cnt = 0, sng;\n            unsigned int idx = 1;")],
         "make bitstream index shifts unsigned",
+    )
+    patch_file(
+        os.path.join(top, "mpcenc", "config.h"),
+        [
+            (
+                "#define MPCENC_MAJOR 1\n#define MPCENC_MINOR 30\n#define MPCENC_BUILD 1",
+                "#define MPCENC_MAJOR 1\n#define MPCENC_MINOR 32\n#define MPCENC_BUILD 0",
+            ),
+        ],
+        "normalize encoder version to the MusicPack release (1.32.0)",
     )
     patch_file(
         os.path.join(top, "mpcenc", "mpcenc.h"),

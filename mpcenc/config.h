@@ -32,7 +32,7 @@
 /* parsed values from file "version" */
 
 #define MPCENC_MAJOR 1
-#define MPCENC_MINOR 30
-#define MPCENC_BUILD 1
+#define MPCENC_MINOR 32
+#define MPCENC_BUILD 0
 
 /* end of config.h */

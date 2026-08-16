@@ -203,6 +203,8 @@ available for staged removals.
 
 - Library version: `PROJECT_VERSION` (7.0.1), `musepack_version()` returns it.
   `MUSEPACK_VERSION_MAJOR/MINOR/PATCH` come from the generated `version.h`.
+  This is the library identity namespace (historical libmpcdec libtool
+  `-version-info 7:0:1`); it is independent of the encoder version.
 - `MUSEPACK_API_VERSION` (integer, currently 1) bumps only on incompatible
   API changes; consumers can gate on it with preprocessor conditionals.
 - `SOVERSION` equals the major version; a bump signals an ABI break.
@@ -211,6 +213,18 @@ available for staged removals.
   signatures; deprecate with `MUSEPACK_DEPRECATED` and remove only across an
   `MUSEPACK_API_VERSION` bump. Both source and ABI compatibility are
   maintained within one SOVERSION.
+
+### Related version namespaces (do not confuse them)
+
+- **Musepack SV8** — the codec/bitstream format, unchanged and fixed. Encoded
+  streams begin with `MPCK` and the SH block declares stream version 8; the
+  `sv8_format` CTest gate (`tests/run_sv8.sh`) inspects the produced stream.
+- **`mpcenc` 1.32.0** — the MusicPack-maintained encoder implementation version
+  (`mpcenc/config.h`). It is embedded only in the SV8 `EI` (encoder info)
+  block; changing it does not change the audio payload or decoded PCM. Even
+  minor = `--stable--`, odd minor = `--unstable--`.
+- **MusicPack 0.1.0** — the ecosystem/product version (`libmusicpack`,
+  `musicpack` CLI, MusicPack Author).
 
 ## Swift / JNI suitability
 

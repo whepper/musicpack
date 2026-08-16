@@ -15,6 +15,34 @@ This is a **modernized** copy of upstream Musepack r475 (git `05d97a5`).
 The working rule is: **modernize the ecosystem aggressively, change the codec
 conservatively.** Any risky codec change must be proven behavior-preserving.
 
+## Version namespaces and the SV8 invariant
+
+Version numbers are deliberately NOT unified across the codebase; they follow
+the historical Musepack convention of component-specific versions:
+
+- **Musepack SV8** is the codec/bitstream format, unchanged. It must stay SV8.
+- `mpcenc 1.32.0 --stable--` is the MusicPack-maintained encoder implementation
+  version (`mpcenc/config.h`, `MPCENC_MAJOR/MINOR/BUILD`). Even minor = stable,
+  odd minor = unstable (the `MPCENC_MINOR % 2` logic in `mpcenc.c` produces
+  `--stable--`/`--unstable--` automatically). `1.32.0` does NOT mean SV32 or a
+  new format. The encoder version is embedded only in the SV8 `EI` (encoder
+  info) block of encoded files.
+- `libmusepack 7.0.1` / SOVERSION 7 / `MUSEPACK_API_VERSION 1` is the decoder
+  library/API version namespace, independent of the encoder version.
+- `MusicPack 0.1.0` is the ecosystem/product version (`libmusicpack`,
+  `musicpack` CLI, MusicPack Author).
+
+**Negative invariant:** the encoder must always emit Musepack SV8 — magic
+`MPCK`, stream version 8, SV8 block structure. A change to the stream version
+or a move to `MP+`/SV7 output is a format-design decision and must be
+intentional, reviewed as such, and covered by the `sv8_format` and `fixtures`
+CTest gates (`tests/run_sv8.sh`, `tests/sv8_check.py`). Never let a refactor
+accidentally change the output format.
+
+The historical source names `encode_sv7.c` / `huffsv7.c` reflect the SV7-era
+lineage of the encoder sources (SV8 reuses the SV7 Huffman tables); they do
+NOT mean the encoder emits SV7. Do not rename them for tidiness.
+
 ## Licensing and copyright rules
 
 MusicPack is a mixed-license repository.

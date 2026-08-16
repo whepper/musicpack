@@ -71,6 +71,21 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/mpc-test-out.XXXXXX")"
 FAILED=0
 PASSED=0
 
+# Every committed fixture must be a Musepack SV8 stream (MPCK magic, SH
+# stream version 8). Historical SV7 material, if ever added, must live
+# outside tests/fixtures so decoder-side SV7 compatibility stays explicitly
+# intentional rather than an accidental fixture property.
+echo "== verifying all fixtures are Musepack SV8 =="
+for mpc in "$FIXTURES"/*.mpc; do
+    [ -e "$mpc" ] || continue
+    if python3 "$ROOT/tests/sv8_check.py" --assert "$mpc" >/dev/null 2>&1; then
+        echo "PASS  $(basename "$mpc") is Musepack SV8"
+    else
+        echo "FAIL  $(basename "$mpc") is not Musepack SV8"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
 for mpc in "$FIXTURES"/*.mpc; do
     [ -e "$mpc" ] || continue
     name="$(basename "$mpc" .mpc)"

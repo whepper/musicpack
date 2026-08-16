@@ -18,9 +18,16 @@ ever designed for transparent music playback — and it is the audio foundation
 everything here is built on:
 
 ```text
-Musepack  = the codec      (.mpc / SV7 / SV8)
-MusicPack = the ecosystem  (.mpack packages, server, web client, tools)
+Musepack SV8              = the codec / bitstream format (unchanged)
+mpcenc 1.32.0 --stable--  = MusicPack-maintained encoder implementation version
+libmusepack 7.0.1 / API 1 = decoder library/API version
+MusicPack 0.1.0           = the ecosystem (.mpack packages, server, tools)
 ```
+
+Version namespaces are intentionally separate, following historical Musepack
+practice. `mpcenc 1.32.0` does not mean SV32 or a new format: the codec is and
+stays **Musepack SV8** (magic `MPCK`, stream version 8). Even encoder minors
+are stable (`--stable--`), odd minors are development (`--unstable--`).
 
 The guiding rule of this repository:
 

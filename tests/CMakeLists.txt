@@ -209,6 +209,16 @@ if(UNIX)
                      MPCDEC=$<TARGET_FILE:mpcdec_cmd>
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_tests.sh)
 
+    # SV8 format invariant: the encoder must always emit Musepack SV8
+    # (MPCK magic, SH stream version 8, expected EI encoder version), and the
+    # produced stream must decode gaplessly through libmusepack. Inspects the
+    # actual encoded file, not source constants.
+    add_test(NAME sv8_format
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_sv8.sh
+                     $<TARGET_FILE:mpcenc>
+                     $<TARGET_FILE:mpcdec_cmd>
+                     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/wav16-44k.wav)
+
     # End-to-end toolchain integration.
     add_test(NAME integration
              COMMAND ${CMAKE_COMMAND} -E env
