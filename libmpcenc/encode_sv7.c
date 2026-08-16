@@ -351,8 +351,8 @@ writeBitstream_SV8 ( mpc_encoder_t* e, int MaxBand)
 					idx = 2 * thres[Res];
 					for ( ; k < 36; k += 3) {
 						int tmp = q[k] + 5*q[k+1] + 25*q[k+2];
-						writeBits ( e, Tables[idx > thres[Res]][tmp].Code,
-									Tables[idx > thres[Res]][tmp].Length );
+						writeBits ( e, Tables[idx > (unsigned int) thres[Res]][tmp].Code,
+									Tables[idx > (unsigned int) thres[Res]][tmp].Length );
 						idx = (idx >> 1) + HuffQ2_var[tmp];
 					}
 					break;
@@ -373,8 +373,8 @@ writeBitstream_SV8 ( mpc_encoder_t* e, int MaxBand)
 					idx = 2 * thres[Res];
 					for ( ; k < 36; k++ ) {
 						int tmp = q[k] - (1 << (Res - 2)) + 1;
-						writeBits ( e, Tables[idx > thres[Res]][q[k]].Code,
-									Tables[idx > thres[Res]][q[k]].Length );
+						writeBits ( e, Tables[idx > (unsigned int) thres[Res]][q[k]].Code,
+									Tables[idx > (unsigned int) thres[Res]][q[k]].Length );
 						if (tmp < 0) tmp = -tmp;
 						idx = (idx >> 1) + tmp;
 					}

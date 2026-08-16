@@ -890,7 +890,7 @@ static mpc_status mpc_demux_decode_inner(mpc_demux * d, mpc_frame_info * i)
 			d->block_bits += 11; // we will read last frame size
 		r = d->bits_reader;
 		mpc_decoder_decode_frame(d->d, &d->bits_reader, i);
-		if (i->bits != -1 && d->block_bits != ((d->bits_reader.buff - r.buff) << 3) + r.count - d->bits_reader.count)
+		if (i->bits != -1 && d->block_bits != (mpc_int32_t) (((d->bits_reader.buff - r.buff) << 3) + r.count - d->bits_reader.count))
 			return MPC_STATUS_FAIL;
 	}
 	if (i->bits != -1 && d->buffer + d->bytes_total < d->bits_reader.buff + ((8 - d->bits_reader.count) >> 3))
