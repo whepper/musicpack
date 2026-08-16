@@ -1,4 +1,4 @@
-set(MUSICPACK_TOOL_SOURCES main.c draft.c)
+set(MUSICPACK_TOOL_SOURCES main.c draft.c tool_path.c)
 
 # Vendored cJSON (also compiled into libmusicpack, but that copy is hidden
 # when the library is built shared). Compiling it into the CLI target keeps

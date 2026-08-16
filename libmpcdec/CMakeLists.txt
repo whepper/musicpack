@@ -152,6 +152,11 @@ endif()
 
 # pkg-config metadata: the new identity plus the historical name.
 set(prefix ${CMAKE_INSTALL_PREFIX})
+set(MUSEPACK_PC_PRIVATE_LIBS "${CMAKE_THREAD_LIBS_INIT}")
+if(UNIX AND NOT APPLE)
+  string(APPEND MUSEPACK_PC_PRIVATE_LIBS " -lm")
+endif()
+string(STRIP "${MUSEPACK_PC_PRIVATE_LIBS}" MUSEPACK_PC_PRIVATE_LIBS)
 configure_file(musepack.pc.in ${CMAKE_CURRENT_BINARY_DIR}/musepack.pc @ONLY)
 configure_file(libmpcdec.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libmpcdec.pc @ONLY)
 install(FILES

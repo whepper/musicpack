@@ -11,8 +11,8 @@
  * continues at the exact sample boundary.
  *
  * Protocol (main -> worker):
- *   { type:'open', url, size, token? }   open a track (fetch header only)
- *   { type:'play' }                      start/continue decoding
+ *   { type:'open', url, size, token?, generation } open a track
+ *   { type:'play', generation }          decode one credited PCM chunk
  *   { type:'pause' }                     stop decoding
  *   { type:'seek', sample }              seek; stale decode output is dropped
  *   { type:'close' }                     free the handle + reader
@@ -40,6 +40,7 @@ let eos = false;
 let pumping = false;
 let demandReader = null;
 let generation = 0;
+let reportGeneration = 0;
 
 function post(msg, transfer) {
   self.postMessage(
@@ -80,12 +81,15 @@ function postInfo() {
     channels,
     version: Module._mpc_wasm_stream_version(handle),
     lengthSamples: Module._mpc_wasm_length_samples(handle),
+    generation: reportGeneration,
   });
   postStats();
 }
 
 function postStats() {
-  if (demandReader) post({ type: 'stats', served: demandReader.served() });
+  if (demandReader) {
+    post({ type: 'stats', served: demandReader.served(), generation: reportGeneration });
+  }
 }
 
 function destroy() {
@@ -103,27 +107,28 @@ function destroy() {
 
 async function readChunk() {
   const gen = generation;
+  const outputGeneration = reportGeneration;
   const frames = await Module._mpc_wasm_read(handle, pcmPtr, FRAMES_PER_CHUNK);
   if (gen !== generation) return; /* a seek arrived; drop stale decode */
   if (frames < 0) {
     if (frames === -5) { /* MUSEPACK_ERR_EOF */
       eos = true;
-      post({ type: 'eos' });
+      post({ type: 'eos', generation: outputGeneration });
     } else {
       let msg = 'decoder error ' + frames;
       if (demandReader && demandReader.lastError())
         msg += ` (stream read error ${demandReader.lastError()})`;
-      post({ type: 'error', message: msg });
+      post({ type: 'error', message: msg, generation: outputGeneration });
     }
     return;
   }
   if (frames === 0) {
     eos = true;
-    post({ type: 'eos' });
+    post({ type: 'eos', generation: outputGeneration });
     return;
   }
   const view = new Float32Array(Module.HEAPF32.buffer, pcmPtr, frames * channels);
-  post({ type: 'pcm', samples: view.slice() }, true);
+  post({ type: 'pcm', samples: view.slice(), generation: outputGeneration }, true);
 }
 
 async function pump() {
@@ -131,8 +136,11 @@ async function pump() {
     pumping = false;
     return;
   }
-  await readChunk();
-  if (playing && !eos) setTimeout(pump, 0);
+  try {
+    await readChunk();
+  } finally {
+    pumping = false;
+  }
 }
 
 self.onmessage = async (ev) => {
@@ -142,11 +150,13 @@ self.onmessage = async (ev) => {
     switch (msg.type) {
       case 'open':
         generation++;
+        reportGeneration = msg.generation;
         playing = false;
         eos = false;
         await open(msg.url, msg.size, msg.token || null);
         break;
       case 'play':
+        reportGeneration = msg.generation;
         playing = true;
         if (!pumping) {
           pumping = true;
@@ -154,18 +164,20 @@ self.onmessage = async (ev) => {
         }
         break;
       case 'pause':
-        playing = false;
+        if (msg.generation === reportGeneration) playing = false;
         break;
       case 'seek':
         if (handle >= 0) {
           generation++;
+          reportGeneration = msg.generation;
           await Module._mpc_wasm_seek_sample(handle, msg.sample);
           eos = false;
-          post({ type: 'seeked', sample: msg.sample });
+          post({ type: 'seeked', sample: msg.sample, generation: reportGeneration });
           postStats();
         }
         break;
       case 'close':
+        generation++;
         playing = false;
         eos = false;
         pumping = false;
@@ -176,6 +188,6 @@ self.onmessage = async (ev) => {
         break;
     }
   } catch (e) {
-    post({ type: 'error', message: String(e) });
+    post({ type: 'error', message: String(e), generation: reportGeneration });
   }
 };

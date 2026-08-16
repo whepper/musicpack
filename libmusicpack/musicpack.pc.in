@@ -8,4 +8,5 @@ Description: MusicPack package library (.mpack)
 Version: 0.1.0
 Requires: musepack
 Libs: -L${libdir} -lmusicpack
+Libs.private: @MUSICPACK_PC_PRIVATE_LIBS@
 Cflags: -I${includedir}

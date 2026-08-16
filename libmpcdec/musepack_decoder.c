@@ -41,6 +41,8 @@
 /// buffered PCM reading, seeking and stream checking for consumers.
 
 #include <stdio.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mpc/mpcdec.h>
@@ -217,7 +219,8 @@ musepack_decoder_read(musepack_decoder *d, float *pcm, uint64_t max_frames,
 
     if (frames_out != 0)
         *frames_out = 0;
-    if (d == 0 || pcm == 0 || max_frames == 0)
+    if (d == 0 || pcm == 0 || max_frames == 0 ||
+        max_frames > SIZE_MAX / sizeof(float) / d->si.channels)
         return MUSEPACK_ERR_INVALID;
 
     channels = d->si.channels;
@@ -258,6 +261,8 @@ musepack_decoder_seek_sample(musepack_decoder *d, uint64_t sample)
 
     if (d == 0)
         return MUSEPACK_ERR_INVALID;
+    if (!d->demux->r->canseek(d->demux->r))
+        return MUSEPACK_ERR_SEEK;
     length = musepack_decoder_length_samples(d);
     if (sample > length)
         sample = length;
@@ -272,8 +277,10 @@ musepack_decoder_seek_sample(musepack_decoder *d, uint64_t sample)
 musepack_error
 musepack_decoder_seek_seconds(musepack_decoder *d, double seconds)
 {
-    if (d == 0 || seconds < 0)
+    if (d == 0 || !isfinite(seconds) || seconds < 0)
         return MUSEPACK_ERR_INVALID;
+    if (seconds >= (double) musepack_decoder_length_samples(d) / d->si.sample_freq)
+        return musepack_decoder_seek_sample(d, musepack_decoder_length_samples(d));
     return musepack_decoder_seek_sample(d,
             (uint64_t)(seconds * (double) d->si.sample_freq + 0.5));
 }

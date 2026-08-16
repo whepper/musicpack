@@ -759,8 +759,6 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
             sqlite3_finalize(st);
             track_id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
 
-            insert_track_artists(lib, track_id, tr);
-
             if (ti != 0) {
                 size = file_size_of(ti->abs_path);
                 snprintf(codec, sizeof codec, "%s",

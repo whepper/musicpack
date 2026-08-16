@@ -177,9 +177,12 @@ fi
 # must equal the max of track true peaks. Skipped when ffmpeg (needed to
 # measure .wav) is unavailable; the concatenation-semantics proof lives in the
 # C test test_album_loudness_aggregation.
-python3 - "$TMP" <<'EOF'
+LOUD_WAV="$TMP/loud's \$; [input].wav"
+QUIET_WAV="$TMP/quiet space; [input].wav"
+LOUD_NAME="Loud's \$; [mix]"
+QUIET_NAME="Quiet space; [mix]"
+python3 - "$LOUD_WAV" "$QUIET_WAV" <<'EOF'
 import math, os, struct, sys, wave
-tmp = sys.argv[1]
 def wav(path, amp, rate=44100):
     w = wave.open(path, "wb")
     w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
@@ -188,21 +191,24 @@ def wav(path, amp, rate=44100):
         v = int(amp * 32767 * math.sin(2 * math.pi * 1000 * i / rate))
         frames += struct.pack("<hh", v, v)
     w.writeframes(bytes(frames)); w.close()
-wav(os.path.join(tmp, "loud.wav"), 0.95)
-wav(os.path.join(tmp, "quiet.wav"), 0.05)
+wav(sys.argv[1], 0.95)
+wav(sys.argv[2], 0.05)
 EOF
 WAVPACK="$TMP/lq.mpack"
 if "$MUSICPACK" create -o "$WAVPACK" -t "Loud Quiet" -a "A" -R album -m Digital \
-    -T "$TMP/loud.wav" -n "Loud" -T "$TMP/quiet.wav" -n "Quiet" >/dev/null 2>&1; then
-    pass "create mixed-level wav package"
+    -T "$LOUD_WAV" -n "$LOUD_NAME" -T "$QUIET_WAV" -n "$QUIET_NAME" >/dev/null 2>&1; then
+    pass "create measures filenames with apostrophes, spaces and metacharacters"
 else
-    fail "create mixed-level wav package"
+    fail "create measures filenames with apostrophes, spaces and metacharacters"
 fi
-if python3 - "$WAVPACK/manifest.json" <<'EOF'
+HAVE_FFMPEG=0
+command -v ffmpeg >/dev/null 2>&1 && HAVE_FFMPEG=1
+if python3 - "$WAVPACK/manifest.json" "$HAVE_FFMPEG" <<'EOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
 tl = [t.get("loudness") for d in m["media"] for t in d["tracks"]]
 if any(x is None for x in tl):
+    assert sys.argv[2] == "0", "ffmpeg is available but special-character paths were not measured"
     print("skip: ffmpeg unavailable")
     sys.exit(0)
 assert "loudness" in m

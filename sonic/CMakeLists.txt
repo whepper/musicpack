@@ -9,7 +9,8 @@
 set(SONIC_CORE_SOURCES
     frontend.c
     decode.c
-    cache.c)
+    cache.c
+    model_output.c)
 
 add_library(sonic_core STATIC ${SONIC_CORE_SOURCES})
 target_include_directories(sonic_core
@@ -33,7 +34,8 @@ if(MPC_BUILD_TESTS)
   if(UNIX AND NOT APPLE)
     target_link_libraries(mpc_sonic_analyzer_tests PRIVATE m)
   endif()
-  add_test(NAME sonic_analyzer COMMAND mpc_sonic_analyzer_tests)
+  add_test(NAME sonic_analyzer COMMAND mpc_sonic_analyzer_tests
+      $<TARGET_FILE:mpcenc>)
   if(WIN32)
     set_tests_properties(sonic_analyzer PROPERTIES
         ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")

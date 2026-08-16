@@ -33,6 +33,11 @@ if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     exit 1
 fi
 
+if [ -z "$REF_MPCENC" ] && [ "${MPC_COMPAT_REQUIRE_REFERENCE:-0}" = 1 ]; then
+    echo "SKIP: live reference encoder required; run this script directly for manifest mode"
+    exit 77
+fi
+
 PY=""
 for c in python3 python; do
     if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
@@ -47,12 +52,30 @@ sha256() { "$PY" -c 'import sys,hashlib; print(hashlib.sha256(open(sys.argv[1],"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/mpc-enc-compat.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+GENERATED_CORPUS=0
 if [ -z "$CORPUS_DIR" ]; then
+    GENERATED_CORPUS=1
     CORPUS_DIR="$TMP/corpus"
     "$PY" "$ROOT/tests/generate_encoder_corpus.py" "$CORPUS_DIR" >/dev/null
 fi
 
 QUALITIES="5 6 7"
+# 63 base + 15 spectral + 3 long + 12 frame-boundary + 1 mono.
+EXPECTED_GENERATED_CASES=94
+
+CASES=0
+for wav in "$CORPUS_DIR"/*.wav; do
+    [ -e "$wav" ] || continue
+    CASES=$((CASES + 1))
+done
+if [ "$CASES" -eq 0 ]; then
+    echo "ERROR: corpus contains no WAV files: '$CORPUS_DIR'" >&2
+    exit 1
+fi
+if [ "$GENERATED_CORPUS" -eq 1 ] && [ "$CASES" -ne "$EXPECTED_GENERATED_CASES" ]; then
+    echo "ERROR: generated corpus has $CASES cases, expected $EXPECTED_GENERATED_CASES" >&2
+    exit 1
+fi
 
 # Produce the expected-hash manifest: <name> <quality> <sha256> per line.
 if [ -n "$REF_MPCENC" ]; then

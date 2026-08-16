@@ -89,7 +89,43 @@ else
     fail "inspect lists embedded artwork without a cover file"
 fi
 
-# 1c. uppercase disc subdirectories ("CD1"/"CD2") are recognized: real
+# 1c. A malformed binary APE cover with no NUL filename separator must stay
+# bounded. Both import's direct extraction and build-draft's embedded path use
+# image magic and produce a stable extension instead of scanning past the tag.
+MALFORMED_APE="$TMP/malformed-ape"
+mkdir -p "$MALFORMED_APE"
+$PY - "$META/album-ape.mpc" "$MALFORMED_APE/01 - No Separator.mpc" <<'EOF'
+import sys
+data = bytearray(open(sys.argv[1], "rb").read())
+key = b"Cover Art (Front)\0"
+key_at = data.index(key)
+value_len = int.from_bytes(data[key_at - 8:key_at - 4], "little")
+value_at = key_at + len(key)
+assert value_len >= 3
+data[value_at:value_at + value_len] = b"\xff\xd8\xff" + b"\xff" * (value_len - 3)
+assert b"\0" not in data[value_at:value_at + value_len]
+open(sys.argv[2], "wb").write(data)
+EOF
+if "$MUSICPACK" import -L -a Alphaville -o "$TMP/malformed-import.mpack" \
+        "$MALFORMED_APE" >/dev/null 2>&1 \
+   && [ -f "$TMP/malformed-import.mpack/artwork/front.jpg" ] \
+   && "$MUSICPACK" inspect "$MALFORMED_APE" --json 2>/dev/null > "$TMP/malformed.json" \
+   && $PY - "$TMP/malformed.json" "$TMP/malformed-ready.json" <<'EOF' &&
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["album"]["artists"] = [{"name": "Alphaville", "role": "main"}]
+d["identity"] = {"source": "local", "confidence": "none"}
+json.dump(d, open(sys.argv[2], "w"))
+EOF
+   "$MUSICPACK" build-draft --draft "$TMP/malformed-ready.json" \
+        -o "$TMP/malformed-build.mpack" --no-loudness >/dev/null 2>&1 \
+   && [ -f "$TMP/malformed-build.mpack/artwork/front.jpg" ]; then
+    pass "APE artwork without a NUL separator is extracted safely by both paths"
+else
+    fail "APE artwork without a NUL separator is extracted safely by both paths"
+fi
+
+# 1d. uppercase disc subdirectories ("CD1"/"CD2") are recognized: real
 # collections (e.g. Deezer Deemix converts) use CD1/CD2, and tracks under
 # them must not be silently skipped as non-disc subdirectories.
 CASE="$TMP/cdcase"

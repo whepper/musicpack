@@ -31,6 +31,11 @@ if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     exit 1
 fi
 
+if [ -z "$REF_MPCENC" ] && [ "${MPC_COMPAT_REQUIRE_REFERENCE:-0}" = 1 ]; then
+    echo "SKIP: live reference encoder required; run this script directly for manifest mode"
+    exit 77
+fi
+
 # Python is required for corpus generation; use it for hashing too so we do
 # not depend on shasum/sha256sum being present (Windows Git Bash has them,
 # but python is guaranteed).
@@ -48,12 +53,34 @@ sha256() { "$PY" -c 'import sys,hashlib; print(hashlib.sha256(open(sys.argv[1],"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/mpc-compat.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+GENERATED_CORPUS=0
 if [ -z "$CORPUS_DIR" ]; then
+    GENERATED_CORPUS=1
     CORPUS_DIR="$TMP/corpus"
     "$PY" "$ROOT/tests/generate_corpus.py" "$CORPUS_DIR" >/dev/null
 fi
 
 QUALITIES="3 5 7"
+# Keep in sync with len(SIGNALS) * len(RATES) in generate_corpus.py.
+EXPECTED_GENERATED_CASES=63
+
+REQUIRED=0
+CASES=0
+for wav in "$CORPUS_DIR"/*.wav; do
+    [ -e "$wav" ] || continue
+    CASES=$((CASES + 1))
+    for q in $QUALITIES; do
+        REQUIRED=$((REQUIRED + 1))
+    done
+done
+if [ "$REQUIRED" -eq 0 ]; then
+    echo "ERROR: corpus contains no WAV files: '$CORPUS_DIR'" >&2
+    exit 1
+fi
+if [ "$GENERATED_CORPUS" -eq 1 ] && [ "$CASES" -ne "$EXPECTED_GENERATED_CASES" ]; then
+    echo "ERROR: generated corpus has $CASES cases, expected $EXPECTED_GENERATED_CASES" >&2
+    exit 1
+fi
 
 # Produce the expected-hash manifest: <name> <quality> <sha256> per line.
 if [ -n "$REF_MPCENC" ]; then
@@ -68,7 +95,15 @@ if [ -n "$REF_MPCENC" ]; then
         [ -e "$wav" ] || continue
         name="$(basename "$wav")"
         for q in $QUALITIES; do
-            "$REF_MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/ref.mpc" >/dev/null 2>&1
+            rm -f "$TMP/ref.mpc"
+            if ! "$REF_MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/ref.mpc" >/dev/null 2>&1; then
+                echo "ERROR: reference encode failed for $name q=$q" >&2
+                exit 1
+            fi
+            if [ ! -f "$TMP/ref.mpc" ]; then
+                echo "ERROR: reference encoder produced no output for $name q=$q" >&2
+                exit 1
+            fi
             echo "$name $q $(sha256 "$TMP/ref.mpc")" >> "$EXPECTED"
         done
     done
@@ -79,18 +114,28 @@ fi
 
 FAILED=0
 TOTAL=0
+FOUND=0
 for wav in "$CORPUS_DIR"/*.wav; do
     [ -e "$wav" ] || continue
     name="$(basename "$wav")"
     for q in $QUALITIES; do
+        TOTAL=$((TOTAL + 1))
+        expected_count="$(awk -v n="$name" -v qq="$q" '$1==n && $2==qq {count++} END {print count+0}' "$EXPECTED")"
         expected="$(awk -v n="$name" -v qq="$q" '$1==n && $2==qq {print $3; exit}' "$EXPECTED")"
-        if [ -z "$expected" ]; then
+        if [ "$expected_count" -ne 1 ] || [ -z "$expected" ]; then
+            echo "FAIL  $name q=$q (expected exactly one hash, found $expected_count)"
+            FAILED=$((FAILED + 1))
             continue
         fi
-        TOTAL=$((TOTAL + 1))
-        "$MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/out.mpc" >/dev/null 2>&1
-        if [ $? -ne 0 ]; then
+        FOUND=$((FOUND + 1))
+        rm -f "$TMP/out.mpc"
+        if ! "$MPCENC" --silent --overwrite --quality "$q" "$wav" "$TMP/out.mpc" >/dev/null 2>&1; then
             echo "FAIL  $name q=$q (encode returned non-zero)"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        if [ ! -f "$TMP/out.mpc" ]; then
+            echo "FAIL  $name q=$q (encoder produced no output)"
             FAILED=$((FAILED + 1))
             continue
         fi
@@ -106,4 +151,8 @@ done
 
 echo
 echo "== $((TOTAL - FAILED))/$TOTAL outputs match the reference encoder =="
+if [ "$TOTAL" -ne "$REQUIRED" ] || [ "$FOUND" -ne "$REQUIRED" ]; then
+    echo "ERROR: incomplete coverage (required $REQUIRED, checked $TOTAL, hashes $FOUND)" >&2
+    exit 1
+fi
 [ "$FAILED" -eq 0 ]

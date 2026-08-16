@@ -60,9 +60,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <musepack/musepack.h>
+
 #include "cache.h"
 #include "decode.h"
 #include "frontend.h"
+#include "model_output.h"
 #include "sonic_profile.h"
 
 static int failures = 0;
@@ -228,6 +231,19 @@ test_album(void)
 
     present[0] = present[2] = 0;
     CHECK(sonic_album_equal(vecs, present, 3, 4, out) == 0, "no contributors");
+
+    {
+        float cancellation[3 * 4] = {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            -0.4999999701976776f, 0.866025447845459f, 0.0f, 0.0f,
+            -0.5f, -0.8660253882408142f, 0.0f, 0.0f
+        };
+        int all_present[3] = { 1, 1, 1 };
+        CHECK(sonic_album_equal(cancellation, all_present, 3, 4, out) == 3,
+              "cancellation-sensitive album aggregates");
+        CLOSE(out[0], 0.0, 0.0, "cancellation-sensitive album x");
+        CLOSE(out[1], 1.0, 0.0, "cancellation-sensitive album y");
+    }
 }
 
 static int
@@ -257,6 +273,8 @@ remove_dir_tree(const char *dir)
     snprintf(path, sizeof path, "%s/sha-a.vec", dir); remove(path);
     snprintf(path, sizeof path, "%s/sha-null.vec", dir); remove(path);
     snprintf(path, sizeof path, "%s/test.wav", dir); remove(path);
+    snprintf(path, sizeof path, "%s/mono.wav", dir); remove(path);
+    snprintf(path, sizeof path, "%s/mono.mpc", dir); remove(path);
     snprintf(path, sizeof path, "%s/musicpack-sonic-openl3-v1/sha-a.vec", dir); remove(path);
     snprintf(path, sizeof path, "%s/musicpack-sonic-openl3-v1/sha-null.vec", dir); remove(path);
     snprintf(path, sizeof path, "%s/musicpack-sonic-openl3-v1", dir);
@@ -271,6 +289,153 @@ remove_dir_tree(const char *dir)
 #else
     remove(path);
 #endif
+}
+
+typedef struct {
+    void *status;
+    float *data;
+    int released;
+} fake_model_output;
+
+static void *
+fake_get_output(void *context, float **data)
+{
+    fake_model_output *fake = (fake_model_output *) context;
+    *data = fake->data;
+    return fake->status;
+}
+
+static void
+fake_release_status(void *context, void *status)
+{
+    fake_model_output *fake = (fake_model_output *) context;
+    if (status == fake->status)
+        fake->released++;
+}
+
+static void
+test_model_output_access(void)
+{
+    float data[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    float out[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+    float unchanged[4];
+    fake_model_output fake = { (void *) 1, data, 0 };
+
+    memcpy(unchanged, out, sizeof out);
+    CHECK(!sonic_model_read_output(fake_get_output, fake_release_status,
+                                   &fake, out, 4),
+          "model output access error fails");
+    CHECK(fake.released == 1, "model output access status released");
+    CHECK(memcmp(out, unchanged, sizeof out) == 0,
+          "model output access error does not copy");
+    fake.status = 0;
+    fake.data = 0;
+    CHECK(!sonic_model_read_output(fake_get_output, fake_release_status,
+                                   &fake, out, 4),
+          "null model output data fails");
+    CHECK(memcmp(out, unchanged, sizeof out) == 0,
+          "null model output data does not copy");
+    fake.data = data;
+    CHECK(sonic_model_read_output(fake_get_output, fake_release_status,
+                                  &fake, out, 4),
+          "valid model output succeeds");
+    CHECK(memcmp(out, data, sizeof out) == 0,
+          "valid model output is copied");
+}
+
+static void
+test_decode_mono_mpc(const char *mpcenc)
+{
+    char dir[512], wav_path[512], mpc_path[512], command[1600];
+    unsigned char hdr[44] = {
+        'R', 'I', 'F', 'F', 0x24, 0x12, 0, 0, 'W', 'A', 'V', 'E',
+        'f', 'm', 't', ' ', 16, 0, 0, 0,
+        1, 0, 1, 0,
+        0x44, 0xac, 0, 0,
+        0x88, 0x58, 0x01, 0,
+        2, 0, 16, 0,
+        'd', 'a', 't', 'a', 0x00, 0x12, 0, 0
+    };
+    int16_t samples[2304];
+    sonic_pcm pcm;
+    mpc_reader reader;
+    musepack_decoder *dec = 0;
+    musepack_stream_info info;
+    uint64_t offset = 0, frames;
+    float direct[1152];
+    size_t i;
+    FILE *f;
+
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        CHECK(0, "mono MPC temp directory created");
+        return;
+    }
+    snprintf(wav_path, sizeof wav_path, "%s/mono.wav", dir);
+    snprintf(mpc_path, sizeof mpc_path, "%s/mono.mpc", dir);
+    for (i = 0; i < 2304; i++)
+        samples[i] = (int16_t) (sinf((float) (2.0 * M_PI * 440.0 *
+                                             (double) i / 44100.0)) * 20000.0f);
+    f = fopen(wav_path, "wb");
+    if (f == 0 || fwrite(hdr, 1, sizeof hdr, f) != sizeof hdr ||
+        fwrite(samples, sizeof samples[0], 2304, f) != 2304) {
+        CHECK(0, "mono WAV fixture written");
+        if (f != 0)
+            fclose(f);
+        remove_dir_tree(dir);
+        return;
+    }
+    fclose(f);
+#if defined(_WIN32)
+    snprintf(command, sizeof command,
+             "\"\"%s\" --silent --overwrite \"%s\" \"%s\"\"",
+             mpcenc, wav_path, mpc_path);
+#else
+    snprintf(command, sizeof command,
+             "\"%s\" --silent --overwrite \"%s\" \"%s\"",
+             mpcenc, wav_path, mpc_path);
+#endif
+    if (system(command) != 0) {
+        CHECK(0, "mono Musepack fixture encoded");
+        remove_dir_tree(dir);
+        return;
+    }
+    if (!sonic_decode(mpc_path, &pcm)) {
+        CHECK(0, "mono Musepack decodes through Sonic");
+        remove_dir_tree(dir);
+        return;
+    }
+    if (mpc_reader_init_stdio(&reader, mpc_path) != MPC_STATUS_OK) {
+        CHECK(0, "mono Musepack reference reader opens");
+        sonic_pcm_free(&pcm);
+        remove_dir_tree(dir);
+        return;
+    }
+    dec = musepack_decoder_open(&reader, 0);
+    memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (dec == 0 || musepack_decoder_get_stream_info(dec, &info) != MUSEPACK_OK ||
+        info.channels != 1) {
+        CHECK(0, "encoded Musepack fixture is mono");
+    } else {
+        while (musepack_decoder_read(dec, direct, 1152, &frames) == MUSEPACK_OK &&
+               frames > 0) {
+            CHECK(offset + frames <= pcm.count, "Sonic mono decode length bounded");
+            if (offset + frames > pcm.count)
+                break;
+            for (i = 0; i < frames; i++)
+                CLOSE(pcm.samples[offset + i], direct[i], 0.0,
+                      "Sonic mono decode preserves channel stride");
+            offset += frames;
+        }
+        CHECK(offset == pcm.count, "Sonic mono decode length matches decoder");
+        CHECK(pcm.sample_rate == (int) info.sample_rate,
+              "Sonic mono decode sample rate matches decoder");
+    }
+    if (dec != 0)
+        musepack_decoder_close(dec);
+    mpc_reader_exit_stdio(&reader);
+    sonic_pcm_free(&pcm);
+    remove_dir_tree(dir);
 }
 
 static void
@@ -501,7 +666,7 @@ test_profile(void)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
     test_profile();
     test_resample_filter();
@@ -511,8 +676,13 @@ main(void)
     test_pooling();
     test_album();
     test_cache();
+    test_model_output_access();
     test_decode_wav();
     test_wav_robustness();
+    if (argc == 2)
+        test_decode_mono_mpc(argv[1]);
+    else
+        CHECK(0, "mpcenc path supplied for mono Musepack regression");
 
     if (failures == 0) {
         printf("all sonic analyzer core tests passed\n");

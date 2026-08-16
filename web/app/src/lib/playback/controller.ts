@@ -105,6 +105,7 @@ export class PlayerController {
   private pendingEnded = false;
   private loadingSeq = 0;
   private mutating = false;
+  private pauseIntent = false;
   private backendFactory: ControllerOptions['backendFactory'];
   private unsub: (() => void) | null = null;
 
@@ -201,6 +202,7 @@ export class PlayerController {
   // ---- queue actions -------------------------------------------------------
 
   async playItem(item: QueueItem): Promise<void> {
+    this.pauseIntent = false;
     this.setState('loading');
     this.mutating = true;
     this.queue.playNow(item);
@@ -214,6 +216,7 @@ export class PlayerController {
     artist: string,
     startIndex = 0,
   ): Promise<void> {
+    this.pauseIntent = false;
     this.setState('loading');
     this.mutating = true;
     this.queue.playAlbum(release, title, artist, startIndex);
@@ -222,6 +225,7 @@ export class PlayerController {
   }
 
   async next(): Promise<void> {
+    ++this.loadingSeq;
     this.mutating = true;
     const item = this.queue.next();
     this.mutating = false;
@@ -229,6 +233,7 @@ export class PlayerController {
   }
 
   async previous(): Promise<void> {
+    ++this.loadingSeq;
     if (this.model.get().positionSeconds > 3) {
       await this.seek(0);
       return;
@@ -262,6 +267,7 @@ export class PlayerController {
       const next = this.queue.at(qi + 1);
       if (next) {
         const ni = await this.backend!.prepareNext(next.track.audio.url, next.track.audio.size);
+        if (seq !== this.loadingSeq) return;
         if (ni) this.lengths.set(qi + 1, ni.lengthSamples);
       }
       this.resetOffset = this.offsets()[qi] ?? 0;
@@ -270,7 +276,7 @@ export class PlayerController {
       this.model.update((m) => ({
         ...m,
         current: item,
-        state: 'buffering',
+        state: this.pauseIntent ? 'paused' : 'buffering',
         positionSeconds: this.resetOffset / this.rate(),
         durationSeconds: this.totalLength() / this.rate(),
       }));
@@ -283,7 +289,9 @@ export class PlayerController {
 
   private async onEos(): Promise<void> {
     if (!this.backend) return;
+    const seq = this.loadingSeq;
     const info = await this.backend.advance();
+    if (seq !== this.loadingSeq) return;
     this.mutating = true;
     const item = this.queue.next();
     this.mutating = false;
@@ -300,6 +308,7 @@ export class PlayerController {
     const next = this.queue.at(qi + 1);
     if (next) {
       const ni = await this.backend.prepareNext(next.track.audio.url, next.track.audio.size);
+      if (seq !== this.loadingSeq) return;
       if (ni) this.lengths.set(qi + 1, ni.lengthSamples);
     }
     this.model.update((m) => ({
@@ -316,13 +325,19 @@ export class PlayerController {
     if (m.state === 'loading' || m.state === 'buffering') {
       this.backend
         ?.play()
-        .then(() => this.setState('playing'))
+        .then(() => {
+          const state = this.model.get().state;
+          if (state === 'loading' || state === 'buffering') this.setState('playing');
+        })
         .catch(() => undefined);
     }
   }
 
   private onBuffering(): void {
-    this.setState('buffering');
+    const state = this.model.get().state;
+    if (state === 'loading' || state === 'buffering' || state === 'playing') {
+      this.setState('buffering');
+    }
   }
 
   private tick(): void {
@@ -373,20 +388,25 @@ export class PlayerController {
     } else if (m.state === 'paused') {
       await this.resume();
     } else if (m.state === 'ended' || m.state === 'idle' || m.state === 'error') {
-      if (m.current) await this._load();
+      if (m.current) {
+        this.pauseIntent = false;
+        await this._load();
+      }
     } else {
       await this.resume();
     }
   }
 
   async pause(): Promise<void> {
+    this.pauseIntent = true;
+    this.setState('paused');
     this.backend?.pausePumping();
     await this.backend?.pause();
-    this.setState('paused');
   }
 
   async resume(): Promise<void> {
     if (!this.backend) return;
+    this.pauseIntent = false;
     this.backend.startPumping();
     await this.backend.play();
     this.setState('playing');
@@ -419,7 +439,7 @@ export class PlayerController {
       // reported position matches where the audio actually decodes from.
       if (qi === this.queue.get().index) {
         this.resetOffset = base + within;
-        this.setState('buffering');
+        this.setState(this.pauseIntent ? 'paused' : 'buffering');
         this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
         await this.backend!.seek(within);
         this.backend!.startPumping();
@@ -428,13 +448,15 @@ export class PlayerController {
     }
 
     this.resetOffset = base + within;
-    this.setState('buffering');
+    this.setState(this.pauseIntent ? 'paused' : 'buffering');
     this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
     await this.backend.seek(within);
     this.backend.startPumping();
   }
 
   async stop(): Promise<void> {
+    ++this.loadingSeq;
+    this.pauseIntent = false;
     this.backend?.pausePumping();
     await this.backend?.pause();
     this.pendingEnded = false;
@@ -445,6 +467,8 @@ export class PlayerController {
    *  sign-out / session expiry so audio never leaks across auth boundaries.
    *  The controller stays usable: the next play rebuilds its backend. */
   async teardown(): Promise<void> {
+    ++this.loadingSeq;
+    this.pauseIntent = false;
     this.backend?.pausePumping();
     this.pendingEnded = false;
     this.lengths.clear();

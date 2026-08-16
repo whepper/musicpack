@@ -59,6 +59,7 @@ struct mpc_demux_t {
 	mpc_uint8_t buffer[DEMUX_BUFFER_SIZE + MAX_FRAME_SIZE];
 	mpc_size_t bytes_total;
 	mpc_bits_reader bits_reader;
+	mpc_bool_t read_error;
 	mpc_int32_t block_bits; /// bits remaining in current audio block
 	mpc_uint_t block_frames; /// frames remaining in current audio block
 
@@ -66,6 +67,8 @@ struct mpc_demux_t {
 	mpc_seek_t * seek_table;
 	mpc_uint_t seek_pwr; /// distance between 2 frames in seek_table = 2^seek_pwr
 	mpc_uint32_t seek_table_size; /// used size in seek_table
+	mpc_uint32_t seek_table_capacity; /// allocated entries in seek_table
+	mpc_bool_t reader_sync_lost; /// failed seek could not restore reader position
 
 	// chapters
 	mpc_seek_t chap_pos; /// supposed position of the first chapter block

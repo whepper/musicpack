@@ -6,5 +6,6 @@ includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 Name: libmpcdec
 Description: Musepack (MPC) decoder library
 Version: @PROJECT_VERSION@
-Libs: -L${libdir} -lmpcdec
+Libs: -L${libdir} -lmusepack
+Libs.private: @MUSEPACK_PC_PRIVATE_LIBS@
 Cflags: -I${includedir}

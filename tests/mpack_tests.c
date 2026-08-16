@@ -1419,6 +1419,90 @@ test_ape_write(void)
     remove_temp_dir(dir, "t.bin");
 }
 
+static void
+test_wr_le32(unsigned char *p, unsigned int value)
+{
+    p[0] = (unsigned char) value;
+    p[1] = (unsigned char) (value >> 8);
+    p[2] = (unsigned char) (value >> 16);
+    p[3] = (unsigned char) (value >> 24);
+}
+
+static int
+write_ape_case(const char *file, const unsigned char *body, size_t body_len,
+               unsigned int item_count)
+{
+    unsigned char footer[32] = { 0 };
+    FILE *f = fopen(file, "wb");
+    if (f == 0)
+        return 0;
+    memcpy(footer, "APETAGEX", 8);
+    test_wr_le32(footer + 8, 2000);
+    test_wr_le32(footer + 12, (unsigned int) (body_len + sizeof footer));
+    test_wr_le32(footer + 16, item_count);
+    if (fwrite("AUDIO", 1, 5, f) != 5 ||
+        (body_len > 0 && fwrite(body, 1, body_len, f) != body_len) ||
+        fwrite(footer, 1, sizeof footer, f) != sizeof footer) {
+        fclose(f);
+        return 0;
+    }
+    return fclose(f) == 0;
+}
+
+static void
+expect_ape_case_invalid(const char *file, const unsigned char *body,
+                        size_t body_len, unsigned int item_count,
+                        const char *message)
+{
+    musicpack_tag_set s;
+    CHECK(write_ape_case(file, body, body_len, item_count),
+          "write malformed APE case");
+    memset(&s, 0, sizeof s);
+    CHECK(musicpack_ape_read(file, &s) == MUSICPACK_ERR_INVALID, message);
+    musicpack_tag_set_free(&s);
+}
+
+static void
+test_ape_malformed_item_framing(void)
+{
+    char dir[512];
+    char file[600];
+    static const unsigned char valid_item[] = {
+        1, 0, 0, 0, 0, 0, 0, 0, 'K', 0, 'V'
+    };
+    static const unsigned char short_header[] = {
+        1, 0, 0, 0, 0, 0, 0
+    };
+    static const unsigned char unterminated_key[] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 'K'
+    };
+    static const unsigned char value_past_key[] = {
+        4, 0, 0, 0, 2, 0, 0, 0, 'A', 'B', 'C', 0
+    };
+    static const unsigned char trailing_byte[] = {
+        1, 0, 0, 0, 0, 0, 0, 0, 'K', 0, 'V', 0xff
+    };
+
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        CHECK(0, "make malformed APE temp dir");
+        return;
+    }
+    snprintf(file, sizeof file, "%s/malformed.ape", dir);
+    expect_ape_case_invalid(file, short_header, sizeof short_header, 1,
+                            "short APE item header rejected");
+    expect_ape_case_invalid(file, unterminated_key, sizeof unterminated_key, 1,
+                            "unterminated APE item key rejected");
+    expect_ape_case_invalid(file, value_past_key, sizeof value_past_key, 1,
+          "APE value past key-delimited item region rejected");
+    expect_ape_case_invalid(file, valid_item, sizeof valid_item, 2,
+                            "APE item-count overstatement rejected");
+    expect_ape_case_invalid(file, valid_item, sizeof valid_item, 0,
+                            "APE item-count understatement rejected");
+    expect_ape_case_invalid(file, trailing_byte, sizeof trailing_byte, 1,
+                            "bytes after declared APE items rejected");
+    remove_temp_dir(dir, "malformed.ape");
+}
+
 /* ------------------------------------------------------------------ */
 /* Phase 3A mapping core: tag-set -> manifest, manifest -> APEv2       */
 /* ------------------------------------------------------------------ */
@@ -2065,6 +2149,7 @@ int main(int argc, char **argv)
         test_flac_negatives(metadir);
         test_ape_read_fixture(metadir);
         test_ape_write();
+        test_ape_malformed_item_framing();
         test_meta_helpers();
         test_map_album_vorbis();
         test_map_album_ape();

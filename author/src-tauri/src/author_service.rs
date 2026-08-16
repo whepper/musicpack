@@ -534,14 +534,25 @@ impl AuthorService {
     /// until the run finishes; successful runs keep it for the build step,
     /// failures/cancels remove it (see `cleanup_staging`).
     pub fn encode_staging_dir(&self) -> Result<PathBuf, AuthorError> {
-        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "musicpack-author-encode-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AuthorError::Io(format!("cannot create staging directory: {e}")))?;
-        Ok(dir)
+        for _ in 0..100 {
+            let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "musicpack-author-encode-{}-{n}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(AuthorError::Io(format!(
+                        "cannot create staging directory: {error}"
+                    )))
+                }
+            }
+        }
+        Err(AuthorError::Io(
+            "cannot allocate a fresh staging directory".to_string(),
+        ))
     }
 
     /// Spawns `musicpack encode-draft` for the current draft. Returns the
@@ -913,7 +924,7 @@ mod tests {
             r#"{{"profile":"musicpack-sonic-openl3-v1","modelDir":"/verified/models/profile","tracks":[]}}"#
         );
         let (mut child, _tmp) = svc.sonic_spawn(&job).unwrap();
-        use std::io::{BufRead, Read};
+        use std::io::Read;
         let mut out = String::new();
         let child_out = child.stdout.as_mut().unwrap();
         child_out.read_to_string(&mut out).unwrap();
@@ -1034,6 +1045,15 @@ mod tests {
         let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
         let err = svc.cleanup_staging(tmp.path().to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("not a MusicPack Author staging directory"));
+    }
+
+    #[test]
+    fn encode_staging_dir_is_precreated_and_empty() {
+        let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
+        let dir = svc.encode_staging_dir().unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        svc.cleanup_staging(dir.to_str().unwrap()).unwrap();
     }
 
     #[test]

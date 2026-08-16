@@ -181,8 +181,10 @@ MUSICPACK_API void musicpack_sonic_free(musicpack_sonic *s);
 /// against their registry metadata (dimensions/encoding/distance); every
 /// document is checked for internal consistency (no duplicate track entries,
 /// `tracksContributing` matches the non-null count, album embedding exists
-/// exactly when contributors exist). When \p m is non-NULL, `tracks[]` must
-/// contain exactly one entry per manifest track.
+/// exactly when contributors exist, and the album vector matches the
+/// normalized equal-track mean of non-null track vectors within the stored
+/// float32 norm tolerance). When \p m is non-NULL, `tracks[]` must contain
+/// exactly one entry per manifest track.
 ///
 /// \p profile_state (optional) receives the profile state so the caller can
 /// distinguish fully validated (SUPPORTED) from structurally validated

@@ -74,8 +74,8 @@ decode_mpc(const char *path, sonic_pcm *out)
             }
         }
         for (i = 0; i < frames; i++) {
-            double l = (double) tmp[i * 2];
-            double r = ch > 1 ? (double) tmp[i * 2 + 1] : l;
+            double l = (double) tmp[i * ch];
+            double r = ch > 1 ? (double) tmp[i * ch + 1] : l;
             buf[len + i] = (float) ((l + r) * 0.5);
         }
         len += frames;

@@ -62,8 +62,18 @@ pass() { echo "PASS  $1"; PASSED=$((PASSED + 1)); }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/encode-integration.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# Exercise configured tool paths without relying on shell quoting. The CLI
+# must pass this path directly to exec, including every metacharacter.
+FFMPEG_REAL="$(command -v "$FFMPEG")"
+TOOL_DIR="$TMP/tool's ; [bin]"
+mkdir -p "$TOOL_DIR"
+ln -s "$FFMPEG_REAL" "$TOOL_DIR/ffmpeg tool's ; [configured]"
+FFMPEG="$TOOL_DIR/ffmpeg tool's ; [configured]"
+
 ALBUM="$TMP/album"
 cp -R "$FIXTURE" "$ALBUM"
+mv "$ALBUM/disc-1/01 - Midnight Relay.flac" \
+   "$ALBUM/disc-1/01 - Midnight's \$; [Relay].flac"
 shasum -a 256 "$ALBUM"/disc-*/*.flac "$ALBUM"/cover.jpg > "$TMP/source-before.sha"
 
 # 1. inspect the 2-disc fixture
@@ -101,6 +111,50 @@ d["identity"] = {"source": "local", "confidence": "none"}
 json.dump(d, open(sys.argv[2], "w"))
 EOF
 STAGE="$TMP/stage"
+# Author creates its staging directory before spawning the CLI. That empty
+# directory is the supported contract; every other existing destination is
+# rejected without modification.
+printf 'keep\n' > "$TMP/stage-file"
+mkdir "$TMP/stage-nonempty"
+printf 'keep\n' > "$TMP/stage-nonempty/sentinel"
+mkdir "$TMP/stage-link-target"
+ln -s "$TMP/stage-link-target" "$TMP/stage-link"
+if ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-file" \
+        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+   && [ "$(cat "$TMP/stage-file")" = keep ] \
+   && ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-nonempty" \
+        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+   && [ "$(cat "$TMP/stage-nonempty/sentinel")" = keep ] \
+   && ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-link" \
+        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+   && [ -L "$TMP/stage-link" ]; then
+    pass "encode-draft rejects files, symlinks and nonempty staging destinations"
+else
+    fail "encode-draft rejects files, symlinks and nonempty staging destinations"
+fi
+
+# If the staging root is replaced after validation, failure cleanup must not
+# follow the replacement symlink and delete files in its target.
+SWAP_STAGE="$TMP/stage-swap"
+SWAP_VICTIM="$TMP/stage-swap-victim"
+SWAP_FFMPEG="$TMP/swap-ffmpeg"
+mkdir "$SWAP_STAGE" "$SWAP_VICTIM"
+printf 'keep\n' > "$SWAP_VICTIM/sentinel"
+printf '%s\n' '#!/bin/sh' \
+    'rm -rf "$STAGE_SWAP"' \
+    'ln -s "$STAGE_VICTIM" "$STAGE_SWAP"' \
+    'exit 1' > "$SWAP_FFMPEG"
+chmod +x "$SWAP_FFMPEG"
+if ! STAGE_SWAP="$SWAP_STAGE" STAGE_VICTIM="$SWAP_VICTIM" \
+        "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$SWAP_STAGE" \
+        --mpcenc "$MPCENC" --ffmpeg "$SWAP_FFMPEG" --json >/dev/null 2>&1 \
+   && [ -L "$SWAP_STAGE" ] \
+   && [ "$(cat "$SWAP_VICTIM/sentinel")" = keep ]; then
+    pass "encode-draft cleanup refuses a replaced staging symlink"
+else
+    fail "encode-draft cleanup refuses a replaced staging symlink"
+fi
+mkdir "$STAGE"
 if "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$STAGE" --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json 2>/dev/null > "$TMP/encode.json" \
    && $PY - "$TMP/encode.json" "$TMP/transformed.json" <<'EOF'
 import json, sys, os
@@ -133,9 +187,9 @@ json.dump(dr, open(sys.argv[2], "w"))
 print("ok")
 EOF
 then
-    pass "encode-draft stages tagged .mpc tracks and transforms the draft"
+    pass "encode-draft accepts Author's precreated empty staging directory"
 else
-    fail "encode-draft stages tagged .mpc tracks and transforms the draft"
+    fail "encode-draft accepts Author's precreated empty staging directory"
 fi
 
 # 2b. the encoded files carry the projected + passthrough APEv2 tags

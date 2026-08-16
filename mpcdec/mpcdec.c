@@ -34,7 +34,13 @@
 #include <stdio.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <stdint.h>
+#include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <signal.h>
+#endif
 #include <musepack/musepack.h>
 #include <libwaveformat.h>
 #include <getopt.h>
@@ -90,7 +96,8 @@ static void print_info(mpc_streaminfo * info, char * filename)
 	fprintf(stderr, "average bitrate: %6.1f kbps\n", info->average_bitrate * 1.e-3);
 	fprintf(stderr, "samplerate: %d Hz\n", info->sample_freq);
 	fprintf(stderr, "channels: %d\n", info->channels);
-	fprintf(stderr, "length: %d:%.2d (%u samples)\n", minutes, seconds, (mpc_uint32_t)mpc_streaminfo_get_length_samples(info));
+	fprintf(stderr, "length: %d:%.2d (%" PRIu64 " samples)\n", minutes, seconds,
+	        (uint64_t) mpc_streaminfo_get_length_samples(info));
 	fprintf(stderr, "file size: %" PRId64 " Bytes\n", info->total_file_length);
 	fprintf(stderr, "track peak: %2.2f dB\n", info->peak_title / 256.f);
 	fprintf(stderr, "track gain: %2.2f dB / %2.2f dB\n", info->gain_title / 256.f, info->gain_title == 0 ? 0 : 64.82f - info->gain_title / 256.f);
@@ -115,17 +122,25 @@ usage(const char *exename)
 int
 main(int argc, char **argv)
 {
-    mpc_reader reader;
-	musepack_decoder* decoder;
+	mpc_reader reader;
+	musepack_decoder* decoder = NULL;
 	mpc_streaminfo si;
-	musepack_error err;
+	musepack_error err = MUSEPACK_OK;
 	mpc_status reader_err;
 	mpc_bool_t info = MPC_FALSE, is_wav_output = MPC_FALSE, check = MPC_FALSE;
-    float sample_buffer[MUSEPACK_FRAME_MAX * 2];
-    clock_t begin, end, sum; int total_samples; t_wav_output_file wav_output;
+	float sample_buffer[MUSEPACK_FRAME_MAX * 2];
+	clock_t begin, end;
+	uint64_t sum = 0, total_samples = 0;
+	t_wav_output_file wav_output;
+	FILE *output = NULL;
+	int reader_open = 0, wav_open = 0, exit_code = 1;
 	int c;
 
     fprintf(stderr, About);
+
+#ifndef _WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 
 	while ((c = getopt(argc , argv, "ihc")) != -1) {
 		switch (c) {
@@ -141,47 +156,72 @@ main(int argc, char **argv)
 		}
 	}
 
-	if(2 < argc - optind || argc - optind < 1)
-    {
+	if(2 < argc - optind || argc - optind < 1) {
         usage(argv[0]);
         return 0;
     }
 
 	if (strcmp(argv[optind], "-") == 0) {
 		SET_BINARY_MODE(stdin);
-		reader_err = mpc_reader_init_stdio_stream(& reader, stdin);
+		reader_err = mpc_reader_init_stdio_stream(&reader, stdin);
 	} else
 		reader_err = mpc_reader_init_stdio(&reader, argv[optind]);
-    if(reader_err < 0) return !MPC_STATUS_OK;
+	if(reader_err < 0) {
+		fprintf(stderr, "Unable to open input\n");
+		goto cleanup;
+	}
+	reader_open = 1;
 
-    decoder = musepack_decoder_open(&reader, &err);
-    if(!decoder) return !MPC_STATUS_OK;
-    musepack_decoder_get_info(decoder, &si);
+	decoder = musepack_decoder_open(&reader, &err);
+	if(!decoder) {
+		fprintf(stderr, "Invalid or unreadable Musepack stream\n");
+		goto cleanup;
+	}
+	if (musepack_decoder_get_info(decoder, &si) != MUSEPACK_OK)
+		goto cleanup;
 
 	if (info == MPC_TRUE) {
 		print_info(&si, argv[optind]);
-		musepack_decoder_close(decoder);
-		mpc_reader_exit_stdio(&reader);
-		return 0;
+		exit_code = 0;
+		goto cleanup;
 	}
 
 	if (!check)
 		is_wav_output = argc - optind > 1;
-    if(is_wav_output)
-    {
-        t_wav_output_file_callback wavo_fc;
-        memset(&wav_output, 0, sizeof wav_output);
-        wavo_fc.m_seek      = mpc_wav_output_seek;
-        wavo_fc.m_write     = mpc_wav_output_write;
+	if(is_wav_output) {
+		t_wav_output_file_callback wavo_fc;
+		uint64_t playable = musepack_decoder_length_samples(decoder);
+		uint64_t expected_samples;
+		memset(&wav_output, 0, sizeof wav_output);
+		wavo_fc.m_seek = mpc_wav_output_seek;
+		wavo_fc.m_write = mpc_wav_output_write;
+		if (si.channels == 0 || playable > UINT64_MAX / si.channels) {
+			fprintf(stderr, "Stream length is too large\n");
+			goto cleanup;
+		}
+		expected_samples = playable * si.channels;
+		if (expected_samples > (UINT32_MAX - 36u) / 2u) {
+			fprintf(stderr, "Output is too large for a RIFF/WAV file\n");
+			goto cleanup;
+		}
 		if (strcmp(argv[optind + 1], "-") == 0) {
 			SET_BINARY_MODE(stdout);
-		    wavo_fc.m_user_data = stdout;
+			output = stdout;
 		} else
-			wavo_fc.m_user_data = fopen(argv[optind + 1], "wb");
-        if(!wavo_fc.m_user_data) return !MPC_STATUS_OK;
-        err = waveformat_output_open(&wav_output, wavo_fc, si.channels, 16, 0, si.sample_freq, (t_wav_uint32) si.samples * si.channels);
-        if(!err) return !MPC_STATUS_OK;
-    }
+			output = fopen(argv[optind + 1], "wb");
+		if(!output) {
+			fprintf(stderr, "Unable to open output\n");
+			goto cleanup;
+		}
+		wavo_fc.m_user_data = output;
+		if(!waveformat_output_open(&wav_output, wavo_fc, si.channels, 16, 0,
+		                           si.sample_freq, (t_wav_uint32) expected_samples)) {
+			fprintf(stderr, "Unable to write WAV header\n");
+			err = MUSEPACK_ERR_IO;
+			goto cleanup;
+		}
+		wav_open = 1;
+	}
 
     if (check) {
         err = musepack_decoder_check_stream(decoder);
@@ -189,26 +229,21 @@ main(int argc, char **argv)
             fprintf(stderr, "An error occured while decoding\n");
         else
             fprintf(stderr, "No error found\n");
-        musepack_decoder_close(decoder);
-        mpc_reader_exit_stdio(&reader);
-        return err == MUSEPACK_OK ? 0 : 1;
-    }
+		exit_code = err == MUSEPACK_OK ? 0 : 1;
+		goto cleanup;
+	}
 
-    sum = total_samples = 0;
-    while(MPC_TRUE)
-    {
-        uint64_t frames;
-        uint64_t max_frames = MUSEPACK_FRAME_MAX;
-        begin        = clock();
-        err = musepack_decoder_read(decoder, sample_buffer, max_frames, &frames);
-        end          = clock();
-        if (err == MUSEPACK_ERR_EOF)
-            break;
-        if (err != MUSEPACK_OK)
-            break;
+	while(MPC_TRUE) {
+		uint64_t frames;
+		begin = clock();
+		err = musepack_decoder_read(decoder, sample_buffer, MUSEPACK_FRAME_MAX, &frames);
+		end = clock();
+		if (end >= begin)
+			sum += (uint64_t) (end - begin);
+		if (err == MUSEPACK_ERR_EOF || err != MUSEPACK_OK)
+			break;
 
-        total_samples += (int) frames;
-        sum           += end - begin;
+		total_samples += frames;
 
 		if(is_wav_output) {
 			uint64_t n = frames * si.channels;
@@ -225,35 +260,44 @@ main(int argc, char **argv)
 #else
 			if(waveformat_output_process_float32(&wav_output, sample_buffer, (t_wav_uint32) n) != (t_wav_uint32) n)
 #endif
-                break;
+			{
+				err = MUSEPACK_ERR_IO;
+				break;
+			}
 		}
-    }
+	}
 
 	if (err != MUSEPACK_OK && err != MUSEPACK_ERR_EOF)
 		fprintf(stderr, "An error occured while decoding\n");
 
-	if (!check) {
-		fprintf(stderr, "%u samples ", total_samples);
-		if (sum <= 0) sum = 1;
-		total_samples = (mpc_uint32_t) ((mpc_uint64_t) total_samples * CLOCKS_PER_SEC * 100 / ((mpc_uint64_t)si.sample_freq * sum));
-		fprintf(stderr, "decoded in %u ms (%u.%02ux)\n",
-			(unsigned int) (sum * 1000 / CLOCKS_PER_SEC),
-			total_samples / 100,
-			total_samples % 100
-			);
+	{
+		uint64_t speed;
+		if (sum == 0) sum = 1;
+		speed = (uint64_t) ((long double) total_samples * CLOCKS_PER_SEC * 100 /
+		                   ((long double) si.sample_freq * sum));
+		fprintf(stderr, "%" PRIu64 " samples decoded in %" PRIu64
+		        " ms (%" PRIu64 ".%02" PRIu64 "x)\n", total_samples,
+		        sum * 1000 / CLOCKS_PER_SEC, speed / 100, speed % 100);
 	}
+	exit_code = err == MUSEPACK_OK || err == MUSEPACK_ERR_EOF ? 0 : 1;
 
-    musepack_decoder_close(decoder);
-    mpc_reader_exit_stdio(&reader);
-    if(is_wav_output)
-    {
-        waveformat_output_close(&wav_output);
-        fclose(wav_output.m_callback.m_user_data);
-    }
+cleanup:
+	if (wav_open && !waveformat_output_close(&wav_output)) {
+		fprintf(stderr, "Unable to finalize WAV output\n");
+		exit_code = 1;
+	}
+	if (output != NULL && fclose(output) != 0) {
+		fprintf(stderr, "Unable to close WAV output\n");
+		exit_code = 1;
+	}
+	if (decoder != NULL)
+		musepack_decoder_close(decoder);
+	if (reader_open)
+		mpc_reader_exit_stdio(&reader);
 
 #ifdef _MSC_VER
     assert(_CrtCheckMemory());
     _CrtDumpMemoryLeaks();
 #endif
-    return err == MUSEPACK_OK || err == MUSEPACK_ERR_EOF ? 0 : 1;
+	return exit_code;
 }

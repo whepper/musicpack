@@ -155,14 +155,23 @@ streaminfo_read_header_sv7(mpc_streaminfo* si, mpc_bits_reader * r)
 
 	if (last_frame_samples == 0) last_frame_samples = MPC_FRAME_LENGTH;
 	else if (last_frame_samples > MPC_FRAME_LENGTH) return MPC_STATUS_FAIL;
-	si->samples = (mpc_int64_t) frames * MPC_FRAME_LENGTH;
-	if (si->is_true_gapless)
-		si->samples -= (MPC_FRAME_LENGTH - last_frame_samples);
-	else
+	if (frames == 0)
+		return MPC_STATUS_FAIL;
+	si->samples = (mpc_uint64_t) frames * MPC_FRAME_LENGTH;
+	if (si->is_true_gapless) {
+		mpc_uint32_t padding = MPC_FRAME_LENGTH - last_frame_samples;
+		if (si->samples < padding)
+			return MPC_STATUS_FAIL;
+		si->samples -= padding;
+	} else {
+		if (si->samples <= MPC_DECODER_SYNTH_DELAY)
+			return MPC_STATUS_FAIL;
 		si->samples -= MPC_DECODER_SYNTH_DELAY;
+	}
 
-	si->average_bitrate = (si->tag_offset  - si->header_position) * 8.0
-			*  si->sample_freq / si->samples;
+	if (si->tag_offset > si->header_position)
+		si->average_bitrate = (si->tag_offset - si->header_position) * 8.0
+				* si->sample_freq / si->samples;
 
 	return check_streaminfo(si);
 }
@@ -200,6 +209,8 @@ streaminfo_read_header_sv8(mpc_streaminfo* si, const mpc_bits_reader * r_in,
 
 	mpc_bits_get_size(&r, &si->samples);
 	mpc_bits_get_size(&r, &si->beg_silence);
+	if (si->beg_silence > si->samples)
+		return MPC_STATUS_FAIL;
 
 	si->is_true_gapless = 1;
 	samplefreq_idx = mpc_bits_read(&r, 3);
@@ -214,7 +225,7 @@ streaminfo_read_header_sv8(mpc_streaminfo* si, const mpc_bits_reader * r_in,
 
 	si->bitrate = 0;
 
-	if ((si->samples - si->beg_silence) != 0)
+	if (si->samples != si->beg_silence && si->tag_offset > si->header_position)
 		si->average_bitrate = (si->tag_offset - si->header_position) * 8.0
 				*  si->sample_freq / (si->samples - si->beg_silence);
 

@@ -94,6 +94,10 @@ install(DIRECTORY include/musicpack DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # pkg-config
 set(prefix ${CMAKE_INSTALL_PREFIX})
+set(MUSICPACK_PC_PRIVATE_LIBS "")
+if(UNIX AND NOT APPLE)
+  set(MUSICPACK_PC_PRIVATE_LIBS "-lm")
+endif()
 configure_file(musicpack.pc.in ${CMAKE_CURRENT_BINARY_DIR}/musicpack.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/musicpack.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)

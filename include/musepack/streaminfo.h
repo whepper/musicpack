@@ -46,6 +46,7 @@
 #define MUSEPACK_STREAMINFO_H_
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <mpc/streaminfo.h>
 
@@ -55,10 +56,6 @@
 extern "C" {
 #endif
 
-/// Minimum valid value for musepack_stream_info::size. This is the v1
-/// structure size and never shrinks; future versions only append fields.
-#define MUSEPACK_STREAM_INFO_MIN_SIZE ((unsigned int) sizeof(musepack_stream_info))
-
 /// Versioned stream properties structure.
 ///
 /// Callers must set `size` to `sizeof(musepack_stream_info)` (or at least
@@ -67,8 +64,9 @@ extern "C" {
 /// bytes, so consumers compiled against an older (smaller) layout keep
 /// working with a newer library; new fields are always appended.
 ///
-/// All integer fields use fixed-width types, so the layout is identical on
-/// 32-bit and 64-bit platforms and imports cleanly into Swift/JNI.
+/// All integer fields use fixed-width types, so field offsets through the v1
+/// end are stable and import cleanly into Swift/JNI. Structure tail padding
+/// may still vary by platform and is deliberately excluded from the minimum.
 typedef struct musepack_stream_info {
     mpc_uint32_t size;           ///< IN: sizeof(musepack_stream_info)
     mpc_uint32_t stream_version; ///< Stream version (7 or 8)
@@ -89,6 +87,14 @@ typedef struct musepack_stream_info {
     char encoder[64];            ///< Human-readable encoder identification
     char profile_name[32];       ///< Quality profile name (fixed buffer, no ptr)
 } musepack_stream_info;
+
+/// End offset of the last v1 field. Unlike sizeof(musepack_stream_info), this
+/// excludes architecture-dependent trailing alignment and stays unchanged
+/// when future fields are appended.
+#define MUSEPACK_STREAM_INFO_V1_END \
+    ((unsigned int) (offsetof(musepack_stream_info, profile_name) + \
+                     sizeof(((musepack_stream_info *) 0)->profile_name)))
+#define MUSEPACK_STREAM_INFO_MIN_SIZE MUSEPACK_STREAM_INFO_V1_END
 
 #ifdef __cplusplus
 }

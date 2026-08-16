@@ -86,8 +86,10 @@ jobs:
         shell: bash
         run: python3 scripts/ci_ctest.py --build build --config Release synth_ab synth_state_ab enc_ab psy_ab
 
-      - name: Test unit, package, and server core
-        run: python3 scripts/ci_ctest.py --build build --config Release unit mpack mpack_conformance server_unit
+      - name: Test unit, package, install, and server core
+        run: >
+          python3 scripts/ci_ctest.py --build build --config Release
+          unit mpack mpack_conformance install_consumer server_unit
 
       # enc_compat is excluded here: its manifest mode is a local developer
       # fallback pinned to the arm64-clang -O0 reference build. CI enforces

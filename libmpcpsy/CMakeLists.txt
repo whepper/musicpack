@@ -24,7 +24,12 @@ endif()
 if(MPC_ENABLE_SIMD AND MPC_PSY_SIMD_SUPPORTED)
   target_sources(mpcpsy PRIVATE fft_routines_simd.c fft4g_simd.c)
   target_compile_definitions(mpcpsy PRIVATE MPC_ENABLE_PSY_SIMD_KERNEL)
+  set(MPC_PSY_SIMD_ENABLED TRUE)
+else()
+  set(MPC_PSY_SIMD_ENABLED FALSE)
 endif()
+set(MPC_PSY_SIMD_ENABLED ${MPC_PSY_SIMD_ENABLED} CACHE INTERNAL
+    "Compiled psychoacoustic SIMD backend")
 
 target_link_libraries(mpcpsy PUBLIC mpc_headers)
 

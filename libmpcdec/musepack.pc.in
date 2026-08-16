@@ -7,4 +7,5 @@ Name: musepack
 Description: Musepack (MPC) decoder library
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lmusepack
+Libs.private: @MUSEPACK_PC_PRIVATE_LIBS@
 Cflags: -I${includedir}

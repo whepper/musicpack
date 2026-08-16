@@ -448,6 +448,51 @@ musicpack_sonic_free(musicpack_sonic *s)
 /* document validation                                                 */
 /* ------------------------------------------------------------------ */
 
+static int
+embedding_valid(const musicpack_sonic_embedding *e, size_t dimensions)
+{
+    if (!e->present)
+        return e->data == 0 && e->dimensions == 0;
+    return e->data != 0 && e->dimensions == dimensions &&
+           musicpack_sonic_vector_validate(e->data, dimensions,
+                                           MUSICPACK_SONIC_NORM_TOLERANCE) == MUSICPACK_OK;
+}
+
+static int
+album_embedding_matches_mean(const musicpack_sonic *s, size_t contributing)
+{
+    size_t i, j;
+    double norm, norm2 = 0.0, error2 = 0.0;
+
+    /* Mirror sonic_album_equal exactly: ordered float accumulation and
+       division, followed by a double-precision norm and float output. */
+    for (j = 0; j < s->dimensions; j++) {
+        float sum = 0.0f;
+        for (i = 0; i < s->track_count; i++)
+            if (s->tracks[i].embedding.present)
+                sum += s->tracks[i].embedding.data[j];
+        sum /= (float) contributing;
+        norm2 += (double) sum * (double) sum;
+    }
+    if (norm2 == 0.0 || !isfinite(norm2))
+        return 0;
+    norm = sqrt(norm2);
+
+    for (j = 0; j < s->dimensions; j++) {
+        float sum = 0.0f;
+        float expected;
+        double delta;
+        for (i = 0; i < s->track_count; i++)
+            if (s->tracks[i].embedding.present)
+                sum += s->tracks[i].embedding.data[j];
+        sum /= (float) contributing;
+        expected = (float) ((double) sum / norm);
+        delta = (double) s->album.data[j] - expected;
+        error2 += delta * delta;
+    }
+    return sqrt(error2) <= MUSICPACK_SONIC_NORM_TOLERANCE;
+}
+
 musicpack_status
 musicpack_sonic_validate(const musicpack_sonic *s, const musicpack_manifest *m,
                          musicpack_sonic_profile_state *profile_state)
@@ -456,7 +501,12 @@ musicpack_sonic_validate(const musicpack_sonic *s, const musicpack_manifest *m,
     musicpack_sonic_profile_state state;
     size_t i, j, contributing = 0;
 
-    if (s == 0)
+    if (s == 0 || s->profile_id == 0 || s->distance == 0 || s->encoding == 0 ||
+        s->analyzer_tool == 0 || s->analyzer_tool_version == 0 ||
+        s->dimensions == 0 || s->dimensions > MUSICPACK_SONIC_MAX_DIMENSIONS ||
+        s->track_count > MUSICPACK_SONIC_MAX_TRACKS ||
+        (s->track_count > 0 && s->tracks == 0) ||
+        !embedding_valid(&s->album, s->dimensions))
         return MUSICPACK_ERR_INVALID;
 
     reg = musicpack_sonic_profile_get(s->profile_id);
@@ -475,6 +525,9 @@ musicpack_sonic_validate(const musicpack_sonic *s, const musicpack_manifest *m,
     /* internal consistency: no duplicate (disc, track); contributor count;
        album embedding exactly when contributors exist */
     for (i = 0; i < s->track_count; i++) {
+        if (s->tracks[i].disc < 1 || s->tracks[i].track < 1 ||
+            !embedding_valid(&s->tracks[i].embedding, s->dimensions))
+            return MUSICPACK_ERR_INVALID;
         for (j = i + 1; j < s->track_count; j++)
             if (s->tracks[i].disc == s->tracks[j].disc &&
                 s->tracks[i].track == s->tracks[j].track)
@@ -487,6 +540,8 @@ musicpack_sonic_validate(const musicpack_sonic *s, const musicpack_manifest *m,
     if (contributing == 0 && s->album.present)
         return MUSICPACK_ERR_INVALID;
     if (contributing > 0 && !s->album.present)
+        return MUSICPACK_ERR_INVALID;
+    if (contributing > 0 && !album_embedding_matches_mean(s, contributing))
         return MUSICPACK_ERR_INVALID;
 
     /* against the manifest: exactly one entry per manifest track */

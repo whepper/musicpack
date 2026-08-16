@@ -153,24 +153,26 @@ musicpack_ape_read(const char *path, musicpack_tag_set *out)
     }
     fclose(f);
 
-    for (i = 0; i < item_count && p < region_len; i++) {
+    for (i = 0; i < item_count; i++) {
         uint32_t vsize, iflags;
         size_t key_start, key_len;
 
-        if (p + 8 > region_len)
-            break;
+        if (region_len - p < 8)
+            goto invalid_framing;
         vsize = rd_le32(region + p);
         iflags = rd_le32(region + p + 4);
         p += 8;
         if ((size_t) vsize > region_len - p)
-            break;
+            goto invalid_framing;
         key_start = p;
         while (p < region_len && region[p] != '\0')
             p++;
         if (p >= region_len)
-            break; /* unterminated key */
+            goto invalid_framing;
         key_len = p - key_start;
         p++; /* skip key NUL */
+        if ((size_t) vsize > region_len - p)
+            goto invalid_framing;
         if (key_len == 0 || key_len > MUSICPACK_TAG_KEY_MAX) {
             p += vsize;
             continue;
@@ -179,6 +181,7 @@ musicpack_ape_read(const char *path, musicpack_tag_set *out)
             char *key = (char *) malloc(key_len + 1);
             if (key == 0) {
                 free(region);
+                musicpack_tag_set_free(out);
                 return MUSICPACK_ERR_NOMEM;
             }
             memcpy(key, region + key_start, key_len);
@@ -209,13 +212,21 @@ musicpack_ape_read(const char *path, musicpack_tag_set *out)
             free(key);
             if (st != MUSICPACK_OK) {
                 free(region);
+                musicpack_tag_set_free(out);
                 return st;
             }
         }
         p += vsize;
     }
+    if (p != region_len)
+        goto invalid_framing;
     free(region);
     return MUSICPACK_OK;
+
+invalid_framing:
+    free(region);
+    musicpack_tag_set_free(out);
+    return MUSICPACK_ERR_INVALID;
 }
 
 /* ---- writer ------------------------------------------------------- */
@@ -368,8 +379,20 @@ musicpack_ape_write(const char *path, const musicpack_tag_set *tags)
                 uint32_t v = rd_le32(probe + 8);
                 uint32_t ts = rd_le32(probe + 12);
                 if ((v == 1000 || v == 2000) && ts >= 32 && (long long) ts <= sz) {
-                    if (FILE_SEEK(f, sz - ts, SEEK_SET) == 0)
-                        file_truncate(f, sz - ts);
+                    long long start = sz - ts;
+                    if (start >= 32 && FILE_SEEK(f, start - 32, SEEK_SET) == 0) {
+                        unsigned char header[32];
+                        if (fread(header, 1, 32, f) == 32 &&
+                            memcmp(header, APE_PREAMBLE, 8) == 0 &&
+                            rd_le32(header + 8) == v &&
+                            rd_le32(header + 12) == ts &&
+                            rd_le32(header + 16) == rd_le32(probe + 16) &&
+                            (rd_le32(header + 20) == APE_HEADER_FLAGS ||
+                             rd_le32(header + 20) == 0xA0000000u))
+                            start -= 32;
+                    }
+                    if (FILE_SEEK(f, start, SEEK_SET) == 0)
+                        file_truncate(f, start);
                 }
             }
         }

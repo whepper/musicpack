@@ -36,6 +36,8 @@
 /// `musicpack` CLI: info / verify / create / import.
 
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,26 +49,25 @@
 #include <cJSON.h>
 
 #include "draft.h"
+#include "tool_path.h"
 
 #ifdef _WIN32
 # include <direct.h>
+# include <fcntl.h>
+# include <io.h>
 # include <process.h>
 # include <sys/stat.h>
+# include <windows.h>
 # define mkdir_p_one(p) _mkdir(p)
-# define POPEN _popen
-# define POPEN_MODE "rb" /* binary mode matters on Windows */
-# define PCLOSE _pclose
 # define getpid _getpid
 #else
 # include <dirent.h>
+# include <fcntl.h>
 # include <signal.h>
 # include <sys/stat.h>
 # include <sys/wait.h>
 # include <unistd.h>
 # define mkdir_p_one(p) mkdir(p, 0755)
-# define POPEN popen
-# define POPEN_MODE "r"  /* POSIX popen only accepts "r"/"w"; "rb" fails on macOS */
-# define PCLOSE pclose
 #endif
 
 #define ABOUT "musicpack - MusicPack package tool " MUSICPACK_VERSION "\n"
@@ -81,6 +82,20 @@ static char *read_file_bounded(const char *path, size_t max, musicpack_status *s
 static void json_error_out(const char *code, const char *msg);
 static void rm_rf(const char *path);
 static int unique_target(char *path, size_t cap);
+
+typedef struct {
+#ifdef _WIN32
+    PROCESS_INFORMATION process;
+    HANDLE job;
+#else
+    pid_t pid;
+#endif
+    FILE *output;
+} command_process;
+
+static int start_command(command_process *process, char *const argv[],
+                         int capture_stdout, int discard_stderr);
+static int finish_command(command_process *process);
 
 static int usage_error(const char *msg)
 {
@@ -267,30 +282,39 @@ measure_loudness(const char *path, int *has, double *lufs, double *peak,
         mpc_reader_exit_stdio(&reader);
     } else {
         /* decode via ffmpeg to interleaved f32le stereo 44.1k */
-        char cmd[4096];
-        FILE *pipe;
+        char *argv[15];
+        command_process process;
         float buf[8192];
         size_t n;
         double total_frames = 0;
+        int status;
 
         meter = musicpack_meter_new(2, 44100, 0);
         if (meter == 0)
             return 1;
         if (album != 0 && *album == 0)
             *album = musicpack_meter_new(2, 44100, 0);
-        snprintf(cmd, sizeof cmd,
-                 "ffmpeg -v error -i '%s' -f f32le -ac 2 -ar 44100 - 2>/dev/null",
-                 path);
-        pipe = POPEN(cmd, POPEN_MODE);
-        if (pipe == 0)
+        argv[0] = "ffmpeg";
+        argv[1] = "-v"; argv[2] = "error";
+        argv[3] = "-i"; argv[4] = (char *) path;
+        argv[5] = "-f"; argv[6] = "f32le";
+        argv[7] = "-ac"; argv[8] = "2";
+        argv[9] = "-ar"; argv[10] = "44100";
+        argv[11] = "-";
+        argv[12] = 0;
+        if (start_command(&process, argv, 1, 1) != 0)
             goto out;
-        while ((n = fread(buf, sizeof(float), sizeof buf / sizeof(float), pipe)) > 0) {
+        while ((n = fread(buf, sizeof(float), sizeof buf / sizeof(float),
+                          process.output)) > 0) {
             musicpack_meter_add_frames(meter, buf, n / 2);
             if (album != 0 && *album != 0)
                 musicpack_meter_add_frames(*album, buf, n / 2);
             total_frames += n / 2;
         }
-        if (PCLOSE(pipe) != 0)
+        status = ferror(process.output) ? -1 : 0;
+        fclose(process.output);
+        process.output = 0;
+        if (finish_command(&process) != 0 || status != 0)
             goto out;
         if (duration != 0)
             *duration = total_frames / 44100.0;
@@ -867,28 +891,35 @@ read_file_bounded(const char *path, size_t max, musicpack_status *status)
     return buf;
 }
 
-/* Fetches a URL into a NUL-terminated buffer (bounded). curl is invoked
-   through a shell, so every caller MUST validate its inputs (UUIDs /
-   digit-only barcodes) before building the URL; the identify-draft path
-   does this in cmd_identify_draft before this function is reached. */
+/* Fetches a URL into a NUL-terminated buffer (bounded). */
 static char *
 curl_fetch(const char *url, size_t max)
 {
-    char cmd[4096];
-    FILE *pipe;
+    command_process process;
+    char max_size[32];
+    char user_agent[128];
+    char *argv[12];
     char *buf;
     size_t cap = 65536, len = 0;
+    int read_error, status;
 
-    if (snprintf(cmd, sizeof cmd,
-                 "curl -s -m 30 --max-filesize %zu -A \"musicpack/%s (https://musicpack.dev)\" \"%s\"",
-                 max, MUSICPACK_VERSION, url) >= (int) sizeof cmd)
-        return 0;
-    pipe = POPEN(cmd, POPEN_MODE);
-    if (pipe == 0)
+    snprintf(max_size, sizeof max_size, "%zu", max);
+    snprintf(user_agent, sizeof user_agent, "musicpack/%s (https://musicpack.dev)",
+             MUSICPACK_VERSION);
+    argv[0] = "curl";
+    argv[1] = "-s";
+    argv[2] = "-m"; argv[3] = "30";
+    argv[4] = "--max-filesize"; argv[5] = max_size;
+    argv[6] = "-A"; argv[7] = user_agent;
+    argv[8] = (char *) url;
+    argv[9] = 0;
+    if (start_command(&process, argv, 1, 0) != 0)
         return 0;
     buf = (char *) malloc(cap);
     if (buf == 0) {
-        PCLOSE(pipe);
+        fclose(process.output);
+        process.output = 0;
+        finish_command(&process);
         return 0;
     }
     for (;;) {
@@ -900,12 +931,19 @@ curl_fetch(const char *url, size_t max)
             buf = nb;
             cap *= 2;
         }
-        n = fread(buf + len, 1, 65536, pipe);
+        n = fread(buf + len, 1, 65536, process.output);
         len += n;
         if (n < 65536)
             break;
     }
-    PCLOSE(pipe);
+    read_error = ferror(process.output);
+    fclose(process.output);
+    process.output = 0;
+    status = finish_command(&process);
+    if (read_error || status != 0 || len > max) {
+        free(buf);
+        return 0;
+    }
     buf[len] = '\0';
     return buf;
 }
@@ -1663,6 +1701,24 @@ ext_for_mime(const char *mime)
     return ".img";
 }
 
+static const char *
+ext_for_image_data(const unsigned char *data, size_t len)
+{
+    if (len >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff)
+        return ".jpg";
+    if (len >= 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0)
+        return ".png";
+    if (len >= 6 &&
+        (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0))
+        return ".gif";
+    if (len >= 12 && memcmp(data, "RIFF", 4) == 0 &&
+        memcmp(data + 8, "WEBP", 4) == 0)
+        return ".webp";
+    if (len >= 2 && data[0] == 'B' && data[1] == 'M')
+        return ".bmp";
+    return ".img";
+}
+
 static int
 artwork_role_taken(const musicpack_manifest *m, const char *role)
 {
@@ -2258,9 +2314,7 @@ cmd_import(int argc, char **argv)
                     size_t img_len = nul != 0
                         ? cov->binary_len - (size_t) (nul - cov->binary) - 1
                         : cov->binary_len;
-                    const char *fname = (const char *) cov->binary;
-                    const char *dot = strrchr(fname, '.');
-                    const char *ext = dot != 0 ? dot : ".img";
+                    const char *ext = ext_for_image_data(img, img_len);
                     char rel[MUSICPACK_PATH_MAX + 2];
                     if (img_len == 0)
                         continue;
@@ -2538,6 +2592,58 @@ is_regular_path(const char *p)
 #else
     struct stat st;
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+/* encode-draft may consume a directory precreated by MusicPack Author, but
+   never follows a link or writes into a destination containing any entries. */
+static int
+encode_destination_available(const char *path)
+{
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    WIN32_FIND_DATAA data;
+    HANDLE search;
+    char pattern[MUSICPACK_PATH_MAX + 2];
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    }
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return 0;
+    if (snprintf(pattern, sizeof pattern, "%s/*", path) >= (int) sizeof pattern)
+        return 0;
+    search = FindFirstFileA(pattern, &data);
+    if (search == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_NOT_FOUND;
+    do {
+        if (strcmp(data.cFileName, ".") != 0 && strcmp(data.cFileName, "..") != 0) {
+            FindClose(search);
+            return 0;
+        }
+    } while (FindNextFileA(search, &data));
+    FindClose(search);
+    return 1;
+#else
+    struct stat st;
+    DIR *dir;
+    struct dirent *entry;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT;
+    if (!S_ISDIR(st.st_mode))
+        return 0;
+    dir = opendir(path);
+    if (dir == 0)
+        return 0;
+    while ((entry = readdir(dir)) != 0) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            closedir(dir);
+            return 0;
+        }
+    }
+    closedir(dir);
+    return 1;
 #endif
 }
 
@@ -3312,18 +3418,12 @@ extract_embedded_image(const char *srcpath, const char *role, const char *artdir
                 size_t body_len = nul != 0
                     ? cov->binary_len - (size_t) (nul - cov->binary) - 1
                     : cov->binary_len;
-                const char *fname = (const char *) cov->binary;
-                const char *fe = strrchr(fname, '.');
                 if (body_len > 0) {
                     owned = (unsigned char *) malloc(body_len);
                     if (owned != 0) {
                         memcpy(owned, body, body_len);
                         img = owned;
                         img_len = body_len;
-                        /* the extension lives inside the APE tag buffer, which is
-                           freed below; copy it into a local buffer */
-                        if (fe != 0 && *fe != '\0')
-                            snprintf(extbuf, sizeof extbuf, "%s", fe);
                     }
                 }
             }
@@ -4118,58 +4218,227 @@ emit_encode_error(const char *code, const char *message, int disc, int track)
     cJSON_Delete(o);
 }
 
-/* Runs argv[0..] to completion and returns its exit status, or -1 when the
-   process could not be spawned. On POSIX the child pid is tracked so SIGTERM
-   can kill the active tool (which is what makes cancellation land fast). */
+#ifdef _WIN32
 static int
-run_command(char *const argv[])
+append_windows_arg(char *cmd, size_t cap, size_t *used, const char *arg)
 {
-#if defined(_WIN32)
-    char cmd[16384];
-    size_t n = 0, i, k;
-    cmd[0] = '\0';
-    for (i = 0; argv[i] != 0; i++) {
-        const char *arg = argv[i];
-        size_t len = strlen(arg);
-        if (n + len + 8 >= sizeof cmd)
-            return -1;
-        if (i > 0)
-            cmd[n++] = ' ';
-        if (strchr(arg, ' ') != 0) {
-            cmd[n++] = '"';
-            for (k = 0; arg[k] != '\0'; k++) {
-                if (arg[k] == '"')
-                    cmd[n++] = '"';
-                cmd[n++] = arg[k];
-            }
-            cmd[n++] = '"';
-        } else {
-            for (k = 0; arg[k] != '\0'; k++)
-                cmd[n++] = arg[k];
+    size_t slashes = 0;
+    if (*used != 0) {
+        if (*used + 1 >= cap)
+            return 0;
+        cmd[(*used)++] = ' ';
+    }
+    if (*used + 1 >= cap)
+        return 0;
+    cmd[(*used)++] = '"';
+    while (*arg != '\0') {
+        if (*arg == '\\') {
+            slashes++;
+            arg++;
+            continue;
         }
-        cmd[n] = '\0';
+        if (*arg == '"') {
+            size_t n = slashes * 2 + 1;
+            if (*used + n + 1 >= cap)
+                return 0;
+            while (n-- > 0)
+                cmd[(*used)++] = '\\';
+            cmd[(*used)++] = *arg++;
+            slashes = 0;
+            continue;
+        }
+        if (*used + slashes + 1 >= cap)
+            return 0;
+        while (slashes-- > 0)
+            cmd[(*used)++] = '\\';
+        slashes = 0;
+        cmd[(*used)++] = *arg++;
     }
-    {
-        FILE *p = POPEN(cmd, "w");
-        if (p == 0)
+    if (*used + slashes * 2 + 2 > cap)
+        return 0;
+    while (slashes-- > 0) {
+        cmd[(*used)++] = '\\';
+        cmd[(*used)++] = '\\';
+    }
+    cmd[(*used)++] = '"';
+    cmd[*used] = '\0';
+    return 1;
+}
+#endif
+
+/* Starts argv directly, without a command shell. Captured output is exposed as
+   a binary FILE so large decoder streams can be consumed incrementally. */
+static int
+start_command(command_process *process, char *const argv[],
+              int capture_stdout, int discard_stderr)
+{
+    memset(process, 0, sizeof *process);
+#ifdef _WIN32
+    SECURITY_ATTRIBUTES security;
+    STARTUPINFOA startup;
+    HANDLE output_read = INVALID_HANDLE_VALUE;
+    HANDLE output_write = INVALID_HANDLE_VALUE;
+    HANDLE error_handle = INVALID_HANDLE_VALUE;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits;
+    char cmd[32768];
+    size_t used = 0, i;
+    int fd;
+
+    memset(&security, 0, sizeof security);
+    security.nLength = sizeof security;
+    security.bInheritHandle = TRUE;
+    memset(&startup, 0, sizeof startup);
+    startup.cb = sizeof startup;
+    cmd[0] = '\0';
+    for (i = 0; argv[i] != 0; i++)
+        if (!append_windows_arg(cmd, sizeof cmd, &used, argv[i]))
             return -1;
-        return PCLOSE(p);
+    process->job = CreateJobObjectA(0, 0);
+    if (process->job == 0)
+        goto fail;
+    memset(&job_limits, 0, sizeof job_limits);
+    job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(process->job, JobObjectExtendedLimitInformation,
+                                 &job_limits, sizeof job_limits))
+        goto fail;
+    if (capture_stdout) {
+        if (!CreatePipe(&output_read, &output_write, &security, 0) ||
+            !SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0))
+            goto fail;
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+        startup.hStdOutput = output_write;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     }
-#else
-    pid_t pid = fork();
-    int status = 0;
-    if (pid < 0)
+    if (discard_stderr) {
+        error_handle = CreateFileA("NUL", GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+        if (error_handle == INVALID_HANDLE_VALUE)
+            goto fail;
+        startup.dwFlags |= STARTF_USESTDHANDLES;
+        startup.hStdError = error_handle;
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        if (!capture_stdout)
+            startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    }
+    if (!CreateProcessA(0, cmd, 0, 0,
+                        (capture_stdout || discard_stderr) ? TRUE : FALSE,
+                        CREATE_SUSPENDED, 0, 0, &startup, &process->process))
+        goto fail;
+    if (!AssignProcessToJobObject(process->job, process->process.hProcess) ||
+        ResumeThread(process->process.hThread) == (DWORD) -1)
+        goto fail_process;
+    if (output_write != INVALID_HANDLE_VALUE)
+        CloseHandle(output_write);
+    if (error_handle != INVALID_HANDLE_VALUE)
+        CloseHandle(error_handle);
+    if (!capture_stdout)
+        return 0;
+    fd = _open_osfhandle((intptr_t) output_read, _O_RDONLY | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(output_read);
+        TerminateProcess(process->process.hProcess, 127);
+        WaitForSingleObject(process->process.hProcess, INFINITE);
+        CloseHandle(process->process.hThread);
+        CloseHandle(process->process.hProcess);
+        CloseHandle(process->job);
+        process->job = 0;
         return -1;
+    }
+    process->output = _fdopen(fd, "rb");
+    if (process->output == 0) {
+        _close(fd);
+        TerminateProcess(process->process.hProcess, 127);
+        WaitForSingleObject(process->process.hProcess, INFINITE);
+        CloseHandle(process->process.hThread);
+        CloseHandle(process->process.hProcess);
+        CloseHandle(process->job);
+        process->job = 0;
+        return -1;
+    }
+    return 0;
+fail_process:
+    TerminateProcess(process->process.hProcess, 127);
+    WaitForSingleObject(process->process.hProcess, INFINITE);
+    CloseHandle(process->process.hThread);
+    CloseHandle(process->process.hProcess);
+fail:
+    if (output_read != INVALID_HANDLE_VALUE)
+        CloseHandle(output_read);
+    if (output_write != INVALID_HANDLE_VALUE)
+        CloseHandle(output_write);
+    if (error_handle != INVALID_HANDLE_VALUE)
+        CloseHandle(error_handle);
+    if (process->job != 0) {
+        CloseHandle(process->job);
+        process->job = 0;
+    }
+    return -1;
+#else
+    int output_pipe[2] = { -1, -1 };
+    pid_t pid;
+    if (capture_stdout && pipe(output_pipe) != 0)
+        return -1;
+    pid = fork();
+    if (pid < 0) {
+        if (output_pipe[0] >= 0) close(output_pipe[0]);
+        if (output_pipe[1] >= 0) close(output_pipe[1]);
+        return -1;
+    }
     if (pid == 0) {
+        if (capture_stdout) {
+            close(output_pipe[0]);
+            if (dup2(output_pipe[1], STDOUT_FILENO) < 0)
+                _exit(127);
+            close(output_pipe[1]);
+        }
+        if (discard_stderr) {
+            int nullfd = open("/dev/null", O_WRONLY);
+            if (nullfd < 0 || dup2(nullfd, STDERR_FILENO) < 0)
+                _exit(127);
+            close(nullfd);
+        }
         execvp(argv[0], argv);
         _exit(127);
     }
-    g_encode_child = pid;
-    while (waitpid(pid, &status, 0) < 0) {
+    process->pid = pid;
+    if (capture_stdout) {
+        close(output_pipe[1]);
+        process->output = fdopen(output_pipe[0], "rb");
+        if (process->output == 0) {
+            close(output_pipe[0]);
+            kill(pid, SIGTERM);
+            while (waitpid(pid, 0, 0) < 0 && errno == EINTR) {}
+            return -1;
+        }
+    }
+    return 0;
+#endif
+}
+
+static int
+finish_command(command_process *process)
+{
+#ifdef _WIN32
+    DWORD status;
+    if (WaitForSingleObject(process->process.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(process->process.hProcess, &status)) {
+        CloseHandle(process->process.hThread);
+        CloseHandle(process->process.hProcess);
+        CloseHandle(process->job);
+        return -1;
+    }
+    CloseHandle(process->process.hThread);
+    CloseHandle(process->process.hProcess);
+    CloseHandle(process->job);
+    return status <= INT_MAX ? (int) status : -1;
+#else
+    int status = 0;
+    while (waitpid(process->pid, &status, 0) < 0) {
         if (errno != EINTR)
             return -1;
     }
-    g_encode_child = 0;
     if (WIFEXITED(status))
         return WEXITSTATUS(status);
     if (WIFSIGNALED(status))
@@ -4178,44 +4447,32 @@ run_command(char *const argv[])
 #endif
 }
 
+/* Runs argv[0..] to completion and returns its exit status, or -1 when the
+   process could not be spawned. On POSIX the child pid is tracked so SIGTERM
+   can kill the active tool (which is what makes cancellation land fast). */
+static int
+run_command(char *const argv[])
+{
+    command_process process;
+    int status;
+    if (start_command(&process, argv, 0, 0) != 0)
+        return -1;
+#ifndef _WIN32
+    g_encode_child = process.pid;
+#endif
+    status = finish_command(&process);
+#ifndef _WIN32
+    g_encode_child = 0;
+#endif
+    return status;
+}
+
 #ifndef X_OK
 # define X_OK 0
 #endif
 
 /* Locates an executable on PATH (or returns it directly when it contains a
    path separator). Returns an owned string, or NULL. */
-static char *
-find_executable(const char *name)
-{
-    char buf[MUSICPACK_PATH_MAX + 2];
-    const char *path;
-    const char *p;
-
-    if (name == 0 || *name == '\0')
-        return 0;
-    if (strchr(name, '/') != 0 || strchr(name, '\\') != 0)
-        return access(name, X_OK) == 0 ? strdup(name) : 0;
-    path = getenv("PATH");
-    if (path == 0)
-        return 0;
-    p = path;
-    while (*p != '\0') {
-        const char *colon = strchr(p, ':');
-        size_t len = colon != 0 ? (size_t) (colon - p) : strlen(p);
-        if (len > 0 && len + 2 < sizeof buf) {
-            memcpy(buf, p, len);
-            buf[len] = '\0';
-            snprintf(buf + len, sizeof buf - len, "/%s", name);
-            if (access(buf, X_OK) == 0)
-                return strdup(buf);
-        }
-        if (colon == 0)
-            break;
-        p = colon + 1;
-    }
-    return 0;
-}
-
 /* Resolves an explicit binary path or a PATH lookup into \p buf. Returns the
    resolved string (either \p buf or the explicit argument). */
 static const char *
@@ -4226,7 +4483,7 @@ resolve_bin(const char *explicit, const char *name, char *buf, size_t cap)
         return buf;
     }
     {
-        char *found = find_executable(name);
+        char *found = musicpack_find_executable(name);
         if (found != 0) {
             snprintf(buf, cap, "%s", found);
             free(found);
@@ -4241,11 +4498,16 @@ resolve_bin(const char *explicit, const char *name, char *buf, size_t cap)
 static int
 bin_available(const char *resolved)
 {
+    char *found;
     if (resolved == 0 || *resolved == '\0')
         return 0;
     if (strchr(resolved, '/') != 0 || strchr(resolved, '\\') != 0)
         return access(resolved, X_OK) == 0;
-    return find_executable(resolved) != 0;
+    found = musicpack_find_executable(resolved);
+    if (found == 0)
+        return 0;
+    free(found);
+    return 1;
 }
 
 /* Sample rate from a minimal RIFF/WAVE header parse (0 when unknown). */
@@ -4285,9 +4547,14 @@ static void
 rm_rf(const char *path)
 {
 #if defined(_WIN32)
+    DWORD attrs = GetFileAttributesA(path);
     char pat[MUSICPACK_PATH_MAX + 2];
     finddata_t fd;
     intptr_t h;
+    if (attrs == INVALID_FILE_ATTRIBUTES ||
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return;
     snprintf(pat, sizeof pat, "%s/*", path);
     h = _findfirst(pat, &fd);
     if (h != -1) {
@@ -4305,8 +4572,12 @@ rm_rf(const char *path)
     }
     _rmdir(path);
 #else
-    DIR *d = opendir(path);
+    struct stat root_st;
+    DIR *d;
     struct dirent *e;
+    if (lstat(path, &root_st) != 0 || !S_ISDIR(root_st.st_mode))
+        return;
+    d = opendir(path);
     if (d == 0)
         return;
     while ((e = readdir(d)) != 0) {
@@ -4540,11 +4811,13 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
         cJSON_Delete(draft);
         return 1;
     }
-    if (is_dir_path(out_dir) || is_regular_path(out_dir)) {
+    if (!encode_destination_available(out_dir)) {
         if (json)
-            json_error_out("destination_exists", "staging destination already exists");
+            json_error_out("destination_exists",
+                           "staging destination must not exist or must be an empty directory");
         else
-            fprintf(stderr, "encode-draft: staging destination already exists\n");
+            fprintf(stderr,
+                    "encode-draft: staging destination must not exist or must be empty\n");
         cJSON_Delete(draft);
         return 1;
     }
@@ -4632,6 +4905,29 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
         bad = 1;
     }
     if (bad) {
+        musicpack_manifest_clear(&m);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    /* The output may have been replaced after the initial validation. Create
+       only the final root component, then require the actual root to still be
+       an empty, non-link directory immediately before the first write. */
+    if (mkdir_p_one(out_dir) != 0 && errno != EEXIST) {
+        if (json)
+            json_error_out("encode_failed", "cannot create staging root");
+        else
+            fprintf(stderr, "encode-draft: cannot create staging root\n");
+        musicpack_manifest_clear(&m);
+        cJSON_Delete(draft);
+        return 1;
+    }
+    if (!encode_destination_available(out_dir)) {
+        if (json)
+            json_error_out("destination_changed",
+                           "staging destination changed before encoding");
+        else
+            fprintf(stderr, "encode-draft: staging destination changed\n");
         musicpack_manifest_clear(&m);
         cJSON_Delete(draft);
         return 1;

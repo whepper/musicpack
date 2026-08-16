@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -69,6 +70,11 @@ def setup(ref_mpc, ref_flac, tmpdir):
     m["album"]["title"] = "Two Disc Extravaganza"
     m["album"]["originalReleaseDate"] = "2001-01-01"
     m["release"]["edition"] = "2CD"
+    m["media"][0]["tracks"][0]["artists"] = [
+        {"name": "Alphaville", "role": "main"},
+        {"name": "Bernhard Lloyd", "role": "composer"},
+        {"name": "Marian Gold", "role": "featured"},
+    ]
     d2_tracks = []
     for i, (num, title) in enumerate([(1, "Side Two One"), (2, "Side Two Two")]):
         src = os.path.join(twodisc, m["media"][0]["tracks"][i]["audio"]["path"])
@@ -291,6 +297,32 @@ def run(base, libdir, demo_dir, t):
          == "musepack-sv8", "release detail + codec")
     track = rel["media"][0]["tracks"][0]
     tid = track["id"]
+    two_disc = next(a for a in albums["albums"]
+                    if a["title"] == "Two Disc Extravaganza")
+    st, _, body = get(base, API + f"/albums/{two_disc['id']}")
+    two_disc_release = json.loads(body)["releases"][0]["id"]
+    st, _, body = get(base, API + f"/releases/{two_disc_release}")
+    two_disc_track = json.loads(body)["media"][0]["tracks"][0]
+    expected_artists = [
+        ("Alphaville", "main"),
+        ("Bernhard Lloyd", "composer"),
+        ("Marian Gold", "featured"),
+    ]
+    api_artists = [(a["name"], a.get("role"))
+                   for a in two_disc_track["artists"]]
+    t.ok(st == 200 and api_artists == expected_artists,
+         "multiple track artists preserve order and roles in API")
+    db_path = os.path.join(os.path.dirname(libdir), "lib.db")
+    with sqlite3.connect(db_path) as db:
+        artist_rows = db.execute(
+            "SELECT ta.position, a.name, ta.role FROM track_artists ta "
+            "JOIN artists a ON a.id = ta.artist_id "
+            "WHERE ta.track_id = ? ORDER BY ta.position",
+            (two_disc_track["id"],),
+        ).fetchall()
+    t.ok(artist_rows == [(i, name, role)
+                         for i, (name, role) in enumerate(expected_artists)],
+         "multiple track artists create one ordered row per role")
     classical = next(a for a in albums["albums"]
                      if a["title"] == "Synthetic Classical Compilation")
     st, _, body = get(base, API + f"/albums/{classical['id']}")

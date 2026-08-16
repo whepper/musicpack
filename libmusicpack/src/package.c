@@ -279,6 +279,46 @@ report(musicpack_report *rep, musicpack_report_fn fn, void *ctx,
         fn(ctx, message, is_error);
 }
 
+/* The public manifest model is mutable. Bound and check every array before
+   passing it to the existing serializer's deep round-trip validation. */
+static int
+manifest_shape_safe(const musicpack_manifest *m)
+{
+    size_t d, t;
+
+    if (m == 0 || m->album_artist_count == 0 ||
+        m->album_artist_count > MUSICPACK_MANIFEST_MAX_ARTISTS_PER_CREDIT ||
+        m->album_artists == 0 || m->genre_count > MUSICPACK_MANIFEST_MAX_GENRES ||
+        (m->genre_count > 0 && m->genres == 0) || m->disc_count == 0 ||
+        m->disc_count > MUSICPACK_MANIFEST_MAX_DISCS || m->discs == 0 ||
+        m->artwork_count > MUSICPACK_MANIFEST_MAX_ARTWORK ||
+        (m->artwork_count > 0 && m->artwork == 0) ||
+        m->booklet_count > MUSICPACK_MANIFEST_MAX_BOOKLET ||
+        (m->booklet_count > 0 && m->booklet == 0) ||
+        m->lyrics_count > MUSICPACK_MANIFEST_MAX_LYRICS ||
+        (m->lyrics_count > 0 && m->lyrics == 0) ||
+        m->extras_count > MUSICPACK_MANIFEST_MAX_EXTRAS ||
+        (m->extras_count > 0 && m->extras == 0) ||
+        m->analysis_count > MUSICPACK_MANIFEST_MAX_ANALYSIS ||
+        (m->analysis_count > 0 && m->analysis == 0))
+        return 0;
+
+    for (d = 0; d < m->disc_count; d++) {
+        const musicpack_disc *disc = &m->discs[d];
+        if (disc->track_count == 0 ||
+            disc->track_count > MUSICPACK_MANIFEST_MAX_TRACKS_PER_DISC ||
+            disc->tracks == 0)
+            return 0;
+        for (t = 0; t < disc->track_count; t++) {
+            const musicpack_track *track = &disc->tracks[t];
+            if (track->artist_count > MUSICPACK_MANIFEST_MAX_ARTISTS_PER_CREDIT ||
+                (track->artist_count > 0 && track->artists == 0))
+                return 0;
+        }
+    }
+    return 1;
+}
+
 /* ---- verification resource budgets ------------------------------------- */
 /* Bounded totals enforced during a single verification pass so an untrusted
    package cannot drive unbounded I/O. Per-file and aggregate byte budgets
@@ -558,7 +598,7 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
    the package manifest. Unknown/research-only profiles are warnings. */
 static void
 verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
-                       musicpack_report_fn fn, void *ctx, int *failed)
+                        musicpack_report_fn fn, void *ctx, int *failed)
 {
     const musicpack_manifest *m = pkg->manifest;
     size_t i;
@@ -571,20 +611,36 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
         musicpack_status s;
         musicpack_sonic *sonic;
         musicpack_sonic_profile_state state;
+        long long size;
+        size_t json_len;
 
         if (strcmp(a->type, "sonic") != 0)
             continue;
         if (musicpack_package_resolve_path(pkg, a->asset.path, abs, sizeof abs) != MUSICPACK_OK)
             continue; /* already reported by verify_assets */
 
-        {
-            size_t json_len;
-            json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &json_len, &s);
+        size = checked_file_size(abs);
+        if (size > (long long) MUSICPACK_SONIC_DOC_MAX) {
+            snprintf(buf, sizeof buf,
+                     "analysis: sonic document '%s' exceeds %u-byte limit",
+                     a->asset.path, (unsigned int) MUSICPACK_SONIC_DOC_MAX);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            continue;
         }
-        if (json == 0)
-            continue; /* already reported by verify_assets */
+        json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &json_len, &s);
+        if (json == 0) {
+            snprintf(buf, sizeof buf, "analysis: cannot read sonic document '%s'",
+                     a->asset.path);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            continue;
+        }
 
-        sonic = musicpack_sonic_parse(json, strlen(json), &s);
+        if (memchr(json, '\0', json_len) != 0)
+            sonic = 0;
+        else
+            sonic = musicpack_sonic_parse(json, json_len, &s);
         free(json);
         if (sonic == 0) {
             snprintf(buf, sizeof buf, "analysis: malformed sonic document '%s'",
@@ -625,21 +681,31 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
 
 musicpack_status
 musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
-                         musicpack_report_fn fn, void *ctx)
+                          musicpack_report_fn fn, void *ctx)
 {
     const musicpack_manifest *m;
     musicpack_report local = { 0, 0 };
     verify_budget budget;
+    musicpack_status manifest_status;
+    char *validated_json = 0;
     int failed = 0;
-    size_t d, t;
+    size_t d, t, i;
 
     if (pkg == 0)
         return MUSICPACK_ERR_INVALID;
     if (rep == 0)
         rep = &local;
 
-    verify_budget_init(&budget);
     m = pkg->manifest;
+    manifest_status = manifest_shape_safe(m) ?
+        musicpack_manifest_write(m, &validated_json) : MUSICPACK_ERR_INVALID;
+    free(validated_json);
+    if (manifest_status != MUSICPACK_OK) {
+        report(rep, fn, ctx, "manifest: mutable manifest fails validation", 1);
+        return manifest_status;
+    }
+
+    verify_budget_init(&budget);
     for (d = 0; d < m->disc_count; d++) {
         for (t = 0; t < m->discs[d].track_count; t++) {
             musicpack_track *tr = &m->discs[d].tracks[t];
@@ -647,40 +713,18 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
                           &budget);
         }
     }
-    {
-        musicpack_asset *tmp = 0;
-        size_t n = 0, i;
-        if (m->artwork_count > 0) {
-            tmp = (musicpack_asset *) malloc(m->artwork_count * sizeof *tmp);
-            if (tmp != 0) {
-                for (i = 0; i < m->artwork_count; i++)
-                    tmp[i] = m->artwork[i].asset;
-                n = m->artwork_count;
-            }
-        }
-        verify_assets(pkg, tmp, n, "artwork", rep, fn, ctx, &failed, &budget);
-        free(tmp);
-    }
+    for (i = 0; i < m->artwork_count; i++)
+        verify_assets(pkg, &m->artwork[i].asset, 1, "artwork", rep, fn, ctx,
+                      &failed, &budget);
     verify_assets(pkg, m->booklet, m->booklet_count, "booklet", rep, fn, ctx,
                   &failed, &budget);
     verify_assets(pkg, m->lyrics, m->lyrics_count, "lyrics", rep, fn, ctx,
                   &failed, &budget);
     verify_assets(pkg, m->extras, m->extras_count, "extras", rep, fn, ctx,
                   &failed, &budget);
-    {
-        musicpack_asset *tmp = 0;
-        size_t n = 0, i;
-        if (m->analysis_count > 0) {
-            tmp = (musicpack_asset *) malloc(m->analysis_count * sizeof *tmp);
-            if (tmp != 0) {
-                for (i = 0; i < m->analysis_count; i++)
-                    tmp[i] = m->analysis[i].asset;
-                n = m->analysis_count;
-            }
-        }
-        verify_assets(pkg, tmp, n, "analysis", rep, fn, ctx, &failed, &budget);
-        free(tmp);
-    }
+    for (i = 0; i < m->analysis_count; i++)
+        verify_assets(pkg, &m->analysis[i].asset, 1, "analysis", rep, fn, ctx,
+                      &failed, &budget);
 
     verify_sonic_documents(pkg, rep, fn, ctx, &failed);
 

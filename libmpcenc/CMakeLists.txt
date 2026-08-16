@@ -26,6 +26,8 @@ endif()
 if(MPC_ENC_USE_SIMD)
   list(APPEND MPCENC_SOURCES analy_filter_simd.c)
 endif()
+set(MPC_ENCODER_SIMD_ENABLED ${MPC_ENC_USE_SIMD} CACHE INTERNAL
+    "Compiled encoder analysis SIMD backend")
 
 add_library(mpcenc_static STATIC ${MPCENC_SOURCES})
 

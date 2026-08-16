@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PlayerController, type Backend, type BackendEvents } from '../../app/src/lib/playback/controller';
+import {
+  PlayerController,
+  type Backend,
+  type BackendEvents,
+} from '../../app/src/lib/playback/controller';
+import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
 import { createQueueStore } from '../../app/src/lib/state/queue';
 import type { ReleaseDetail, Track } from '../../app/src/lib/api/types';
 
@@ -46,6 +51,10 @@ class FakeBackend implements Backend {
   events: BackendEvents;
   paused = false;
   closed = false;
+  playGate: Promise<void> | null = null;
+  seekGate: Promise<void> | null = null;
+  advanceGate: Promise<{ rate: number; channels: number; version: number; lengthSamples: number } | null> | null = null;
+  plays = 0;
 
   constructor(_kind: 'musepack' | 'native', events: BackendEvents) {
     this.events = events;
@@ -67,17 +76,24 @@ class FakeBackend implements Backend {
     return info;
   }
   async advance() {
+    if (this.advanceGate) return this.advanceGate;
     return this.standbyInfo;
   }
-  startPumping() {}
+  startPumping() {
+    this.paused = false;
+  }
   pausePumping() {
     this.paused = true;
   }
-  async play() {}
+  async play() {
+    this.plays++;
+    await this.playGate;
+  }
   async pause() {}
   async seek(sample: number) {
     this.resetBase = sample;
     this.rendered = 0; // ring reset: rendered counter restarts
+    await this.seekGate;
   }
   setGain(g: number) {
     this.gains.push(g);
@@ -104,6 +120,9 @@ class FakeBackend implements Backend {
   }
   emitEos() {
     this.events.onEos();
+  }
+  emitBuffering() {
+    this.events.onBuffering();
   }
   emitPosition() {
     this.events.onPosition();
@@ -231,6 +250,90 @@ describe('PlayerController', () => {
     expect(player.model.get().positionSeconds).toBeCloseTo(4000 / RATE, 6);
     await player.togglePlay();
     expect(player.model.get().state).toBe('playing');
+  });
+
+  it('recovers from a PCM underrun after the backend primes again', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('playing');
+
+    backend.emitBuffering();
+    expect(player.model.get().state).toBe('buffering');
+    backend.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('playing');
+  });
+
+  it('does not let queued underrun and primed events override an explicit pause', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    let finishPlay = () => {};
+    backend.playGate = new Promise<void>((resolve) => {
+      finishPlay = resolve;
+    });
+    backend.emitPrimed();
+    await flush();
+    await player.pause();
+
+    backend.emitBuffering();
+    backend.emitPrimed();
+    finishPlay();
+    await flush();
+    expect(player.model.get().state).toBe('paused');
+    expect(backend.paused).toBe(true);
+  });
+
+  it('ignores a stale EOS continuation after the user moves to the next track', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    let finishAdvance = (_value: EngineStreamInfo | null) => {};
+    backend.advanceGate = new Promise((resolve) => {
+      finishAdvance = resolve;
+    });
+
+    backend.emitEos();
+    await flush();
+    await player.next();
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('T2');
+
+    finishAdvance({ rate: RATE, channels: 2, version: 8, lengthSamples: LENGTH });
+    await flush();
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('T2');
+  });
+
+  it('keeps the controller and audio context paused while a seek reprimes', async () => {
+    const { player, getBackend } = make();
+    await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
+    const backend = getBackend();
+    backend.emitPrimed();
+    await flush();
+    await player.pause();
+    const playsBeforeSeek = backend.plays;
+    let finishSeek = () => {};
+    backend.seekGate = new Promise<void>((resolve) => {
+      finishSeek = resolve;
+    });
+
+    const seeking = player.seek(5);
+    await flush();
+    backend.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('paused');
+    expect(backend.plays).toBe(playsBeforeSeek);
+
+    finishSeek();
+    await seeking;
+    backend.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('paused');
+    expect(backend.plays).toBe(playsBeforeSeek);
   });
 
   it('reports friendly errors on backend failure', async () => {

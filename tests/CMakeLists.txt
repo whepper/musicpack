@@ -61,6 +61,14 @@ if(WIN32)
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$ENV{PATH}")
 endif()
 
+# ---- musicpack CLI executable discovery -----------------------------------
+add_executable(mpc_musicpack_tool_path_tests
+    musicpack_tool_path_tests.c
+    ${PROJECT_SOURCE_DIR}/musicpack/tool_path.c)
+target_include_directories(mpc_musicpack_tool_path_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/musicpack)
+add_test(NAME musicpack_tool_path COMMAND mpc_musicpack_tool_path_tests)
+
 # ---- scalar-vs-SIMD synthesis differential test ---------------------------
 # Decodes the fixtures once per synthesis path and asserts they agree within
 # the fixture tolerance. Requires MPC_ENABLE_SIMD (both kernels compiled in);
@@ -81,13 +89,15 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_synth_diff PRIVATE m)
 endif()
 
-add_test(NAME synth_ab COMMAND mpc_synth_diff
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine32-q8.mpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine37-q4.mpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5-48s.mpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q7.mpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine48-q6.mpc)
+if(MPC_DECODER_SIMD_ENABLED)
+  add_test(NAME synth_ab COMMAND mpc_synth_diff
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine32-q8.mpc
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine37-q4.mpc
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5-48s.mpc
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q7.mpc
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine48-q6.mpc)
+endif()
 
 add_executable(mpc_synth_dispatch_negative synth_dispatch_negative.c)
 target_link_libraries(mpc_synth_dispatch_negative PRIVATE ${MPC_WHITEBOX_LIB})
@@ -177,6 +187,7 @@ if(UNIX)
     # End-to-end toolchain integration.
     add_test(NAME integration
              COMMAND ${CMAKE_COMMAND} -E env
+                     MPC_PSY_SIMD_ENABLED=$<BOOL:${MPC_PSY_SIMD_ENABLED}>
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_integration.sh
                      $<TARGET_FILE:mpcenc>
                      $<TARGET_FILE:mpcdec_cmd>
@@ -246,12 +257,33 @@ if(UNIX)
 
     # Phase 4: musicpack-server HTTP API + direct streaming (needs the server
     # executable, which is only built when libmicrohttpd is available).
-    if(MICROHTTPD_FOUND)
+    if(TARGET musicpack_server_cmd)
         add_test(NAME server_integration
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_server.sh
                          $<TARGET_FILE:musicpack_server_cmd>)
     endif()
 endif()
+
+# ---- installed package consumer -------------------------------------------
+add_test(NAME install_consumer
+         COMMAND ${CMAKE_COMMAND}
+                 -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+                 -DBUILD_DIR=${PROJECT_BINARY_DIR}
+                 -DINSTALL_STAGE=${CMAKE_CURRENT_BINARY_DIR}/install-consumer-stage
+                 -DSTATIC_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/install-consumer-static-producer
+                 -DSTATIC_INSTALL_STAGE=${CMAKE_CURRENT_BINARY_DIR}/install-consumer-static-stage
+                 -DINSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+                 -DINSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}
+                 -DCONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/install_consumer
+                 -DCONSUMER_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/install-consumer-build
+                 -DCONFIG=$<CONFIG>
+                 -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+                 -DBUILD_SHARED=${MPC_BUILD_SHARED}
+                 -DC_COMPILER=${CMAKE_C_COMPILER}
+                 -DGENERATOR=${CMAKE_GENERATOR}
+                 -DIS_WINDOWS=${WIN32}
+                 -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_install_consumer.cmake)
 
 # ---- Bit-identity with the pristine reference encoder ----------------------
 # Encodes the deterministic corpus and compares SHA-256 against either a
@@ -271,6 +303,11 @@ elseif(WIN32)
                  COMMAND ${MPC_GIT_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/run_compat.sh
                          $<TARGET_FILE:mpcenc>)
     endif()
+endif()
+if(TEST compat)
+    set_tests_properties(compat PROPERTIES
+        ENVIRONMENT "MPC_COMPAT_REQUIRE_REFERENCE=1"
+        SKIP_RETURN_CODE 77)
 endif()
 
 # ---- Phase 2 bit-exact encoder regression (extended corpus, q5/q6/q7) -----
@@ -293,6 +330,11 @@ elseif(WIN32)
                          $<TARGET_FILE:mpcenc>)
     endif()
 endif()
+if(TEST enc_compat)
+    set_tests_properties(enc_compat PROPERTIES
+        ENVIRONMENT "MPC_COMPAT_REQUIRE_REFERENCE=1"
+        SKIP_RETURN_CODE 77)
+endif()
 
 # ---- encoder scalar-vs-SIMD differential test ----------------------------
 # White-box: forces the analysis filterbank scalar and SIMD paths and asserts
@@ -309,7 +351,9 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_enc_synth_ab PRIVATE m)
 endif()
 
-add_test(NAME enc_ab COMMAND mpc_enc_synth_ab)
+if(MPC_ENCODER_SIMD_ENABLED)
+  add_test(NAME enc_ab COMMAND mpc_enc_synth_ab)
+endif()
 
 # ---- psychoacoustic scalar-vs-SIMD differential test ----------------------
 # White-box: forces the psychoacoustic spectrum/FFT kernels (and the full
@@ -323,4 +367,6 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_psy_ab PRIVATE m)
 endif()
 
-add_test(NAME psy_ab COMMAND mpc_psy_ab)
+if(MPC_PSY_SIMD_ENABLED)
+  add_test(NAME psy_ab COMMAND mpc_psy_ab)
+endif()

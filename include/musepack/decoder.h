@@ -152,9 +152,10 @@ MUSEPACK_API void musepack_decoder_close(musepack_decoder *d);
 
 /// Copies the stream properties into \p out (versioned structure).
 ///
-/// On entry \p out->size must equal `sizeof(musepack_stream_info)`. The
-/// library writes at most \p out->size bytes, so consumers compiled against
-/// an older, smaller layout receive the leading fields.
+/// On entry \p out->size must be at least MUSEPACK_STREAM_INFO_MIN_SIZE;
+/// callers normally use `sizeof(musepack_stream_info)`. The library writes at
+/// most \p out->size bytes, so consumers compiled against an older, smaller
+/// layout receive the leading fields.
 ///
 /// \param d   decoder
 /// \param out receives the streaminfo (must not be NULL, size field set)

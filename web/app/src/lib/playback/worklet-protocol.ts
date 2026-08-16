@@ -13,20 +13,25 @@ export interface WorkletConfig {
   type: 'config';
   rate: number;
   channels: number;
+  generation: number;
 }
 
 export interface WorkletSamples {
   type: 'samples';
   buffer: ArrayBuffer; // interleaved Float32Array, transferred
+  generation: number;
 }
 
 export interface WorkletReset {
   type: 'reset';
+  generation: number;
 }
 
 // worklet -> main
 export interface WorkletReport {
-  type: 'rendered' | 'primed' | 'need' | 'full' | 'underrun';
+  type: 'rendered' | 'primed' | 'need' | 'full' | 'underrun' | 'accepted' | 'error';
   frames: number; // cumulative rendered frames (for 'rendered')
+  generation: number;
   available?: number;
+  message?: string;
 }

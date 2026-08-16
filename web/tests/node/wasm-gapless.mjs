@@ -161,6 +161,7 @@ require(moduleJs)().then(async (Module) => {
 
   const A = await decodeFile(Module, trackA);
   const B = await decodeFile(Module, trackB);
+  const S = seekFixture === trackA ? A : await decodeFile(Module, seekFixture);
   ok(A.channels === B.channels, 'tracks share channel count');
   ok(A.rate === B.rate, 'tracks share sample rate');
 
@@ -173,8 +174,14 @@ require(moduleJs)().then(async (Module) => {
     // abuts the final sample of A.
     ok(A.pcm.length === A.length * A.channels, 'track A decoded exactly lengthSamples frames');
     ok(B.pcm.length === B.length * B.channels, 'track B decoded exactly lengthSamples frames');
-    ok(A.pcm[A.pcm.length - 1] === A.pcm[A.pcm.length - 1], 'track A has a final sample');
-    ok(Number.isFinite(B.pcm[0]), 'track B starts with a valid sample');
+    const joined = new Float32Array(A.pcm.length + B.pcm.length);
+    joined.set(A.pcm);
+    joined.set(B.pcm, A.pcm.length);
+    ok(
+      joined[A.pcm.length - 1] === A.pcm[A.pcm.length - 1] &&
+        joined[A.pcm.length] === B.pcm[0],
+      'track B begins immediately after track A without a boundary frame change',
+    );
   }
   {
     const bytes = fs.readFileSync(trackA);
@@ -201,25 +208,31 @@ require(moduleJs)().then(async (Module) => {
     if (err !== 0) throw new Error(`open_range: ${err}`);
     const total = bytes.length;
     const samples = Module._mpc_wasm_length_samples(h);
+    const channels = Module._mpc_wasm_channels(h);
     const afterOpen = d.served();
     ok(afterOpen < total, `open fetched only ${afterOpen}/${total} bytes (not the whole file)`);
+    ok(samples === S.length && channels === S.channels, 'seek fixture metadata matches memory decode');
 
     const targets = [0.1, 0.25, 0.5, 0.9, 0.25, 0.9, 0.05, 0.5, 0.9, 0.05];
+    const ptr = Module._malloc(2 * channels * 4);
     for (const frac of targets) {
       const before = d.served();
-      await Module._mpc_wasm_seek_sample(h, Math.floor(samples * frac));
-      // decode a couple of frames to force the read
-      const ptr = Module._malloc(1152 * 2 * 4);
-      await Module._mpc_wasm_read(h, ptr, 2);
-      Module._free(ptr);
+      const target = Math.floor(samples * frac);
+      await Module._mpc_wasm_seek_sample(h, target);
+      const frames = await Module._mpc_wasm_read(h, ptr, 2);
       const after = d.served();
       const fetched = after - before;
+      const actual = Module.HEAPF32[ptr >> 2];
+      const expected = S.pcm[target * channels];
+      ok(frames === 2, `seek to ${Math.round(frac * 100)}% decoded two frames`);
+      ok(actual === expected, `seek to ${Math.round(frac * 100)}% decoded the requested sample`);
       ok(
         fetched <= 2 * M.BLOCK,
         `seek to ${Math.round(frac * 100)}% fetched ${fetched} bytes (limit ${2 * M.BLOCK})`,
       );
+      ok(fetched < total, `seek to ${Math.round(frac * 100)}% did not fetch the whole file`);
     }
-    ok(d.served() < total, `seek series never downloaded the whole file (${d.served()}/${total})`);
+    Module._free(ptr);
     ok(d.served() > afterOpen, 'demand reader fetched additional bytes on seeks');
     Module._mpc_wasm_destroy(h);
     d.close();

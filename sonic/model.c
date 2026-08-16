@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "model.h"
+#include "model_output.h"
+
 #include <onnxruntime_c_api.h>
 
 #include "frontend.h"
-#include "model.h"
 #include "sonic_profile.h"
 
 struct sonic_model {
@@ -24,6 +26,25 @@ struct sonic_model {
     int64_t input_dims[4];
     int64_t output_dims[2];
 };
+
+typedef struct {
+    const OrtApi *api;
+    OrtValue *output;
+} ort_output_context;
+
+static void *
+ort_get_output(void *context, float **data)
+{
+    ort_output_context *ort = (ort_output_context *) context;
+    return ort->api->GetTensorMutableData(ort->output, (void **) data);
+}
+
+static void
+ort_release_status(void *context, void *status)
+{
+    ort_output_context *ort = (ort_output_context *) context;
+    ort->api->ReleaseStatus((OrtStatus *) status);
+}
 
 static char *
 ort_string(const OrtApi *api, OrtAllocator *alloc, char *s)
@@ -46,6 +67,7 @@ sonic_model *
 sonic_model_open(const char *onnx_path)
 {
     sonic_model *m;
+    const OrtApiBase *base;
     const OrtApi *api;
     OrtAllocator *alloc = 0;
     char *in = 0, *out = 0;
@@ -55,10 +77,15 @@ sonic_model_open(const char *onnx_path)
 
     if (onnx_path == 0)
         return 0;
+    base = OrtGetApiBase();
+    if (base == 0 || base->GetApi == 0)
+        return 0;
+    api = base->GetApi(ORT_API_VERSION);
+    if (api == 0)
+        return 0;
     m = (sonic_model *) calloc(1, sizeof *m);
     if (m == 0)
         return 0;
-    api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
     m->api = api;
 
     if (api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "musicpack-sonic", &m->env) != 0)
@@ -184,9 +211,9 @@ sonic_model_run(const sonic_model *m, const float *mel, size_t n_windows,
 {
     OrtValue *input = 0, *output = 0;
     OrtMemoryInfo *mem = 0;
-    int64_t in_shape[4], out_shape[2];
+    int64_t in_shape[4];
     OrtStatus *st;
-    float *out_data = 0;
+    ort_output_context output_context;
     int rc = 0;
 
     if (m == 0 || mel == 0 || out == 0 || n_windows == 0 ||
@@ -197,9 +224,6 @@ sonic_model_run(const sonic_model *m, const float *mel, size_t n_windows,
     in_shape[1] = m->input_dims[1];
     in_shape[2] = m->input_dims[2];
     in_shape[3] = m->input_dims[3];
-    out_shape[0] = (int64_t) n_windows;
-    out_shape[1] = m->output_dims[1];
-
     if (m->api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem) != 0)
         return 0;
     st = m->api->CreateTensorWithDataAsOrtValue(
@@ -219,13 +243,11 @@ sonic_model_run(const sonic_model *m, const float *mel, size_t n_windows,
         m->api->ReleaseStatus(st);
         return 0;
     }
-    st = m->api->GetTensorMutableData(output, (void **) &out_data);
-    if (st == 0 && out_data != 0)
-        memcpy(out, out_data, n_windows * SONIC_PROFILE_DIMENSIONS * sizeof(float));
-    else
-        rc = 0;
-    if (st != 0)
-        m->api->ReleaseStatus(st);
+    output_context.api = m->api;
+    output_context.output = output;
+    rc = sonic_model_read_output(ort_get_output, ort_release_status,
+                                 &output_context, out,
+                                 n_windows * SONIC_PROFILE_DIMENSIONS);
     m->api->ReleaseValue(output);
-    return rc == 0 ? 1 : 0;
+    return rc;
 }

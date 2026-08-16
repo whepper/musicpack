@@ -135,6 +135,21 @@ raw_b64(const float *v, size_t n)
     return b64;
 }
 
+static char *
+axis_b64(size_t dims, size_t axis)
+{
+    float *v = (float *) calloc(dims, sizeof *v);
+    char *b64;
+    if (v == 0 || axis >= dims) {
+        free(v);
+        return 0;
+    }
+    v[axis] = 1.0f;
+    b64 = raw_b64(v, dims);
+    free(v);
+    return b64;
+}
+
 typedef struct {
     int disc;
     int track;
@@ -664,6 +679,103 @@ test_validate(void)
     }
     free(doc);
 
+    /* album embedding must be the normalized equal-track mean */
+    {
+        char *xaxis = axis_b64(512, 0);
+        char *zaxis = axis_b64(512, 2);
+        doc_track different[2] = { { 1, 1, 0, xaxis }, { 1, 2, 0, zaxis } };
+        doc = build_doc("musicpack-sonic-openl3-v1", 512, different, 2, 0,
+                        xaxis, 2, "musicpack", "test");
+        x = musicpack_sonic_parse(doc, strlen(doc), &s);
+        CHECK(x != 0, "inconsistent album doc parses");
+        if (x != 0) {
+            CHECK_STATUS(musicpack_sonic_validate(x, 0, 0), MUSICPACK_ERR_INVALID,
+                         "inconsistent album embedding rejected");
+            musicpack_sonic_free(x);
+        }
+        free(doc);
+        free(xaxis);
+        free(zaxis);
+    }
+
+    /* Verification mirrors the analyzer's ordered float accumulation. Near
+       cancellation must not make a document reject its own album vector. */
+    {
+        float a[512] = { 0 }, b[512] = { 0 }, c[512] = { 0 };
+        float album_vec[512] = { 0 };
+        char *ab64, *bb64, *cb64, *album_b64, *wrong_album;
+        doc_track cancellation[3];
+
+        a[0] = 1.0f;
+        b[0] = -0.4999999701976776f;
+        b[1] = 0.866025447845459f;
+        c[0] = -0.5f;
+        c[1] = -0.8660253882408142f;
+        album_vec[1] = 1.0f;
+        ab64 = raw_b64(a, 512);
+        bb64 = raw_b64(b, 512);
+        cb64 = raw_b64(c, 512);
+        album_b64 = raw_b64(album_vec, 512);
+        wrong_album = axis_b64(512, 0);
+        cancellation[0] = (doc_track) { 1, 1, 0, ab64 };
+        cancellation[1] = (doc_track) { 1, 2, 0, bb64 };
+        cancellation[2] = (doc_track) { 1, 3, 0, cb64 };
+
+        doc = build_doc("musicpack-sonic-openl3-v1", 512, cancellation, 3,
+                        0, album_b64, 3, "musicpack", "test");
+        x = musicpack_sonic_parse(doc, strlen(doc), &s);
+        CHECK(x != 0, "cancellation-sensitive album doc parses");
+        if (x != 0) {
+            CHECK_STATUS(musicpack_sonic_validate(x, 0, 0), MUSICPACK_OK,
+                         "analyzer float aggregation validates");
+            musicpack_sonic_free(x);
+        }
+        free(doc);
+
+        doc = build_doc("musicpack-sonic-openl3-v1", 512, cancellation, 3,
+                        0, wrong_album, 3, "musicpack", "test");
+        x = musicpack_sonic_parse(doc, strlen(doc), &s);
+        CHECK(x != 0, "wrong cancellation-sensitive album doc parses");
+        if (x != 0) {
+            CHECK_STATUS(musicpack_sonic_validate(x, 0, 0), MUSICPACK_ERR_INVALID,
+                         "unrelated cancellation-sensitive album rejected");
+            musicpack_sonic_free(x);
+        }
+        free(doc);
+        free(ab64);
+        free(bb64);
+        free(cb64);
+        free(album_b64);
+        free(wrong_album);
+    }
+
+    /* null tracks do not contribute to the album mean */
+    {
+        float mean[512];
+        char *xaxis = axis_b64(512, 0);
+        char *zaxis = axis_b64(512, 2);
+        char *album;
+        doc_track partial[3] = {
+            { 1, 1, 0, xaxis }, { 1, 2, 1, 0 }, { 1, 3, 0, zaxis }
+        };
+        memset(mean, 0, sizeof mean);
+        mean[0] = mean[2] = (float) (1.0 / sqrt(2.0));
+        album = raw_b64(mean, 512);
+        doc = build_doc("musicpack-sonic-openl3-v1", 512, partial, 3, 0,
+                        album, 2, "musicpack", "test");
+        x = musicpack_sonic_parse(doc, strlen(doc), &s);
+        CHECK(x != 0, "null-contributor doc parses");
+        if (x != 0) {
+            CHECK_STATUS(musicpack_sonic_validate(x, 0, 0), MUSICPACK_OK,
+                         "null contributor skipped in album mean");
+            musicpack_sonic_free(x);
+        }
+        free(doc);
+        free(album);
+        free(xaxis);
+        free(zaxis);
+    }
+
     /* manifest-aware validation */
     if (m != 0) {
         doc = build_doc("musicpack-sonic-openl3-v1", 512, tracks2, 2, 0, 0, 2,
@@ -1057,6 +1169,27 @@ test_package_verify(void)
     free(doc);
     remove_dir_tree(root);
 
+    /* matching hash does not let an oversized sonic document skip parsing */
+    if (make_temp_dir(root, sizeof root) != 0)
+        return;
+    doc = (char *) malloc((size_t) MUSICPACK_SONIC_DOC_MAX + 2);
+    if (doc != 0) {
+        memset(doc, ' ', (size_t) MUSICPACK_SONIC_DOC_MAX + 1);
+        doc[(size_t) MUSICPACK_SONIC_DOC_MAX + 1] = '\0';
+        make_package(root, doc, "musicpack-sonic-openl3-v1");
+        pkg = musicpack_package_open_dir(root, &s);
+        CHECK(pkg != 0, "package opens (oversized sonic with matching hash)");
+        if (pkg != 0) {
+            memset(&rep, 0, sizeof rep);
+            s = musicpack_package_verify(pkg, &rep, 0, 0);
+            CHECK(s != MUSICPACK_OK && rep.errors > 0,
+                  "oversized matching-hash sonic fails verify");
+            musicpack_package_close(pkg);
+        }
+        free(doc);
+    }
+    remove_dir_tree(root);
+
     /* manifest profile vs document profile mismatch: error */
     if (make_temp_dir(root, sizeof root) != 0)
         return;
@@ -1084,6 +1217,24 @@ test_package_verify(void)
         memset(&rep, 0, sizeof rep);
         CHECK_STATUS(musicpack_package_verify(pkg, &rep, 0, 0), MUSICPACK_OK,
                      "no-sonic package verifies clean");
+        musicpack_package_close(pkg);
+    }
+    remove_dir_tree(root);
+
+    /* mutable malformed manifests fail before verification dereferences them */
+    if (make_temp_dir(root, sizeof root) != 0)
+        return;
+    make_package(root, 0, 0);
+    pkg = musicpack_package_open_dir(root, &s);
+    CHECK(pkg != 0, "package opens (mutable manifest)");
+    if (pkg != 0) {
+        musicpack_manifest *mutable_manifest = musicpack_package_manifest_mutable(pkg);
+        memset(&rep, 0, sizeof rep);
+        mutable_manifest->analysis_count = 1;
+        s = musicpack_package_verify(pkg, &rep, 0, 0);
+        CHECK(s == MUSICPACK_ERR_INVALID && rep.errors > 0,
+              "malformed mutable manifest fails safely");
+        mutable_manifest->analysis_count = 0;
         musicpack_package_close(pkg);
     }
     remove_dir_tree(root);
