@@ -245,6 +245,16 @@ shifts, matching quantizer declarations, and writable runtime-initialized
 FAST_MATH tables. These patches are required for a reliable same-toolchain
 Release reference; do not remove them merely to make it look more pristine.
 
+The patch also normalizes the reference's encoder version identity
+(`mpcenc/config.h`) to the maintained release version (`1.32.0`). The encoder
+version is embedded in the SV8 `EI` block, so whole-file comparisons are only
+byte-identical when both binaries report the same version. This is metadata
+identity normalization, not an algorithmic change. A future encoder version
+bump must update `patch_reference.py` in lockstep and regenerate both
+committed manifests (`tests/reference_manifest.txt` and
+`tests/encoder_reference_manifest.txt`), because their whole-file hashes
+include the `EI` bytes.
+
 Verified facts (from the compatibility audit):
 - Reference vs modernized are byte-identical at matched optimization
   (`-O0` and `-O3`, 0/693 differing either way).

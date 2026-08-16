@@ -297,7 +297,7 @@ Backend (CTest):
 
 Rust (`cargo test` in `author/src-tauri`) — backend resolution (bundled/
 development, mpcenc; no decoder is resolved), the author-API handshake (now
-version 3), `encode_spawn` argument passing, and staging cleanup refusal of
+version 4), `encode_spawn` argument passing, and staging cleanup refusal of
 foreign paths.
 
 Frontend — vitest unit tests (API command surface incl. `encode_tracks`/

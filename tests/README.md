@@ -96,7 +96,10 @@ Two comparison modes:
 * **Manifest (local fallback):** with no reference binary, compare against
   the committed `tests/reference_manifest.txt`. That manifest was produced by
   a `-O0` reference build and is only valid at matching optimization (the
-  default CMake build type on the CI UNIX test build).
+  default CMake build type on the CI UNIX test build). It was intentionally
+  re-frozen for the MusicPack encoder-version bump `1.30.1 → 1.32.0` (the EI
+  encoder-info block embeds the version, so whole-file hashes change even
+  though the audio payload is identical; see the manifest header).
 
 Note: encoder byte-identity is optimization-dependent (verified at both `-O0`
 and `-O3` against the reference). With the live mode this is not an issue
