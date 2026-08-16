@@ -2,7 +2,7 @@
 # Copyright (c) 2026, The MusicPack Development Team
 # SPDX-License-Identifier: BSD-3-Clause
 # Integration tests for the MusicPack Author encode stage: `encode-draft`
-# turns a lossless FLAC album into tagged Musepack SV8 in a staging
+# turns a lossless FLAC/WAV album into tagged Musepack SV8 in a staging
 # directory, then `build-draft` assembles a valid .mpack from it.
 #
 # Exercises:
@@ -10,7 +10,8 @@
 #   - encode-draft produces staged .mpc files (disc-qualified names) and a
 #     transformed draft whose audioPath values point at them
 #   - the encoded .mpc carries the projected APEv2 tags plus verbatim
-#     passthrough of unknown/custom tags (checked with ffprobe when present)
+#     passthrough of unknown/custom tags (checked natively via libmusicpack)
+#   - FLAC -> Musepack and WAV -> Musepack both work
 #   - build-draft on the transformed draft yields a package that passes
 #     `musicpack verify` with sourceAudio + artwork preserved
 #   - unsupported sample rates fail with UNSUPPORTED_SAMPLE_RATE and warn in
@@ -18,23 +19,21 @@
 #   - mixed FLAC+MPC albums fail with UNSUPPORTED_SOURCE
 #   - a missing mpcenc fails pre-flight with TOOL_MISSING
 #   - SIGTERM cancels cleanly (exit 130) and removes the staging directory
+#   - the whole workflow succeeds with ffmpeg/ffprobe absent from PATH
 #
-# Requires ffmpeg; mpcenc is taken from $MPCENC, the build tree, or PATH.
+# Sources are decoded natively by the backend (libmusicpack): no ffmpeg or
+# ffprobe is required. mpcenc is taken from $MPCENC, the build tree, or PATH.
 #
 # Usage: tests/run_encode.sh <musicpack-cmd>
+# Env:   MPCENC, APE_DUMP (path to the native APEv2 tag dumper)
 
 set -u
 
 MUSICPACK="${1:?musicpack cmd}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="$ROOT/tests/reference/author-fixture/Neon Skyline"
+AUDIO_FIXTURES="$ROOT/tests/fixtures/audio"
 PY=python3
-
-FFMPEG="${FFMPEG:-ffmpeg}"
-if ! command -v "$FFMPEG" >/dev/null 2>&1; then
-    echo "FAIL  run_encode.sh: ffmpeg not available" >&2
-    exit 1
-fi
 
 MPCENC="${MPCENC:-}"
 if [ -z "$MPCENC" ] && [ -x "$ROOT/build/mpcenc/mpcenc" ]; then
@@ -50,9 +49,14 @@ if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     exit 1
 fi
 
-FFPROBE="${FFPROBE:-ffprobe}"
-HAVE_FFPROBE=0
-command -v "$FFPROBE" >/dev/null 2>&1 && HAVE_FFPROBE=1
+APE_DUMP="${APE_DUMP:-}"
+if [ -z "$APE_DUMP" ] && [ -x "$ROOT/build/tests/mpc_ape_tag_dump" ]; then
+    APE_DUMP="$ROOT/build/tests/mpc_ape_tag_dump"
+fi
+if [ -z "$APE_DUMP" ] || [ ! -x "$APE_DUMP" ]; then
+    echo "FAIL  run_encode.sh: native APE dumper not found (set APE_DUMP)" >&2
+    exit 1
+fi
 
 FAILED=0
 PASSED=0
@@ -64,11 +68,18 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Exercise configured tool paths without relying on shell quoting. The CLI
 # must pass this path directly to exec, including every metacharacter.
-FFMPEG_REAL="$(command -v "$FFMPEG")"
 TOOL_DIR="$TMP/tool's ; [bin]"
 mkdir -p "$TOOL_DIR"
-ln -s "$FFMPEG_REAL" "$TOOL_DIR/ffmpeg tool's ; [configured]"
-FFMPEG="$TOOL_DIR/ffmpeg tool's ; [configured]"
+MPCENC_REAL="$(command -v "$MPCENC")"
+if [ -z "$MPCENC_REAL" ]; then
+    # MPCENC may already be an absolute path with metacharacters
+    case "$MPCENC" in
+        /*) MPCENC_REAL="$MPCENC" ;;
+        *)  MPCENC_REAL="$(cd "$(dirname "$MPCENC")" && pwd)/$(basename "$MPCENC")" ;;
+    esac
+fi
+ln -s "$MPCENC_REAL" "$TOOL_DIR/mpcenc tool's ; [configured]"
+MPCENC="$TOOL_DIR/mpcenc tool's ; [configured]"
 
 ALBUM="$TMP/album"
 cp -R "$FIXTURE" "$ALBUM"
@@ -120,13 +131,13 @@ printf 'keep\n' > "$TMP/stage-nonempty/sentinel"
 mkdir "$TMP/stage-link-target"
 ln -s "$TMP/stage-link-target" "$TMP/stage-link"
 if ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-file" \
-        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+        --mpcenc "$MPCENC" --json >/dev/null 2>&1 \
    && [ "$(cat "$TMP/stage-file")" = keep ] \
    && ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-nonempty" \
-        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+        --mpcenc "$MPCENC" --json >/dev/null 2>&1 \
    && [ "$(cat "$TMP/stage-nonempty/sentinel")" = keep ] \
    && ! "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/stage-link" \
-        --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json >/dev/null 2>&1 \
+        --mpcenc "$MPCENC" --json >/dev/null 2>&1 \
    && [ -L "$TMP/stage-link" ]; then
     pass "encode-draft rejects files, symlinks and nonempty staging destinations"
 else
@@ -137,17 +148,17 @@ fi
 # follow the replacement symlink and delete files in its target.
 SWAP_STAGE="$TMP/stage-swap"
 SWAP_VICTIM="$TMP/stage-swap-victim"
-SWAP_FFMPEG="$TMP/swap-ffmpeg"
+SWAP_MPCENC="$TMP/swap-mpcenc"
 mkdir "$SWAP_STAGE" "$SWAP_VICTIM"
 printf 'keep\n' > "$SWAP_VICTIM/sentinel"
 printf '%s\n' '#!/bin/sh' \
     'rm -rf "$STAGE_SWAP"' \
     'ln -s "$STAGE_VICTIM" "$STAGE_SWAP"' \
-    'exit 1' > "$SWAP_FFMPEG"
-chmod +x "$SWAP_FFMPEG"
+    'exit 1' > "$SWAP_MPCENC"
+chmod +x "$SWAP_MPCENC"
 if ! STAGE_SWAP="$SWAP_STAGE" STAGE_VICTIM="$SWAP_VICTIM" \
         "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$SWAP_STAGE" \
-        --mpcenc "$MPCENC" --ffmpeg "$SWAP_FFMPEG" --json >/dev/null 2>&1 \
+        --mpcenc "$SWAP_MPCENC" --json >/dev/null 2>&1 \
    && [ -L "$SWAP_STAGE" ] \
    && [ "$(cat "$SWAP_VICTIM/sentinel")" = keep ]; then
     pass "encode-draft cleanup refuses a replaced staging symlink"
@@ -155,7 +166,7 @@ else
     fail "encode-draft cleanup refuses a replaced staging symlink"
 fi
 mkdir "$STAGE"
-if "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$STAGE" --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json 2>/dev/null > "$TMP/encode.json" \
+if "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$STAGE" --mpcenc "$MPCENC" --json 2>/dev/null > "$TMP/encode.json" \
    && $PY - "$TMP/encode.json" "$TMP/transformed.json" <<'EOF'
 import json, sys, os
 lines = [l for l in open(sys.argv[1]) if l.strip()]
@@ -192,21 +203,20 @@ else
     fail "encode-draft accepts Author's precreated empty staging directory"
 fi
 
-# 2b. the encoded files carry the projected + passthrough APEv2 tags
-if [ "$HAVE_FFPROBE" -eq 1 ]; then
-    if "$FFPROBE" -v error -show_entries format_tags \
-        "$STAGE/audio/1-01 - Midnight Relay.mpc" 2>/dev/null > "$TMP/tags.txt" \
-       && "$FFPROBE" -v error -show_entries format_tags \
-        "$STAGE/audio/1-02 - Starlight Drive.mpc" 2>/dev/null > "$TMP/tags2.txt" \
-       && $PY - "$TMP/tags.txt" "$TMP/tags2.txt" <<'EOF'
+# 2b. the encoded files carry the projected + passthrough APEv2 tags,
+#     verified natively through libmusicpack (no ffprobe).
+if "$APE_DUMP" "$STAGE/audio/1-01 - Midnight Relay.mpc" > "$TMP/tags.txt" 2>/dev/null \
+   && "$APE_DUMP" "$STAGE/audio/1-02 - Starlight Drive.mpc" > "$TMP/tags2.txt" 2>/dev/null \
+   && $PY - "$TMP/tags.txt" "$TMP/tags2.txt" <<'EOF'
 import sys
 def read(path):
     tags = {}
     for line in open(path):
         line = line.strip()
-        if line.startswith("TAG:"):
-            k, _, v = line[4:].partition("=")
-            tags[k] = v
+        if not line:
+            continue
+        k, _, v = line.partition("=")
+        tags[k] = v
     return tags
 tags = read(sys.argv[1])
 need = {
@@ -234,13 +244,10 @@ joined2 = "|".join(f"{k}={v}" for k, v in tags2.items())
 assert "metainfo_artist" in joined2, f"custom tag passthrough missing: {joined2}"
 print("ok")
 EOF
-    then
-        pass "encoded .mpc carries projected + passthrough APEv2 tags"
-    else
-        fail "encoded .mpc carries projected + passthrough APEv2 tags"
-    fi
+then
+    pass "encoded .mpc carries projected + passthrough APEv2 tags"
 else
-    echo "SKIP  encoded .mpc APEv2 tags (ffprobe not available)"
+    fail "encoded .mpc carries projected + passthrough APEv2 tags"
 fi
 
 # 3. build a package from the transformed draft and verify it
@@ -292,7 +299,6 @@ assert m["release"]["edition"] == "2019 Original", "release preserved"
 assert m["media"][0]["tracks"][0]["sourceAudio"]["codec"] == "flac", "sourceAudio"
 assert m["media"][0]["tracks"][0]["audio"]["path"].endswith(".mpc"), "mpc audio"
 assert m["media"][0]["tracks"][0]["audio"]["sha256"], "sha256 present"
-assert m["audio"] if False else True
 paths = [t["audio"]["path"] for me in m["media"] for t in me["tracks"]]
 assert len(set(paths)) == len(paths), "unique audio paths"
 assert any(a["role"] == "front" for a in m["artwork"]), "front artwork"
@@ -316,12 +322,58 @@ else
     fail "encode/build leave all source audio and artwork unchanged"
 fi
 
+# 3c. WAV -> Musepack authoring works (16-bit stereo PCM source).
+WAVSRC="$TMP/wavsrc"
+mkdir -p "$WAVSRC"
+$PY - "$WAVSRC/01 - Wav Track.wav" <<'EOF'
+import math, struct, sys, wave
+w = wave.open(sys.argv[1], "wb")
+w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+frames = bytearray()
+for i in range(44100 * 3):
+    v = int(0.5 * 32767 * math.sin(2 * math.pi * 440 * i / 44100))
+    frames += struct.pack("<hh", v, v)
+w.writeframes(bytes(frames)); w.close()
+EOF
+if "$MUSICPACK" inspect "$WAVSRC" --json 2>/dev/null > "$TMP/wav-draft.json" \
+   && $PY - "$TMP/wav-draft.json" "$TMP/wav-ready.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["media"][0]["tracks"][0]["codec"] == "wav", "wav codec probed"
+assert d["media"][0]["tracks"][0]["sampleRate"] == 44100, "wav rate probed"
+d["album"]["artists"] = [{"name": "A", "role": "main"}]
+d["identity"] = {"source": "local", "confidence": "none"}
+json.dump(d, open(sys.argv[2], "w"))
+EOF
+then
+    pass "inspect probes a WAV source"
+else
+    fail "inspect probes a WAV source"
+fi
+if "$MUSICPACK" encode-draft --draft "$TMP/wav-ready.json" -o "$TMP/wav-stage" \
+       --mpcenc "$MPCENC" --json 2>/dev/null > "$TMP/wav-encode.json" \
+   && $PY - "$TMP/wav-encode.json" <<'EOF'
+import json, os, sys
+lines = [l for l in open(sys.argv[1]) if l.strip()]
+done = json.loads(lines[-1])
+assert done["event"] == "done" and done["ok"], "wav encode done"
+assert done["tracks"] == 1, "one wav track"
+t = done["draft"]["media"][0]["tracks"][0]
+assert t["audioPath"].endswith(".mpc"), "wav encoded to mpc"
+assert t["sourceAudio"]["codec"] == "wav", "sourceAudio wav"
+assert os.path.isfile(os.path.join(done["outputDir"], t["audioPath"])), "staged mpc exists"
+print("ok")
+EOF
+then
+    pass "WAV source encodes to Musepack natively"
+else
+    fail "WAV source encodes to Musepack natively"
+fi
+
 # 4. unsupported sample rate fails encode and warns in validation
 HI="$TMP/hi"
 mkdir -p "$HI"
-"$FFMPEG" -v error -y -f lavfi -i "sine=frequency=440:duration=2:sample_rate=96000" \
-    -c:a flac -metadata title="Hi" -metadata artist="A" -metadata album="Hi" \
-    -metadata albumartist="A" -metadata track="1/1" "$HI/01 - Hi.flac" 2>/dev/null
+cp "$AUDIO_FIXTURES/flac24-96k.flac" "$HI/01 - Hi.flac"
 "$MUSICPACK" inspect "$HI" --json 2>/dev/null > "$TMP/hi-draft.json"
 $PY - "$TMP/hi-draft.json" "$TMP/hi-ready.json" <<'EOF'
 import json, sys
@@ -337,7 +389,7 @@ else
     fail "validate-draft warns about an unsupported sample rate"
 fi
 if "$MUSICPACK" encode-draft --draft "$TMP/hi-ready.json" -o "$TMP/hi-stage" \
-   --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json 2>/dev/null \
+   --mpcenc "$MPCENC" --json 2>/dev/null \
    | grep -q '"code":"UNSUPPORTED_SAMPLE_RATE"'; then
     pass "encode-draft refuses an unsupported sample rate"
 else
@@ -348,9 +400,7 @@ fi
 MIX="$TMP/mix"
 mkdir -p "$MIX"
 cp "$ROOT/tests/reference/test-musicpack-album.mpack/audio/01 - Alphaville - Big in Japan.mpc" "$MIX/01 - Already.mpc"
-"$FFMPEG" -v error -y -f lavfi -i "sine=frequency=440:duration=2:sample_rate=44100" \
-    -c:a flac -metadata title="New" -metadata artist="A" -metadata album="Mix" \
-    -metadata albumartist="A" -metadata track="2/2" "$MIX/02 - New.flac" 2>/dev/null
+cp "$AUDIO_FIXTURES/flac16-44k.flac" "$MIX/02 - New.flac"
 "$MUSICPACK" inspect "$MIX" --json 2>/dev/null > "$TMP/mix-draft.json"
 $PY - "$TMP/mix-draft.json" "$TMP/mix-ready.json" <<'EOF'
 import json, sys
@@ -360,7 +410,7 @@ d["identity"] = {"source": "local", "confidence": "none"}
 json.dump(d, open(sys.argv[2], "w"))
 EOF
 if "$MUSICPACK" encode-draft --draft "$TMP/mix-ready.json" -o "$TMP/mix-stage" \
-   --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json 2>/dev/null \
+   --mpcenc "$MPCENC" --json 2>/dev/null \
    | grep -q '"code":"UNSUPPORTED_SOURCE"'; then
     pass "encode-draft refuses mixed MPC+FLAC sources"
 else
@@ -369,7 +419,7 @@ fi
 
 # 6. a missing mpcenc fails the pre-flight with TOOL_MISSING
 if "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$TMP/ms-stage" \
-   --mpcenc "$TMP/does-not-exist" --ffmpeg "$FFMPEG" --json 2>/dev/null \
+   --mpcenc "$TMP/does-not-exist" --json 2>/dev/null \
    | grep -q '"code":"TOOL_MISSING"'; then
     pass "encode-draft fails pre-flight when mpcenc is missing"
 else
@@ -379,9 +429,7 @@ fi
 # 7. SIGTERM cancels cleanly and removes the staging directory
 LONG="$TMP/long"
 mkdir -p "$LONG"
-"$FFMPEG" -v error -y -f lavfi -i "sine=frequency=330:duration=3600:sample_rate=48000" \
-    -c:a flac -metadata title="Long" -metadata artist="A" -metadata album="Long" \
-    -metadata albumartist="A" -metadata track="1/1" "$LONG/01 - Long.flac" 2>/dev/null
+cp "$AUDIO_FIXTURES/flac-long-48k.flac" "$LONG/01 - Long.flac"
 "$MUSICPACK" inspect "$LONG" --json 2>/dev/null > "$TMP/long-draft.json"
 $PY - "$TMP/long-draft.json" "$TMP/long-ready.json" <<'EOF'
 import json, sys
@@ -391,7 +439,7 @@ d["identity"] = {"source": "local", "confidence": "none"}
 json.dump(d, open(sys.argv[2], "w"))
 EOF
 "$MUSICPACK" encode-draft --draft "$TMP/long-ready.json" -o "$TMP/long-stage" \
-    --mpcenc "$MPCENC" --ffmpeg "$FFMPEG" --json 2>/dev/null > "$TMP/long.json" &
+    --mpcenc "$MPCENC" --json 2>/dev/null > "$TMP/long.json" &
 ENC_PID=$!
 sleep 2
 kill -TERM "$ENC_PID" 2>/dev/null
@@ -403,6 +451,25 @@ if [ "$ENC_RC" -eq 130 ] \
     pass "SIGTERM cancels encoding, reports cancelled and cleans the staging dir"
 else
     fail "SIGTERM cancels encoding, reports cancelled and cleans the staging dir (rc=$ENC_RC)"
+fi
+
+# 8. the full workflow succeeds with ffmpeg/ffprobe unavailable
+NOPATH="$TMP/nopath"
+mkdir -p "$NOPATH"
+NEGSTAGE="$TMP/neg-stage"
+mkdir "$NEGSTAGE"
+if env -i PATH="$NOPATH" \
+        "$MUSICPACK" inspect "$ALBUM" --json 2>/dev/null > "$TMP/neg-draft.json" \
+   && env -i PATH="$NOPATH" \
+        "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$NEGSTAGE" \
+        --mpcenc "$MPCENC" --json 2>/dev/null | grep -q '"event":"done"' \
+   && env -i PATH="$NOPATH" \
+        "$MUSICPACK" build-draft --draft "$TMP/transformed.json" -o "$TMP/neg.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true' \
+   && env -i PATH="$NOPATH" \
+        "$MUSICPACK" verify "$TMP/neg.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true'; then
+    pass "full authoring workflow succeeds with ffmpeg/ffprobe absent"
+else
+    fail "full authoring workflow succeeds with ffmpeg/ffprobe absent"
 fi
 
 echo

@@ -174,9 +174,9 @@ fi
 # 6b. album loudness must be a program measurement: feed a loud and a quiet
 # track into one package; albumLUFS must NOT be the mean of track LUFS (the
 # quiet track is relative-gated out of the album program) and album true peak
-# must equal the max of track true peaks. Skipped when ffmpeg (needed to
-# measure .wav) is unavailable; the concatenation-semantics proof lives in the
-# C test test_album_loudness_aggregation.
+# must equal the max of track true peaks. WAV sources are measured natively
+# (no ffmpeg); the concatenation-semantics proof also lives in the C test
+# test_album_loudness_aggregation.
 LOUD_WAV="$TMP/loud's \$; [input].wav"
 QUIET_WAV="$TMP/quiet space; [input].wav"
 LOUD_NAME="Loud's \$; [mix]"
@@ -201,16 +201,11 @@ if "$MUSICPACK" create -o "$WAVPACK" -t "Loud Quiet" -a "A" -R album -m Digital 
 else
     fail "create measures filenames with apostrophes, spaces and metacharacters"
 fi
-HAVE_FFMPEG=0
-command -v ffmpeg >/dev/null 2>&1 && HAVE_FFMPEG=1
-if python3 - "$WAVPACK/manifest.json" "$HAVE_FFMPEG" <<'EOF'
+if python3 - "$WAVPACK/manifest.json" <<'EOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
 tl = [t.get("loudness") for d in m["media"] for t in d["tracks"]]
-if any(x is None for x in tl):
-    assert sys.argv[2] == "0", "ffmpeg is available but special-character paths were not measured"
-    print("skip: ffmpeg unavailable")
-    sys.exit(0)
+assert all(x is not None for x in tl), "special-character WAV paths must be measured natively"
 assert "loudness" in m
 assert m["loudness"]["algorithm"] == "ITU-R BS.1770-5"
 al = m["loudness"]["albumLUFS"]
@@ -265,6 +260,34 @@ then
     pass "same album, two distinct editions"
 else
     fail "same album, two distinct editions"
+fi
+
+# 6e. loudness regression: measuring the committed stereo/44.1 kHz FLAC
+# reference album natively (no ffmpeg resample/downmix) must reproduce the
+# committed manifest loudness. The source audio is identical, so native
+# decode is byte-identical to the old ffmpeg path and the values must match.
+LDR="$TMP/loudreg"
+mkdir -p "$LDR"
+cp "$FLAC_REF"/audio/*.flac "$LDR/"
+LREGPKG="$TMP/loudreg.mpack"
+if "$MUSICPACK" import -o "$LREGPKG" -t "Loudness Regression" -a "A" "$LDR" >/dev/null 2>&1 \
+   && python3 - "$LREGPKG/manifest.json" "$FLAC_REF/manifest.json" <<'EOF'
+import json, sys
+new = json.load(open(sys.argv[1]))
+old = json.load(open(sys.argv[2]))
+nl = new["loudness"]; ol = old["loudness"]
+assert abs(nl["albumLUFS"] - ol["albumLUFS"]) < 0.05, "albumLUFS regressed"
+assert abs(nl["albumTruePeakDbTP"] - ol["albumTruePeakDbTP"]) < 0.05, "albumTP regressed"
+for nm, om in zip(new["media"], old["media"]):
+    for nt, ot in zip(nm["tracks"], om["tracks"]):
+        assert abs(nt["loudness"]["trackLUFS"] - ot["loudness"]["trackLUFS"]) < 0.05, "trackLUFS regressed"
+        assert abs(nt["loudness"]["truePeakDbTP"] - ot["loudness"]["truePeakDbTP"]) < 0.05, "trackTP regressed"
+print("ok")
+EOF
+then
+    pass "native loudness regression matches the committed reference album"
+else
+    fail "native loudness regression matches the committed reference album"
 fi
 
 # 7. real metadata import: embedded tags drive the manifest, flags override

@@ -6,6 +6,7 @@
 set(MUSICPACK_VERSION "0.1.0")
 
 set(MUSICPACK_SOURCES
+    src/audio.c
     src/manifest.c
     src/package.c
     src/object.c
@@ -51,6 +52,7 @@ target_include_directories(musicpack
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cjson
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ebur128)
 

@@ -32,27 +32,36 @@
   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
-/// \file musicpack.h
-/// Umbrella header for libmusicpack.
-///
-/// libmusicpack owns MusicPack package semantics (.mpack manifest, release/
-/// track model, assets, checksums, BS.1770 loudness, validation, directory
-/// storage and object access). libmusepack owns the codec; this library may
-/// use it, never the reverse.
-#ifndef MUSICPACK_H_
-#define MUSICPACK_H_
-#pragma once
 
-#include <musicpack/export.h>
-#include <musicpack/error.h>
-#include <musicpack/audio.h>
-#include <musicpack/manifest.h>
-#include <musicpack/package.h>
-#include <musicpack/object.h>
-#include <musicpack/checksum.h>
-#include <musicpack/loudness.h>
-#include <musicpack/path.h>
-#include <musicpack/meta.h>
-#include <musicpack/sonic.h>
+/* Native APEv2 tag dumper for the encode integration test: reads the tags
+   written on an encoded .mpc through libmusicpack and prints `KEY=value`
+   lines, replacing the old ffprobe-based check. */
 
-#endif /* MUSICPACK_H_ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <musicpack/musicpack.h>
+
+int
+main(int argc, char **argv)
+{
+    musicpack_tag_set tags;
+    musicpack_status st;
+    size_t i;
+
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <file.mpc>\n", argv[0]);
+        return 2;
+    }
+    st = musicpack_ape_read(argv[1], &tags);
+    if (st != MUSICPACK_OK)
+        return 1;
+    for (i = 0; i < tags.count; i++) {
+        const musicpack_tag *t = &tags.items[i];
+        if (t->is_binary)
+            continue;
+        printf("%s=%s\n", t->key, t->value != 0 ? t->value : "");
+    }
+    musicpack_tag_set_free(&tags);
+    return 0;
+}

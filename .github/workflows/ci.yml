@@ -51,9 +51,9 @@ jobs:
             # The runner bundles a google-chrome apt repo whose index is
             # occasionally mid-mirror-sync, failing apt-get update; drop it.
             sudo rm -f /etc/apt/sources.list.d/google-chrome.list
-            sudo apt-get update && sudo apt-get install -y ffmpeg libmicrohttpd-dev
+            sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
           else
-            brew install ffmpeg libmicrohttpd
+            brew install libmicrohttpd
           fi
 
       - name: Configure
@@ -161,8 +161,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install ffmpeg
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list && sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Configure and build
         run: >
           cmake -S . -B build-nosimd -DMPC_BUILD_TESTS=ON

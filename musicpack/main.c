@@ -75,8 +75,9 @@
 /* Version of the JSON authoring surface consumed by MusicPack Author. The
    GUI refuses to talk to a backend whose authorApi does not match, so the
    CLI and the GUI can evolve independently without coupling to exact patch
-   versions. Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage). */
-#define MUSICPACK_AUTHOR_API 2
+   versions. Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage);
+   version 3 removes its `--ffmpeg` argument (FLAC/WAV decode is native). */
+#define MUSICPACK_AUTHOR_API 3
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
@@ -225,109 +226,65 @@ codec_for_path(const char *path)
    If `album` is non-NULL it holds a package-wide album meter (created lazily
    from the first measured track's format); the same PCM is fed to both the
    per-track meter and the album meter so album loudness is measured over the
-   concatenated program, never aggregated from per-track values. */
+   concatenated program, never aggregated from per-track values.
+   Sources are decoded natively (FLAC/WAV/Musepack through libmusicpack) at
+   their original sample rate and channel count: unlike the historical
+   ffmpeg path there is no forced 44.1 kHz / stereo conversion. The BS.1770
+   meter supports mono/stereo; multichannel sources are not measured. */
 static int
 measure_loudness(const char *path, int *has, double *lufs, double *peak,
                  double *duration, musicpack_meter **album)
 {
+    musicpack_audio *audio;
+    musicpack_audio_format fmt;
     musicpack_meter *meter = 0;
+    float pcm[1152 * 2];
+    size_t n;
+    uint64_t frames_total = 0;
     int rc = 1;
-    const char *codec = codec_for_path(path);
 
     *has = 0;
     *lufs = 0;
     *peak = 0;
 
-    if (strcmp(codec, "musepack") == 0) {
-        mpc_reader reader;
-        musepack_decoder *dec;
-        musepack_stream_info info;
-        float pcm[1152 * 2];
-        uint64_t frames;
-        unsigned ch, rate;
-
-        if (mpc_reader_init_stdio(&reader, path) != MPC_STATUS_OK)
-            return 1;
-        dec = musepack_decoder_open(&reader, 0);
-        if (dec == 0) { mpc_reader_exit_stdio(&reader); return 1; }
-        memset(&info, 0, sizeof info);
-        info.size = sizeof info;
-        musepack_decoder_get_stream_info(dec, &info);
-        if (info.channels < 1 || info.channels > 2) {
-            musepack_decoder_close(dec);
-            mpc_reader_exit_stdio(&reader);
-            return 1;
-        }
-        ch = info.channels;
-        rate = info.sample_rate;
-        if (rate == 0) {
-            musepack_decoder_close(dec);
-            mpc_reader_exit_stdio(&reader);
-            return 1;
-        }
-        if (duration != 0)
-            *duration = (double) musepack_decoder_length_samples(dec) / (double) rate;
-        meter = musicpack_meter_new(ch, rate, 0);
-        if (meter != 0) {
-            if (album != 0 && *album == 0)
-                *album = musicpack_meter_new(ch, rate, 0);
-            while (musepack_decoder_read(dec, pcm, 1152, &frames) == MUSEPACK_OK) {
-                musicpack_meter_add_frames(meter, pcm, frames);
-                if (album != 0 && *album != 0)
-                    musicpack_meter_add_frames(*album, pcm, frames);
-            }
-            rc = 0;
-        }
-        musepack_decoder_close(dec);
-        mpc_reader_exit_stdio(&reader);
-    } else {
-        /* decode via ffmpeg to interleaved f32le stereo 44.1k */
-        char *argv[15];
-        command_process process;
-        float buf[8192];
-        size_t n;
-        double total_frames = 0;
-        int status;
-
-        meter = musicpack_meter_new(2, 44100, 0);
-        if (meter == 0)
-            return 1;
-        if (album != 0 && *album == 0)
-            *album = musicpack_meter_new(2, 44100, 0);
-        argv[0] = "ffmpeg";
-        argv[1] = "-v"; argv[2] = "error";
-        argv[3] = "-i"; argv[4] = (char *) path;
-        argv[5] = "-f"; argv[6] = "f32le";
-        argv[7] = "-ac"; argv[8] = "2";
-        argv[9] = "-ar"; argv[10] = "44100";
-        argv[11] = "-";
-        argv[12] = 0;
-        if (start_command(&process, argv, 1, 1) != 0)
-            goto out;
-        while ((n = fread(buf, sizeof(float), sizeof buf / sizeof(float),
-                          process.output)) > 0) {
-            musicpack_meter_add_frames(meter, buf, n / 2);
-            if (album != 0 && *album != 0)
-                musicpack_meter_add_frames(*album, buf, n / 2);
-            total_frames += n / 2;
-        }
-        status = ferror(process.output) ? -1 : 0;
-        fclose(process.output);
-        process.output = 0;
-        if (finish_command(&process) != 0 || status != 0)
-            goto out;
-        if (duration != 0)
-            *duration = total_frames / 44100.0;
-        rc = 0;
+    audio = musicpack_audio_open(path, 0);
+    if (audio == 0)
+        return 1;
+    if (musicpack_audio_get_format(audio, &fmt) != MUSICPACK_OK) {
+        musicpack_audio_close(audio);
+        return 1;
     }
+    if (fmt.channels < 1 || fmt.channels > 2 || fmt.sample_rate == 0) {
+        musicpack_audio_close(audio);
+        return 1;
+    }
+    meter = musicpack_meter_new(fmt.channels, fmt.sample_rate, 0);
+    if (meter == 0) {
+        musicpack_audio_close(audio);
+        return 1;
+    }
+    if (album != 0 && *album == 0)
+        *album = musicpack_meter_new(fmt.channels, fmt.sample_rate, 0);
+    while (musicpack_audio_read_frames_f32(audio, pcm, 1152, &n) == MUSICPACK_OK
+           && n > 0) {
+        musicpack_meter_add_frames(meter, pcm, n);
+        if (album != 0 && *album != 0)
+            musicpack_meter_add_frames(*album, pcm, n);
+        frames_total += n;
+    }
+    musicpack_audio_close(audio);
 
-    if (rc == 0 && meter != 0) {
-        if (musicpack_meter_result(meter, lufs, peak) != MUSICPACK_OK)
-            rc = 1;
+    if (duration != 0) {
+        if (frames_total > 0)
+            *duration = (double) frames_total / (double) fmt.sample_rate;
+        else if (fmt.total_samples > 0)
+            *duration = (double) fmt.total_samples / (double) fmt.sample_rate;
         else
-            *has = 1;
+            *duration = 0;
     }
-out:
+
+    if (musicpack_meter_result(meter, lufs, peak) == MUSICPACK_OK)
+        rc = (*has = 1, 0);
     musicpack_meter_free(meter);
     return rc;
 }
@@ -1785,37 +1742,25 @@ probe_stream(const char *path, mpc_stream_info *out)
         }
         if (out->codec[0] == '\0')
             snprintf(out->codec, sizeof out->codec, "musepack");
-    } else if (dot != 0 && strcmp(dot, ".flac") == 0) {
-        /* minimal STREAMINFO parse (first metadata block, 34 bytes). The
-           block header occupies bytes 4..7; the STREAMINFO body starts at
-           byte 8: min/max block size (16+16), min/max frame size (24+24),
-           sample rate (20), channels-1 (3), bits per sample-1 (5), total
-           samples (36), then the MD5. */
-        unsigned char h[42];
-        FILE *f = fopen(path, "rb");
-        if (f != 0) {
-            size_t got = fread(h, 1, sizeof h, f);
-            fclose(f);
-            if (got >= 42 && memcmp(h, "fLaC", 4) == 0 && (h[4] & 0x7f) == 0) {
-                long rate = ((long) h[18] << 12) | ((long) h[19] << 4) | (h[20] >> 4);
-                long ch = ((h[20] & 0x0e) >> 1) + 1;
-                long bits = ((h[20] & 0x01) << 4) | (h[21] >> 4);
-                bits += 1;
-                uint64_t samples = ((uint64_t) (h[21] & 0x0f) << 32) |
-                                   ((uint64_t) h[22] << 24) |
-                                   ((uint64_t) h[23] << 16) |
-                                   ((uint64_t) h[24] << 8) | h[25];
-                snprintf(out->codec, sizeof out->codec, "flac");
-                if (rate > 0) {
-                    out->sample_rate = rate;
-                    out->channels = ch;
-                    out->bits = bits;
-                    out->duration = (double) samples / (double) rate;
-                }
+    } else if (dot != 0 &&
+               (strcmp(dot, ".flac") == 0 || strcmp(dot, ".wav") == 0)) {
+        /* FLAC/WAV stream properties come from the native decoder. */
+        musicpack_audio *audio = musicpack_audio_open(path, 0);
+        if (audio != 0) {
+            musicpack_audio_format fmt;
+            if (musicpack_audio_get_format(audio, &fmt) == MUSICPACK_OK) {
+                snprintf(out->codec, sizeof out->codec, "%s", fmt.codec);
+                out->sample_rate = (long) fmt.sample_rate;
+                out->channels = (long) fmt.channels;
+                out->bits = (long) fmt.bits_per_sample;
+                if (fmt.sample_rate > 0 && fmt.total_samples > 0)
+                    out->duration = (double) fmt.total_samples /
+                                    (double) fmt.sample_rate;
             }
+            musicpack_audio_close(audio);
         }
         if (out->codec[0] == '\0')
-            snprintf(out->codec, sizeof out->codec, "flac");
+            snprintf(out->codec, sizeof out->codec, "%s", codec_for_path(path));
     } else {
         snprintf(out->codec, sizeof out->codec, "%s", codec_for_path(path));
     }
@@ -4510,36 +4455,167 @@ bin_available(const char *resolved)
     return 1;
 }
 
-/* Sample rate from a minimal RIFF/WAVE header parse (0 when unknown). */
-static long
-wav_sample_rate(const char *path)
+/* ------------------------------------------------------------------ */
+/* native source decode -> PCM WAV (encode-draft input stage)          */
+/* ------------------------------------------------------------------ */
+/*                                                                      */
+/* mpcenc reads a PCM WAV file. The old pipeline let ffmpeg produce it; */
+/* now libmusicpack decodes FLAC/WAV natively and this writer emits the */
+/* same integer PCM WAV (at the source bit depth) without any external  */
+/* tool. The s32 frames are left-aligned (see <musicpack/audio.h>), so  */
+/* the conversion below reproduces the exact source samples.            */
+
+/* Writes a WAVE header with placeholder sizes; data follows immediately. */
+static FILE *
+wav_write_open(const char *path, unsigned rate, unsigned channels, unsigned bits)
 {
-    unsigned char h[128];
-    FILE *f = fopen(path, "rb");
-    size_t got;
-    long rate = 0;
+    FILE *f = fopen(path, "wb");
+    unsigned char hdr[44];
     if (f == 0)
         return 0;
-    got = fread(h, 1, sizeof h, f);
-    fclose(f);
-    if (got < 12 || memcmp(h, "RIFF", 4) != 0 || memcmp(h + 8, "WAVE", 4) != 0)
-        return 0;
+    memset(hdr, 0, sizeof hdr);
+    memcpy(hdr, "RIFF", 4);
+    hdr[8] = 'W'; hdr[9] = 'A'; hdr[10] = 'V'; hdr[11] = 'E';
+    memcpy(hdr + 12, "fmt ", 4);
+    hdr[16] = 16;                 /* fmt chunk size */
+    hdr[20] = 1; hdr[21] = 0;     /* WAVE_FORMAT_PCM */
+    hdr[22] = (unsigned char) channels;
+    hdr[23] = (unsigned char) (channels >> 8);
+    hdr[24] = (unsigned char) rate;
+    hdr[25] = (unsigned char) (rate >> 8);
+    hdr[26] = (unsigned char) (rate >> 16);
+    hdr[27] = (unsigned char) (rate >> 24);
     {
-        unsigned int pos = 12;
-        while (pos + 8 <= got) {
-            unsigned int clen = (unsigned int) h[pos + 4] |
-                                ((unsigned int) h[pos + 5] << 8) |
-                                ((unsigned int) h[pos + 6] << 16) |
-                                ((unsigned int) h[pos + 7] << 24);
-            if (memcmp(h + pos, "fmt ", 4) == 0 && pos + 16 <= got) {
-                rate = (long) h[pos + 12] | ((long) h[pos + 13] << 8) |
-                       ((long) h[pos + 14] << 16) | ((long) h[pos + 15] << 24);
-                break;
-            }
-            pos += 8 + clen;
+        unsigned bytes = bits / 8;
+        unsigned byte_rate = rate * channels * bytes;
+        unsigned block_align = channels * bytes;
+        hdr[28] = (unsigned char) byte_rate;
+        hdr[29] = (unsigned char) (byte_rate >> 8);
+        hdr[30] = (unsigned char) (byte_rate >> 16);
+        hdr[31] = (unsigned char) (byte_rate >> 24);
+        hdr[32] = (unsigned char) block_align;
+        hdr[33] = (unsigned char) (block_align >> 8);
+        hdr[34] = (unsigned char) bits;
+        hdr[35] = (unsigned char) (bits >> 8);
+    }
+    memcpy(hdr + 36, "data", 4);
+    if (fwrite(hdr, 1, sizeof hdr, f) != sizeof hdr) {
+        fclose(f);
+        return 0;
+    }
+    return f;
+}
+
+/* Converts `frames` of interleaved left-aligned s32 PCM to the WAV bit
+   depth and appends them. Returns 0 on success. */
+static int
+wav_write_frames(FILE *f, unsigned channels, unsigned bits,
+                 const int32_t *samples, size_t frames)
+{
+    unsigned bytes = bits / 8;
+    unsigned char *buf;
+    size_t n = frames * channels, i;
+    int rc = -1;
+
+    buf = (unsigned char *) malloc(n * bytes);
+    if (buf == 0)
+        return -1;
+    for (i = 0; i < n; i++) {
+        int32_t s = samples[i];
+        unsigned char *o = buf + i * bytes;
+        if (bits == 8) {
+            o[0] = (unsigned char) ((s >> 24) + 128);
+        } else if (bits == 16) {
+            uint16_t v = (uint16_t) (uint16_t) (s >> 16);
+            o[0] = (unsigned char) v;
+            o[1] = (unsigned char) (v >> 8);
+        } else if (bits == 24) {
+            uint32_t v = (uint32_t) (s >> 8);
+            o[0] = (unsigned char) v;
+            o[1] = (unsigned char) (v >> 8);
+            o[2] = (unsigned char) (v >> 16);
+        } else {
+            uint32_t v = (uint32_t) s;
+            o[0] = (unsigned char) v;
+            o[1] = (unsigned char) (v >> 8);
+            o[2] = (unsigned char) (v >> 16);
+            o[3] = (unsigned char) (v >> 24);
         }
     }
-    return rate;
+    if (fwrite(buf, 1, n * bytes, f) == n * bytes)
+        rc = 0;
+    free(buf);
+    return rc;
+}
+
+/* Writes a 32-bit little-endian word at the current file position. */
+static int
+write_le32(FILE *f, unsigned long v)
+{
+    unsigned char b[4];
+    b[0] = (unsigned char) v;
+    b[1] = (unsigned char) (v >> 8);
+    b[2] = (unsigned char) (v >> 16);
+    b[3] = (unsigned char) (v >> 24);
+    return fwrite(b, 1, sizeof b, f) == sizeof b ? 0 : -1;
+}
+
+/* Patches the RIFF/data sizes and closes the file. */
+static int
+wav_write_close(FILE *f)
+{
+    long data = ftell(f) - 44;
+    if (data < 0)
+        return -1;
+    if (fseek(f, 4, SEEK_SET) != 0)
+        return -1;
+    if (write_le32(f, (unsigned long) data + 36) != 0)
+        return -1;
+    if (fseek(f, 40, SEEK_SET) != 0)
+        return -1;
+    if (write_le32(f, (unsigned long) data) != 0)
+        return -1;
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+/* Decodes `src` (FLAC or integer-PCM WAV) into the PCM WAV file `wav` using
+   the native decoder. Returns 0 on success. */
+static int
+decode_to_wav(const char *src, const char *wav)
+{
+    musicpack_audio *audio;
+    musicpack_audio_format fmt;
+    int32_t pcm[1152 * 8];
+    size_t n;
+    FILE *f = 0;
+    int rc = 1;
+
+    audio = musicpack_audio_open(src, 0);
+    if (audio == 0)
+        return 1;
+    if (musicpack_audio_get_format(audio, &fmt) != MUSICPACK_OK)
+        goto out;
+    if (fmt.is_float || fmt.bits_per_sample < 8 ||
+        fmt.bits_per_sample > 32 || fmt.channels < 1 || fmt.channels > 8 ||
+        fmt.sample_rate == 0)
+        goto out;
+    f = wav_write_open(wav, fmt.sample_rate, fmt.channels, fmt.bits_per_sample);
+    if (f == 0)
+        goto out;
+    while (musicpack_audio_read_frames_s32(audio, pcm, 1152, &n) == MUSICPACK_OK
+           && n > 0) {
+        if (wav_write_frames(f, fmt.channels, fmt.bits_per_sample, pcm, n) != 0)
+            goto out;
+    }
+    if (wav_write_close(f) != 0)
+        goto out;
+    f = 0;
+    rc = 0;
+out:
+    if (f != 0)
+        fclose(f);
+    musicpack_audio_close(audio);
+    return rc;
 }
 
 /* Recursively removes a directory tree (staging cleanup only). */
@@ -4742,12 +4818,12 @@ usage_encode_draft(void)
 {
     fprintf(stderr,
         "usage: musicpack encode-draft --draft FILE -o STAGING_DIR\n"
-        "       [--quality 6.0] [--ffmpeg BIN] [--mpcenc BIN] [--json]\n");
+        "       [--quality 6.0] [--mpcenc BIN] [--json]\n");
 }
 
 static int
 cmd_encode_draft(const char *draft_path, const char *out_dir, const char *quality,
-                 const char *ffmpeg_arg, const char *mpcenc_arg, int json)
+                 const char *mpcenc_arg, int json)
 {
     cJSON *draft;
     char err[512];
@@ -4760,9 +4836,7 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
     char bok_dir[MUSICPACK_PATH_MAX + 2];
     char lyr_dir[MUSICPACK_PATH_MAX + 2];
     char ex_dir[MUSICPACK_PATH_MAX + 2];
-    char ffmpeg_buf[MUSICPACK_PATH_MAX + 2];
     char mpcenc_buf[MUSICPACK_PATH_MAX + 2];
-    const char *ffmpeg_bin;
     const char *mpcenc_bin;
     char srcpath[MUSICPACK_PATH_MAX + 2];
     char wavpath[MUSICPACK_PATH_MAX + 2];
@@ -4848,17 +4922,18 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
         return 1;
     }
 
-    ffmpeg_bin = resolve_bin(ffmpeg_arg, "ffmpeg", ffmpeg_buf, sizeof ffmpeg_buf);
     mpcenc_bin = resolve_bin(mpcenc_arg, "mpcenc", mpcenc_buf, sizeof mpcenc_buf);
 
-    /* pre-flight: every source must be encodable (FLAC/WAV at a supported
-       rate) and the toolchain must be available before any encoding starts */
+    /* pre-flight: every source must be encodable (FLAC or integer-PCM WAV at
+       a supported rate, mono/stereo-safe for the encoder) and mpcenc must be
+       available before any encoding starts */
     for (d = 0; d < m.disc_count && !bad; d++) {
         for (t = 0; t < m.discs[d].track_count && !bad; t++) {
             const musicpack_track *tr = &m.discs[d].tracks[t];
             const char *rel = tr->audio.path != 0 ? tr->audio.path : "";
             const char *ext = strrchr(rel, '.');
-            mpc_stream_info si;
+            musicpack_audio *audio;
+            musicpack_audio_format fmt;
             long rate = 0;
             snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, rel);
             if (ext == 0 || (strcmp(ext, ".flac") != 0 && strcmp(ext, ".wav") != 0)) {
@@ -4871,12 +4946,30 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
                 bad = 1;
                 break;
             }
-            memset(&si, 0, sizeof si);
-            probe_stream(srcpath, &si);
-            rate = si.sample_rate;
-            if (rate == 0 && strcmp(ext, ".wav") == 0)
-                rate = wav_sample_rate(srcpath);
-            if (rate > 0 && !encode_supported_rate(rate)) {
+            audio = musicpack_audio_open(srcpath, 0);
+            if (audio == 0 ||
+                musicpack_audio_get_format(audio, &fmt) != MUSICPACK_OK) {
+                char msg[512];
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d ('%s') — cannot decode source "
+                         "(unsupported or malformed)",
+                         tr->number, m.discs[d].disc, rel);
+                emit_encode_error("UNSUPPORTED_SOURCE", msg, m.discs[d].disc, tr->number);
+                if (audio != 0)
+                    musicpack_audio_close(audio);
+                bad = 1;
+                break;
+            }
+            rate = (long) fmt.sample_rate;
+            if (fmt.is_float) {
+                char msg[512];
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d ('%s') cannot be encoded to Musepack: "
+                         "floating-point WAV sources are not supported",
+                         tr->number, m.discs[d].disc, rel);
+                emit_encode_error("UNSUPPORTED_SOURCE", msg, m.discs[d].disc, tr->number);
+                bad = 1;
+            } else if (rate > 0 && !encode_supported_rate(rate)) {
                 char msg[512];
                 snprintf(msg, sizeof msg,
                          "track %d on disc %d ('%s') — sample rate %ld Hz is not "
@@ -4886,15 +4979,8 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
                                   tr->number);
                 bad = 1;
             }
+            musicpack_audio_close(audio);
         }
-    }
-    if (!bad && !bin_available(ffmpeg_bin)) {
-        char msg[512];
-        snprintf(msg, sizeof msg,
-                 "ffmpeg is required to decode FLAC/WAV but was not found "
-                 "('%s'); install ffmpeg or pass --ffmpeg", ffmpeg_bin);
-        emit_encode_error("TOOL_MISSING", msg, 0, 0);
-        bad = 1;
     }
     if (!bad && !bin_available(mpcenc_bin)) {
         char msg[512];
@@ -4967,7 +5053,6 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
             char fname[MUSICPACK_PATH_MAX + 2];
             char target[MUSICPACK_PATH_MAX + 2];
             char *wav = 0;
-            char *argv_dec[16];
             char *argv_enc[16];
             int src_codec; /* 0 flac, 1 wav */
             mpc_stream_info si;
@@ -4990,26 +5075,13 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
 
             emit_encode_stage("decoding", done_count + 1, (int) total,
                               m.discs[d].disc, tr->number, tr->title);
-            argv_dec[0] = (char *) ffmpeg_bin;
-            argv_dec[1] = "-v"; argv_dec[2] = "error";
-            argv_dec[3] = "-y";
-            argv_dec[4] = "-i"; argv_dec[5] = (char *) srcpath;
-            argv_dec[6] = "-vn";
-            argv_dec[7] = "-f"; argv_dec[8] = "wav";
-            argv_dec[9] = wav;
-            argv_dec[10] = 0;
-            rc = run_command(argv_dec);
+            rc = decode_to_wav(srcpath, wav);
             if (rc != 0 || !is_regular_path(wav)) {
                 char msg[640];
-                if (rc == 127)
-                    snprintf(msg, sizeof msg,
-                             "track %d on disc %d — ffmpeg ('%s') could not be run",
-                             tr->number, m.discs[d].disc, ffmpeg_bin);
-                else
-                    snprintf(msg, sizeof msg,
-                             "track %d on disc %d — decoding '%s' failed (ffmpeg "
-                             "exit %d)",
-                             tr->number, m.discs[d].disc, rel, rc);
+                snprintf(msg, sizeof msg,
+                         "track %d on disc %d — decoding '%s' failed "
+                         "(unsupported, malformed or unreadable source)",
+                         tr->number, m.discs[d].disc, rel);
                 emit_encode_error("DECODE_FAILED", msg, m.discs[d].disc, tr->number);
                 bad = 1;
                 break;
@@ -5334,7 +5406,7 @@ main(int argc, char **argv)
     }
     if (strcmp(cmd, "encode-draft") == 0) {
         const char *draft_path = 0, *out_dir = 0, *quality = 0;
-        const char *ffmpeg_bin = 0, *mpcenc_bin = 0;
+        const char *mpcenc_bin = 0;
         int json = 0, i;
         for (i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
@@ -5343,8 +5415,6 @@ main(int argc, char **argv)
                 out_dir = argv[++i];
             } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
                 quality = argv[++i];
-            } else if (strcmp(argv[i], "--ffmpeg") == 0 && i + 1 < argc) {
-                ffmpeg_bin = argv[++i];
             } else if (strcmp(argv[i], "--mpcenc") == 0 && i + 1 < argc) {
                 mpcenc_bin = argv[++i];
             } else if (strcmp(argv[i], "--json") == 0) {
@@ -5357,8 +5427,7 @@ main(int argc, char **argv)
             usage_encode_draft();
             return 2;
         }
-        return cmd_encode_draft(draft_path, out_dir, quality, ffmpeg_bin,
-                                mpcenc_bin, json);
+        return cmd_encode_draft(draft_path, out_dir, quality, mpcenc_bin, json);
     }
     if (strcmp(cmd, "author-api-version") == 0) {
         /* Machine-readable capability handshake for MusicPack Author. */

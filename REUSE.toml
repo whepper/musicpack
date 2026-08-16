@@ -81,7 +81,7 @@ SPDX-FileCopyrightText = "2003-2006 Marcus Geelnard"
 SPDX-License-Identifier = "Zlib"
 
 [[annotations]]
-path = "sonic/vendor/dr_flac.h"
+path = "libmusicpack/vendor/dr_flac.h"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "David Reid"
 SPDX-License-Identifier = "LicenseRef-Public-Domain"

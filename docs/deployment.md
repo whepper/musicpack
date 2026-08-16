@@ -36,7 +36,8 @@ For advanced/developer details, see `author/README.md`, `web/README.md`, and
 - **macOS workstation** — MusicPack Author is a standalone `.app` that authors
   `.mpack` albums (tagged FLAC/WAV or an existing Musepack album → curated,
   validated `.mpack`). It bundles the `musicpack` backend and the `mpcenc`
-  encoder; ffmpeg (FLAC/WAV decode) is external.
+  encoder; FLAC/WAV decoding is native (vendored dr_flac + a small WAV reader),
+  so there is no external decoder.
 - **Linux server** — `musicpack-server` scans and verifies an `.mpack`
   collection into a SQLite collector library and serves it over a read-only
   HTTP API v1. It also serves the static web client from `--static-dir`.
@@ -60,8 +61,10 @@ for remote/LAN clients.
 - **Node.js ≥ 20** and npm
 - **Rust toolchain** (Tauri 2 backend)
 - **curl** (system `/usr/bin/curl`, used for MusicBrainz lookups)
-- **ffmpeg** — required only for the in-app encode stage (FLAC/WAV → Musepack
-  q6). Not bundled; see below.
+
+No external multimedia tool is required. FLAC/WAV decoding for encoding and
+loudness is native (see "No external decoder requirement" below), so there is
+nothing extra to install.
 
 ### Build the standalone `.app`
 
@@ -94,8 +97,8 @@ cp -R "author/src-tauri/target/release/bundle/macos/MusicPack Author.app" /Appli
 ```
 
 Launch it and author as described in `author/README.md`. The `.app` is
-self-contained: it does not need CMake, Node, Rust, the source repository, or
-`MUSICPACK_CLI`. It bundles:
+self-contained: it does not need CMake, Node, Rust, the source repository,
+`MUSICPACK_CLI`, FFmpeg, Homebrew or MacPorts. It bundles:
 
 - `musicpack` (static backend: inspect/validate-draft/encode-draft/
   build-draft/identify-draft/verify)
@@ -105,19 +108,14 @@ self-contained: it does not need CMake, Node, Rust, the source repository, or
 **Source files are never modified.** Package finalization is transactional and
 fully verified before it is reported successful.
 
-### ffmpeg requirement
+### No external decoder requirement
 
-FFmpeg is **external** — it is never bundled (the Homebrew build is not
-redistributable and has a large dylib closure). A packaged app discovers it in
-this deterministic order, **never via the shell PATH**:
-
-1. `MUSICPACK_FFMPEG` (an absolute path to an existing file)
-2. `/opt/homebrew/bin/ffmpeg` (Homebrew Apple Silicon)
-3. `/usr/local/bin/ffmpeg` (Homebrew Intel)
-4. `/opt/local/bin/ffmpeg` (MacPorts)
-
-ffmpeg is only consulted when you run the encode stage. Authoring an
-already-Musepack album, or building a FLAC-backed package, works without it.
+FLAC/WAV sources are decoded **natively** by the bundled backend through
+libmusicpack (vendored dr_flac for FLAC, a small native RIFF reader for WAV).
+There is no FFmpeg, no `MUSICPACK_FFMPEG`, no Homebrew/MacPorts lookup, and no
+PATH probing anywhere in the packaged app. The distribution audit rejects any
+bundled `ffmpeg*` file and any external dylib. Authoring a FLAC or WAV album
+works with no additional software installed.
 
 ### Optional Sonic analysis
 
@@ -158,8 +156,6 @@ sudo apt-get install -y build-essential cmake pkg-config libmicrohttpd-dev
 - `libmicrohttpd-dev` is required for the `musicpack-server` executable. If it
   is absent the build succeeds but only the platform-independent server core
   is produced (with a CMake warning) — **no `musicpack-server` binary**.
-- `ffmpeg` is only needed for the authoring/encode tests and by Author; the
-  server itself does not need it.
 - `mpcgain`/`mpcchap` are skipped automatically when their optional
   dependencies are missing; they are unrelated to serving.
 
@@ -662,7 +658,7 @@ out-of-date.
 | Symptom | Cause / fix |
 |---------|-------------|
 | CMake warns `libmicrohttpd not found` | Install `libmicrohttpd-dev` (Ubuntu/Debian) or the equivalent distro package, then reconfigure. The `musicpack-server` executable is not built without it. |
-| Author encode stage reports ffmpeg unavailable | ffmpeg is external. Install it (`brew install ffmpeg`) or set `MUSICPACK_FFMPEG` to an absolute path. It is only needed for FLAC/WAV → Musepack encoding. |
+| Author encode stage reports a decode/source failure | FLAC/WAV decoding is native; a failure means the source is unsupported or malformed (e.g. a non-PCM WAV variant, >8 channels, or a corrupted file). Author only supports FLAC and PCM WAV authoring sources. |
 | Package stays `unverified`, album not visible in the web client | A lightweight `scan` does not verify. Run `musicpack-server verify` (or `scan --verify`). Only fully verified packages are servable. |
 | Package shows as `conflict` | It claims a release identity already owned by another package with different content. Verification cannot clear it; re-arbitrate ownership (make the conflicting content match, or remove/invalidate the owner) or remove the duplicate. |
 | Package `invalid` / checksum mismatch | The manifest failed to parse or referenced bytes do not match their SHA-256. Fix or re-author the package on the workstation and re-transfer. |

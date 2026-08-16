@@ -15,12 +15,10 @@ set(SONIC_CORE_SOURCES
 add_library(sonic_core STATIC ${SONIC_CORE_SOURCES})
 target_include_directories(sonic_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-    PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson)
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson
+        ${PROJECT_SOURCE_DIR}/libmusicpack/vendor)
 target_link_libraries(sonic_core PUBLIC musicpack)
-
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/dr_flac.h
-    PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # ---- the analyzer executable (requires ONNX Runtime) ------------------------
 set(SONIC_ONNXRUNTIME_DIR "" CACHE PATH

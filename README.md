@@ -47,11 +47,10 @@ The guiding rule of this repository:
   desktop app (macOS/Apple Silicon is the current packaged target) that turns a
   tagged lossless album into a curated, validated `.mpack` release through a
   real authoring pipeline: inspect → metadata review → Musepack q6 encoding
-  (bundled static `mpcenc`, FLAC/WAV decoded via ffmpeg) → `.mpack` assembly →
-  validation. ffmpeg is not bundled; packaged macOS builds find it
-  deterministically via `MUSICPACK_FFMPEG` or `/opt/homebrew/bin`,
-  `/usr/local/bin`, `/opt/local/bin` — never the shell PATH. It drives the
-  existing `musicpack` implementation through the
+  (bundled static `mpcenc`; FLAC/WAV sources decoded natively by
+  `libmusicpack` — no FFmpeg and no other external tool) → `.mpack` assembly →
+  validation. The `.app` ships everything the authoring workflow needs. It
+  drives the existing `musicpack` implementation through the
   CLI's JSON draft modes (`inspect`, `validate-draft`, `encode-draft`,
   `build-draft`, `identify-draft`) behind a clean service, so `libmusicpack`
   stays the only authority on package semantics. Source files are never
@@ -399,8 +398,9 @@ organized by category rather than a single count:
 - **hostile-package regression** — special files (FIFO/directory/symlink
   escape), hard links and oversized objects must fail quickly;
 - **Sonic** — container parsing/validation units and WAV robustness;
-- **Author** — backend draft-command tests and the FLAC→MPC q6 encode stage
-  (skipped when ffmpeg is unavailable);
+- **Author** — backend draft-command tests, the FLAC→MPC / WAV→MPC q6 encode
+  stage, native source decoding (`audio_decode`), and an ffmpeg-free negative
+  workflow; no external tool is required;
 - **server** — a core suite (range parser, migrations, tokens, package
   identity, ownership/conflict, verify, scanner behaviors) that runs on all
   platforms, plus an HTTP integration suite (auth matrix, CORS, live

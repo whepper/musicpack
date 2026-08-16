@@ -10,8 +10,6 @@
 #     author API version,
 #   - the backend references only macOS system libraries (no Homebrew/local),
 #   - a harmless structured backend operation succeeds using the bundled CLI.
-#   - external FFmpeg discovery can execute from an absolute common location
-#     with Finder's minimal PATH (when FFmpeg is installed there).
 #
 # Usage: scripts/smoke-author-macos.sh <MusicPack Author.app> <repo-root>
 
@@ -32,8 +30,8 @@ echo "ok: bundled backend present and executable"
 echo "== backend capability handshake =="
 API="$("$BACKEND" author-api-version --json 2>/dev/null)"
 echo "$API"
-echo "$API" | grep -q '"authorApi":[[:space:]]*2' \
-  || { echo "fail: backend does not report author API 2" >&2; exit 1; }
+echo "$API" | grep -q '"authorApi":[[:space:]]*3' \
+  || { echo "fail: backend does not report author API 3" >&2; exit 1; }
 echo "$API" | grep -q '"musicpackVersion"' \
   || { echo "fail: backend does not report a musicpack version" >&2; exit 1; }
 echo "ok: author-API handshake matches"
@@ -47,20 +45,14 @@ MPCENC="$MACOS/mpcenc"
 "$ROOT/scripts/verify-backend-dylibs.sh" "$MPCENC"
 echo "ok: bundled mpcenc present, executable and static"
 
-echo "== FFmpeg minimal-PATH discovery =="
-FFMPEG=""
-for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg; do
-  if [ -x "$candidate" ]; then
-    FFMPEG="$candidate"
-    break
-  fi
-done
-if [ -n "$FFMPEG" ]; then
-  env -i PATH=/usr/bin:/bin "$FFMPEG" -version >/dev/null
-  echo "ok: $FFMPEG runs with Finder-like PATH"
-else
-  echo "skip: no common-location ffmpeg installed; configure MUSICPACK_FFMPEG to encode"
+echo "== FFmpeg-free operation =="
+# The bundled backend decodes FLAC/WAV natively; there is no external FFmpeg
+# to discover. Guard against an accidentally bundled one.
+if find "$APP/Contents" -type f -name 'ffmpeg*' -print -quit | grep -q .; then
+  echo "fail: FFmpeg must not be bundled" >&2
+  exit 1
 fi
+echo "ok: no FFmpeg in the bundle (native decode)"
 
 SONIC="$MACOS/musicpack-sonic"
 [ -f "$SONIC" ] || { echo "fail: bundled sonic analyzer missing at $SONIC" >&2; exit 1; }

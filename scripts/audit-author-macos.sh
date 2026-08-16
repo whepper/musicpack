@@ -15,8 +15,8 @@
 #   - the analyzer carries an absolute rpath or an absolute ONNX Runtime
 #     load path (must be @rpath/@loader_path-relocatable),
 #   - an architecture does not match the app host build.
-#   - FFmpeg is accidentally included: releases intentionally use a configured
-#     or common-location external installation, not a bundled dependency tree.
+#   - FFmpeg is accidentally included: FLAC/WAV decoding is native, so no
+#     external multimedia tool or bundled FFmpeg tree is expected.
 #
 # Usage: scripts/audit-author-macos.sh <MusicPack Author.app>
 
@@ -41,10 +41,10 @@ done
 
 echo "== FFmpeg distribution policy =="
 if find "$APP/Contents" -type f -name 'ffmpeg*' -print -quit | grep -q .; then
-  echo "fail: FFmpeg must not be bundled (the approved strategy is external deterministic discovery)" >&2
+  echo "fail: FFmpeg must not be bundled (FLAC/WAV decoding is native; no external tool is used)" >&2
   exit 1
 fi
-echo "ok: no FFmpeg binary is bundled"
+echo "ok: no FFmpeg binary is bundled (native decode)"
 
 # The analyzer must have a bundled ONNX Runtime dylib.
 ONNX_DYLIB="$(ls "$FRAMEWORKS"/libonnxruntime*.dylib 2>/dev/null || true)"

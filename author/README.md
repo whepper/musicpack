@@ -1,19 +1,21 @@
 # MusicPack Author
 
 MusicPack Author is the first-party **desktop GUI for authoring `.mpack`
-releases**. It turns a tagged lossless FLAC album — or an already-tagged
+releases**. It turns a tagged lossless FLAC/WAV album — or an already-tagged
 Musepack album — into a curated, validated `.mpack` directory bundle,
 presenting the album as a release/edition being authored rather than exposing
 `manifest.json` as the UI. Since Phase 3 (the MVP) it also **encodes** FLAC/WAV
 sources to Musepack SV8 (q6 default) in-app, so a terminal is never required.
+FLAC/WAV decoding is native (libmusicpack, vendored dr_flac + a small WAV
+reader) — no FFmpeg or other external multimedia tool is involved.
 
 ```text
-FLAC
-  ↓
-encode to Musepack (Author, ffmpeg + mpcenc)    ← Phase 3: new in-app stage
-  ↓
-tag-rich Musepack album                          ← or an existing MPC album
-  ↓
+FLAC / WAV
+   ↓
+native decode (libmusicpack) + mpcenc        ← Phase 3: new in-app stage
+   ↓
+tag-rich Musepack album                      ← or an existing MPC album
+   ↓
 .mpack (validated MusicPack v1 directory bundle)
 ```
 
@@ -35,8 +37,8 @@ musicpack backend                       ← inspect / validate-draft / encode-dr
    ▼                                        build-draft / identify-draft / verify --json
 libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770
    │
-   ├─ mpcenc (static sidecar)           ← Musepack encoder (encode-draft)
-    └─ ffmpeg (external, deterministic)  ← FLAC/WAV decode for encoding
+   └─ mpcenc (static sidecar)           ← Musepack encoder (encode-draft)
+        (FLAC/WAV decoded natively by libmusicpack; no external tool)
 ```
 
 The `musicpack` backend runs either as the **bundled sidecar** inside the
@@ -91,7 +93,7 @@ Requirements:
 - **Node.js ≥ 20** and npm
 - **Rust toolchain** (Tauri 2 backend): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - a built `musicpack` CLI (the backend): `cmake -S . -B build && cmake --build build -j --target musicpack_cmd`
-- to use the encode stage: a built `mpcenc` (`cmake --build build -j --target mpcenc`, or on PATH) and **ffmpeg** (`brew install ffmpeg`)
+- to use the encode stage: a built `mpcenc` (`cmake --build build -j --target mpcenc`, or on PATH). No external decoder is needed: FLAC/WAV sources are decoded natively by the backend.
 
 Run the app:
 
@@ -121,8 +123,10 @@ npm run build:web      # plain web build of the frontend
 
 Backend tests: the `author_backend` and `author_encode` CTest suites
 (`tests/run_author.sh`, `tests/run_encode.sh`, UNIX) drive the CLI draft
-commands end to end, including the `author-api-version` handshake and the
-FLAC→MPC encode stage (`author_encode` skips when ffmpeg is unavailable).
+commands end to end, including the `author-api-version` handshake, the
+FLAC→MPC / WAV→MPC encode stages, the native `audio_decode` suite, and a
+negative run with ffmpeg/ffprobe absent from PATH — no external tool is
+required.
 
 ## Standalone macOS build
 
@@ -142,10 +146,9 @@ author/src-tauri/target/release/bundle/macos/MusicPack Author.app
 The standalone application bundles its MusicPack authoring backend **and the
 `mpcenc` encoder** and does not require a separate `musicpack` or `mpcenc`
 installation. It also does not require CMake, Node.js, Rust, the source
-repository, or `MUSICPACK_CLI`; copy the `.app` to another compatible Mac and
-launch it. `/usr/bin/curl` (MusicBrainz) remains external. FFmpeg (decode) is
-also external, but packaged builds discover it independently of PATH as
-documented below.
+repository, `MUSICPACK_CLI`, FFmpeg, Homebrew or MacPorts; copy the `.app` to
+another compatible Mac and launch it. `/usr/bin/curl` (MusicBrainz) remains the
+only external service.
 
 The script (1) builds **fully static** `musicpack` and `mpcenc` binaries in
 `build-author/`, (2) verifies with `otool -L` that they reference only macOS
@@ -177,11 +180,10 @@ the same way. The resulting Mach-Os reference only `/usr/lib/libSystem.B.dylib`
 Homebrew paths. The build hard-fails if any sidecar references anything
 outside `/usr/lib`/`/System/Library` (`scripts/verify-backend-dylibs.sh`).
 
-The only external tools the backend shells out to are `/usr/bin/curl` (system,
-for MusicBrainz lookups) and **ffmpeg** (for FLAC/WAV decode during encoding).
-FFmpeg is deliberately not bundled: the installed Homebrew FFmpeg 9.0 reports
-`--enable-nonfree`, says it is not legally redistributable, and links a large
-Homebrew dylib closure. The package audit rejects any bundled `ffmpeg*` file.
+The only external tool the backend shells out to is `/usr/bin/curl` (system,
+for MusicBrainz lookups). FLAC/WAV decode is native, so no FFmpeg (or any
+other multimedia tool) is bundled or resolved at runtime; the package audit
+rejects any bundled `ffmpeg*` file.
 
 ## Backend resolution
 
@@ -195,17 +197,9 @@ a packaged app can never silently run an unrelated `musicpack`:
 
 The encoder resolves the same way but separately: a packaged app uses the
 `mpcenc` sidecar next to the bundled CLI; development uses `MUSICPACK_MPCENC`
-→ the CMake build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg is never bundled.
-In a packaged app it resolves in this deterministic order:
-
-1. `MUSICPACK_FFMPEG`, when it names an existing file (use an absolute path).
-2. `/opt/homebrew/bin/ffmpeg` (Homebrew Apple Silicon).
-3. `/usr/local/bin/ffmpeg` (Homebrew Intel).
-4. `/opt/local/bin/ffmpeg` (MacPorts).
-
-It never searches PATH in a packaged app, including when started through
-Finder. Development retains `MUSICPACK_FFMPEG` → PATH for convenience. FFmpeg
-is only required when the user runs the encode stage.
+→ the CMake build tree (`build/mpcenc/mpcenc`) → PATH. No decoder binary is
+resolved at all: FLAC/WAV sources are decoded in-process by the bundled
+backend, so there is no FFmpeg dependency in either regime.
 
 - The packaged sidecar is located next to the app executable
   (`std::env::current_exe().parent()`), not guessed filesystem paths.
@@ -224,7 +218,7 @@ machine-readable capability handshake:
 
 ```sh
 musicpack author-api-version --json
-# {"musicpackVersion":"0.1.0","authorApi":2}
+# {"musicpackVersion":"0.1.0","authorApi":3}
 ```
 
 On the first backend operation the `AuthorService` runs this and rejects a
@@ -267,11 +261,11 @@ handshake result at startup via the `backend_info` command
    recording/track IDs; basic in-place editing (no full tag editor yet).
 4. **Encode to Musepack** — for lossless (FLAC/WAV) sources: encodes every
    track to Musepack SV8 (default q6, quality selectable in an advanced
-   area) via ffmpeg + the bundled `mpcenc`, showing current track, overall
-   progress, current stage and errors, with cancellation. Unknown/custom
-   source tags pass through to the `.mpc` APEv2 tags. Your source files are
-   never modified. (Skip this step to build a FLAC-backed package; already-
-   Musepack albums skip it entirely.)
+   area) via the bundled `mpcenc` with native in-process decoding, showing
+   current track, overall progress, current stage and errors, with
+   cancellation. Unknown/custom source tags pass through to the `.mpc` APEv2
+   tags. Your source files are never modified. (Skip this step to build a
+   FLAC-backed package; already-Musepack albums skip it entirely.)
 5. **Artwork/assets** — choose/change front artwork, add role-tagged artwork,
    and manage booklet/lyrics/extras. Embedded artwork is extracted at build
    time. (Phase 1 artwork files must live inside the album directory.)
@@ -307,6 +301,13 @@ Canonical `.mpack` loudness is BS.1770-5, owned by `libmusicpack`. MusicPack
 Author does not use ReplayGain tags as canonical loudness; it is measured at
 package build time (the authoring view shows “Loudness · at build”).
 
+Loudness is measured from **source-rate, source-channel PCM** decoded natively
+(no resampling, no downmixing). Mono sources are measured as mono; the old
+FFmpeg `-ac 2` upmix applied a −3 dB gain that skewed only the reported true
+peak, so stereo/44.1 kHz results are unchanged while mono true peak is now
+correct. The BS.1770 meter supports mono/stereo; multichannel sources are not
+measured.
+
 ## Testing
 
 - **Backend** (`tests/run_author.sh`, CTest `author_backend`): inspect a
@@ -317,16 +318,18 @@ package build time (the authoring view shows “Loudness · at build”).
   `author-api-version` handshake.
 - **Encode stage** (`tests/run_encode.sh`, CTest `author_encode`): the full
   FLAC→MPC q6 flow against the committed 2-disc fixture — staged `.mpc`
-  naming, transformed draft, projected + passthrough APEv2 tags (via
-  ffprobe), multi-disc build + `verify`, unsupported sample rate, mixed-source
-  refusal, missing-tool pre-flight, and SIGTERM cancel + staging cleanup.
-  Skipped when ffmpeg is unavailable.
+  naming, transformed draft, projected + passthrough APEv2 tags (verified
+  natively through libmusicpack, no ffprobe), WAV→MPC encoding, multi-disc
+  build + `verify`, unsupported sample rate, mixed-source refusal,
+  missing-tool pre-flight, SIGTERM cancel + staging cleanup, and a full
+  authoring run with ffmpeg/ffprobe absent from PATH.
 - **Rust** (`cargo test` in `author/src-tauri`): backend resolution
   (MUSICPACK_CLI override, build-tree fallback, PATH fallback, bundled
   sidecar, actionable missing-backend errors, and the rule that packaged
   resolution never consults environment/tree/PATH) plus the author-API
-  handshake parser and gate, mpcenc/ffmpeg resolution, `encode_spawn`
-  argument passing, and staging-cleanup refusal of foreign paths.
+  handshake parser and gate, mpcenc resolution (no decoder is resolved),
+  `encode_spawn` argument passing, and staging-cleanup refusal of foreign
+  paths.
 - **Frontend** — vitest `tests/unit` (draft store, API command surface
   incl. `backend_info`, `encode_tracks`/`encode_cancel`/`cleanup_staging`,
   formatting incl. `defaultPackageName`/`needsEncoding`) and jsdom component
@@ -336,7 +339,7 @@ package build time (the authoring view shows “Loudness · at build”).
 - **Packaging** — `scripts/smoke-author-macos.sh` (run by
   `scripts/build-author-macos.sh`): `.app` exists, bundled backend and
   `mpcenc` present and executable, backend runs from its bundled location and
-  reports `authorApi: 2`, only system dylibs referenced, and a harmless
+  reports `authorApi: 3`, only system dylibs referenced, and a harmless
   structured backend operation succeeds.
 
 ## Limitations (Phase 3 MVP)
@@ -345,13 +348,10 @@ package build time (the authoring view shows “Loudness · at build”).
 - **Metadata edited after encoding** updates the manifest but not the
   `.mpc` APEv2 tags already written at encode time — edit before encoding, or
   re-import the album.
-- **Encoding requires ffmpeg.** Packaged apps use `MUSICPACK_FFMPEG` or the
-  fixed Homebrew/MacPorts locations above, never PATH; development uses PATH
-  after the explicit override. It is never bundled. The app is still fully
-  usable for already-encoded Musepack albums without it.
-- FLAC/WAV are the supported encode sources; ALAC/APE/etc. are future work.
-  Sources above 48 kHz cannot be encoded to Musepack (fixed-rate codec) and
-  are surfaced as warnings only.
+- FLAC/WAV are the supported encode sources (16/24-bit PCM); ALAC/APE/etc. are
+  future work. Sources above 48 kHz cannot be encoded to Musepack (fixed-rate
+  codec) and are surfaced as warnings only. There is no external decoder to
+  install — the app is fully self-contained for the supported workflow.
 - Barcode candidate selection exists; artist/title MusicBrainz search does not.
 - New artwork/assets must be inside the album directory (no external file
   copying yet).

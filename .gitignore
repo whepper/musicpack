@@ -42,6 +42,7 @@ tests/fixtures/_src.wav
 *.wav
 !tests/fixtures/*.mpc
 !tests/fixtures/*.wav
+!tests/fixtures/audio/*.wav
 !tests/reference/**/*.mpc
 !tests/reference/**/*.wav
 

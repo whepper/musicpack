@@ -11,9 +11,9 @@ album artist differing from the track artist, and unknown/custom tags that
 must survive tag passthrough.
 
 The audio is short generated sine tones - no copyrighted material. FFmpeg is
-required to synthesize the FLAC files (the toolchain used for encoding in
-development too); the generated files are committed so tests do not need
-ffmpeg present.
+only used to synthesize the FLAC files in this one-shot developer generator;
+the generated files are committed so tests and CI never need ffmpeg (MusicPack
+itself decodes FLAC/WAV natively).
 
 Usage: python3 tests/generate_author_fixture.py [out-dir]
 """

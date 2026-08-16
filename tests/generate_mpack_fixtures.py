@@ -10,13 +10,18 @@ Deterministic (seeded) generation. Two packages prove codec independence:
 
 Each contains multi-value artist metadata, artwork, lyrics, a booklet (MPC
 package) and extras. Loudness is measured by the `musicpack` CLI (libmusepack
-for .mpc, ffmpeg decode for .flac).
+for .mpc, native libmusicpack decode for .flac).
 
 Usage:
   python3 tests/generate_mpack_fixtures.py \
       --mpcenc build/mpcenc/mpcenc \
       --musicpack build/musicpack/musicpack \
       [--ffmpeg ffmpeg] [--out tests/reference]
+
+Note: this is a one-shot developer generator (the outputs are committed).
+`--ffmpeg` is only used to synthesize the FLAC source files here; the
+committed reference packages and every test run without it. FLAC/WAV decoding
+in `musicpack` itself is native.
 """
 
 import argparse

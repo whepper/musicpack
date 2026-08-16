@@ -128,6 +128,31 @@ add_test(NAME mpack COMMAND mpc_mpack_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-flac-album.mpack
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/meta)
 
+# ---- native source decoding (FLAC/WAV/MPC) via the audio abstraction ------
+add_executable(mpc_audio_tests audio_tests.c)
+target_link_libraries(mpc_audio_tests PRIVATE musicpack musepack)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_audio_tests PRIVATE m)
+endif()
+target_include_directories(mpc_audio_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+
+add_test(NAME audio_decode COMMAND mpc_audio_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc)
+if(WIN32)
+  set_tests_properties(audio_decode PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+endif()
+
+# Native APEv2 tag dump used by the encode integration test (run_encode.sh).
+add_executable(mpc_ape_tag_dump ape_tags.c)
+target_link_libraries(mpc_ape_tag_dump PRIVATE musicpack)
+target_include_directories(mpc_ape_tag_dump PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+if(WIN32)
+  set_target_properties(mpc_ape_tag_dump PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME mpack_conformance
     COMMAND ${Python3_EXECUTABLE}
@@ -217,12 +242,13 @@ if(UNIX)
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_author.sh
                      $<TARGET_FILE:musicpack_cmd>)
 
-    # MusicPack Author encode stage: encode-draft turns a tagged FLAC album
-    # into staged Musepack SV8 and build-draft assembles a valid .mpack.
-    # Skipped when ffmpeg is unavailable.
+    # MusicPack Author encode stage: encode-draft turns tagged FLAC/WAV albums
+    # into staged Musepack SV8 via the native decoder (no ffmpeg) and
+    # build-draft assembles a valid .mpack from it.
     add_test(NAME author_encode
              COMMAND ${CMAKE_COMMAND} -E env
                      MPCENC=$<TARGET_FILE:mpcenc>
+                     APE_DUMP=$<TARGET_FILE:mpc_ape_tag_dump>
                      ${CMAKE_CURRENT_SOURCE_DIR}/run_encode.sh
                      $<TARGET_FILE:musicpack_cmd>)
 

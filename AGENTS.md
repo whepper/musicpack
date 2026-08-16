@@ -80,6 +80,35 @@ reader handoff), never the reverse. The normative spec is
 `specs/musicpack-v1.md`; reference packages live in `tests/reference/`.
 `libmusepack` must remain codec-only and package-agnostic.
 
+## Native source decoding (no FFmpeg)
+
+MusicPack Author and the `musicpack` CLI decode authoring sources **natively**;
+there is no runtime FFmpeg/ffprobe dependency anywhere in production code, the
+packaged `.app`, or the encode/loudness tests. Do not reintroduce one.
+
+- `libmusicpack` owns a narrow decode abstraction, `musicpack_audio_*`
+  (`include/musicpack/audio.h`, `src/audio.c`): open → get_format (rate,
+  channels, bits, total samples, codec, float flag) → `read_frames_f32` /
+  `read_frames_s32` (left-aligned 32-bit) → close. Backends: FLAC via the
+  vendored **dr_flac** (`libmusicpack/vendor/dr_flac.h`), WAV via a small
+  native RIFF reader (PCM 8/16/24/32-bit, 32-bit float, WAVE_FORMAT_EXTENSIBLE;
+  ADPCM/other variants are rejected explicitly), and Musepack via
+  `musepack_decoder`. It is deliberately not a general media framework.
+- `musicpack/main.c` uses it for BS.1770 loudness (source-rate/source-channel;
+  the meter is mono/stereo) and for `encode-draft`, which decodes FLAC/WAV to a
+  PCM WAV staging file at the source bit depth and feeds the **unchanged**
+  `mpcenc`. 16-bit and 24-bit sources round-trip losslessly, so encoded output
+  is byte-identical to the historical ffmpeg path.
+- The sonic analyzer (`sonic/decode.c`) keeps its own dr_flac copy; it is
+  compiled TU-locally (`DRFLAC_API static`) in `libmusicpack/src/audio.c` so
+  the two never collide when linked together.
+- Authoring inputs are FLAC and integer-PCM WAV. Loudness measurement of mono
+  is natively mono (the old ffmpeg `-ac 2` upmix applied a −3 dB gain that
+  only skewed true peak); stereo/44.1 kHz measurements are unchanged.
+- FFmpeg remains only in `research/` tooling and the one-shot fixture
+  generators under `tests/` (their outputs are committed); it is never needed
+  to build, test, or run MusicPack.
+
 ## Building
 
 CMake 3.16+. Configure, build, test:
@@ -120,6 +149,7 @@ CTest coverage lives under `tests/`. Important codec-facing tests include:
 | `synth_ab`    | decoder scalar/SIMD differential                           |
 | `enc_ab`      | analysis-filter scalar/SIMD differential                   |
 | `psy_ab`      | psychoacoustic scalar/SIMD differential                    |
+| `audio_decode`| native FLAC/WAV/MPC decode via the `musicpack_audio_*` API  |
 
 Package, Sonic, authoring, and server tests are registered alongside these;
 inspect `tests/CMakeLists.txt` for the current complete list.

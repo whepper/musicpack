@@ -19,10 +19,10 @@
 #     ├── Contents/MacOS/musicpack-sonic     (Sonic analyzer)
 #     └── Contents/Frameworks/libonnxruntime*.dylib
 #
-# FFmpeg (FLAC/WAV decode) is intentionally NOT bundled. The locally installed
-# Homebrew build is non-redistributable (--enable-nonfree) and has a large
-# Homebrew dylib closure. The packaged app uses MUSICPACK_FFMPEG or fixed
-# Homebrew/MacPorts locations, so Finder's minimal PATH is irrelevant.
+# FLAC/WAV sources are decoded natively by the bundled backend (libmusicpack,
+# vendored dr_flac + a native WAV reader), so no external multimedia tool is
+# needed at runtime: no FFmpeg, no Homebrew/MacPorts, nothing to install.
+# The distribution audit rejects any bundled ffmpeg binary or external dylib.
 #
 # ONNX Runtime is downloaded from a pinned immutable release asset and
 # checksum-verified (arm64 → 1.28.0; x86_64 → 1.23.0, the last Intel macOS

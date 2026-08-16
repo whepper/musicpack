@@ -84,13 +84,17 @@ the spec requires. The draft crosses the CLI boundary as JSON only.
 `encode-draft` is the stage added by this MVP. It:
 
 1. validates the draft (never encodes an invalid one),
-2. pre-flights every source (FLAC/WAV only, sample rate ∈ 32/37.8/44.1/48 kHz,
-   encoder + ffmpeg available),
-3. encodes each track into `staging/audio/` via **ffmpeg decode → `mpcenc`**
-   and writes APEv2 tags,
+2. pre-flights every source (FLAC or integer-PCM WAV only, sample rate ∈
+   32/37.8/44.1/48 kHz, encoder available),
+3. encodes each track into `staging/audio/` via **native decode (libmusicpack)
+   → `mpcenc`** and writes APEv2 tags,
 4. copies artwork (external + embedded) and assets into the staging area,
 5. returns a **transformed draft** whose `audioPath` values point at the
    encoded `.mpc` files and whose `sourceRoot` is the staging directory.
+
+FLAC/WAV decoding is fully native (vendored dr_flac + a small RIFF reader in
+libmusicpack): there is no FFmpeg or any other external decoder in the encode
+or loudness paths.
 
 Progress is streamed as JSON events (`encode-progress`): per-track
 `stage`/`track` lines and a final `done`/`error`/`cancelled` event. The GUI
@@ -180,7 +184,7 @@ sidecar; encoder behavior is unchanged.
 Per track, the backend (`encode-draft`) runs:
 
 ```text
-ffmpeg -v error -y -i <source.flac> -vn -f wav <staging/track.wav>
+libmusicpack native decode:  <source.flac>  →  <staging/track.wav>   (PCM at the source bit depth)
 mpcenc --quality 6.0 --overwrite --silent <staging/track.wav> <staging/audio/NN - Title.mpc>
 # then libmusicpack writes the APEv2 tags and SHA-256 is computed
 ```
@@ -191,20 +195,20 @@ Notes:
   32/37.8/44.1/48 kHz sources can be encoded. Unsupported rates fail with
   `UNSUPPORTED_SAMPLE_RATE` and are surfaced as a *warning* in
   `validate-draft` (warnings never block a build by themselves).
-- **Source formats.** FLAC (priority) and WAV are supported for encoding; the
-  input layer is structured so further lossless formats (e.g. ALAC) slot in
-  later. Albums mixing already-encoded Musepack with FLAC are refused by the
-  encode stage (`UNSUPPORTED_SOURCE`) rather than half-encoded.
-- **Binary discovery.** The bundled `.app` carries `mpcenc` as a static
-  sidecar next to `musicpack`. Development uses `MUSICPACK_MPCENC` → the CMake
-  build tree (`build/mpcenc/mpcenc`) → PATH. FFmpeg is external because the
-  available Homebrew build is non-redistributable and has a large dylib
-  closure. Packaged macOS apps use `MUSICPACK_FFMPEG` or deterministic common
-  locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`), never
-  Finder's inherited PATH.
+- **Source formats.** FLAC (priority) and integer-PCM WAV are supported for
+  encoding (16/24-bit lossless round-trip into the encoder's PCM WAV input);
+  floating-point WAV is refused explicitly. The input layer is structured so
+  further lossless formats (e.g. ALAC) slot in later. Albums mixing
+  already-encoded Musepack with FLAC are refused by the encode stage
+  (`UNSUPPORTED_SOURCE`) rather than half-encoded.
+- **Native decoding, no external tool.** FLAC decodes through the vendored
+  dr_flac implementation and WAV through a small native RIFF reader, both
+  inside `libmusicpack` (`musicpack_audio_*`). There is no FFmpeg binary, no
+  `MUSICPACK_FFMPEG`, and no PATH probing in any regime; the packaged app
+  needs nothing beyond the bundled sidecars.
 - **Cancellation and cleanup.** Author sends the CLI SIGTERM, waits up to two
   seconds, then hard-kills only as a fallback. The CLI terminates its active
-  ffmpeg/mpcenc child and removes staging; the app removes staging on every
+  mpcenc child and removes staging; the app removes staging on every
   spawn, protocol, crash, failure, and cancellation path. Source files are
   **never modified** — all authoring work happens in disjoint staging/output
   locations.
@@ -279,18 +283,22 @@ Backend (CTest):
   build/verify, identity, handshake.
 - `author_encode` (`tests/run_encode.sh`) — the encode stage against the
   committed 2-disc fixture: staged `.mpc` naming, transformed draft, APEv2
-  tag assertions via ffprobe (projected + passthrough), multi-disc build +
-  `verify`, unsupported sample rate, mixed-source refusal, missing-tool
-  pre-flight, transactional destination protection, source-overlap refusal,
-  embedded JPEG/PNG signature and hash checks, source immutability, and
-  SIGTERM cancel + staging cleanup. It requires ffmpeg/mpcenc rather than
-  silently skipping the core path.
+  tag assertions verified natively (no ffprobe), WAV→MPC encoding,
+  multi-disc build + `verify`, unsupported sample rate, mixed-source refusal,
+  missing-tool pre-flight, transactional destination protection,
+  source-overlap refusal, embedded JPEG/PNG signature and hash checks, source
+  immutability, SIGTERM cancel + staging cleanup, and a full authoring run
+  with ffmpeg/ffprobe absent from PATH. It requires mpcenc but never an
+  external decoder.
+- `audio_decode` — native FLAC (16/24-bit, 44.1/48/96 kHz, mono/stereo), WAV
+  (PCM/float/extensible/ADPCM-rejection/truncation) and Musepack decode
+  through the libmusicpack abstraction.
 - `author_app_audit` — packaging gate for the standalone `.app`.
 
 Rust (`cargo test` in `author/src-tauri`) — backend resolution (bundled/
-development, mpcenc/ffmpeg), the author-API handshake (now version 2),
-`encode_spawn` argument passing, and staging cleanup refusal of foreign
-paths.
+development, mpcenc; no decoder is resolved), the author-API handshake (now
+version 3), `encode_spawn` argument passing, and staging cleanup refusal of
+foreign paths.
 
 Frontend — vitest unit tests (API command surface incl. `encode_tracks`/
 `encode_cancel`/`cleanup_staging`, formatting incl. `defaultPackageName`/
@@ -308,21 +316,19 @@ and embedded artwork. Regenerated by `tests/generate_author_fixture.py`.
 ## 11. Logging
 
 The app logs the backend's structured output; `encode-draft` emits
-application-version, tool versions (`musicpack`, `mpcenc`, `ffmpeg`), input
-file count, selected quality, analysis state and the validation outcome as
-JSON events. No personal filesystem data beyond paths required for debugging.
+application-version, tool versions (`musicpack`, `mpcenc`), input file count,
+selected quality, analysis state and the validation outcome as JSON events. No
+personal filesystem data beyond paths required for debugging.
 
 ## 12. Known limitations (MVP)
 
 - **Metadata is locked after encoding.** Tag-affecting fields cannot be edited
   while encoded staging exists; choose the source album again to re-encode.
   This prevents manifest/APEv2 divergence.
-- **FFmpeg is an external requirement** for encoding. A packaged app resolves
-  it deterministically from supported macOS install locations or
-  `MUSICPACK_FFMPEG`; users must install a compatible ffmpeg if it is absent.
-- Source formats limited to FLAC/WAV for encoding; ALAC/APE/etc. are future
-  work. 88.2/96/176.4/192 kHz sources cannot be encoded to Musepack (fixed
-  sample-rate codec) and are only surfaced as warnings.
+- Source formats limited to FLAC and integer-PCM WAV for encoding; ALAC/APE
+  etc. are future work. 88.2/96/176.4/192 kHz sources cannot be encoded to
+  Musepack (fixed sample-rate codec) and are only surfaced as warnings.
+  There is no external decoder requirement: FLAC/WAV decoding is fully native.
 - `.mpack` files already containing FLAC remain valid; the encode stage is
   offered for lossless sources but a FLAC-based package can still be built.
 - No automatic MusicBrainz network lookup at import (only explicit

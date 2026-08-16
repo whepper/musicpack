@@ -527,12 +527,6 @@ async fn encode_tracks(
         .unwrap()
         .encode_resolve_mpcenc()
         .map_err(cli_err)?;
-    let ffmpeg = state
-        .service
-        .lock()
-        .unwrap()
-        .encode_resolve_ffmpeg()
-        .map_err(cli_err)?;
     let staging = state
         .service
         .lock()
@@ -541,7 +535,7 @@ async fn encode_tracks(
         .map_err(cli_err)?;
     let spawned = {
         let svc = state.service.lock().unwrap();
-        svc.encode_spawn(&draft_json, &staging, &quality, &mpcenc, &ffmpeg)
+        svc.encode_spawn(&draft_json, &staging, &quality, &mpcenc)
     };
     let (mut child, draft_tmp) = match spawned {
         Ok(result) => result,

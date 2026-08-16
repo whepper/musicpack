@@ -14,9 +14,12 @@
 
 #include "decode.h"
 
+/* dr_flac implementation compiled into this TU (extern symbols). libmusicpack
+   compiles its own TU-local copy (DRFLAC_API static) in src/audio.c, so the two
+   never collide when sonic_core and libmusicpack are linked together. */
 #define DR_FLAC_IMPLEMENTATION
 #define DR_FLAC_NO_STDIO
-#include "vendor/dr_flac.h"
+#include "dr_flac.h"
 
 /* ------------------------------------------------------------------ */
 /* Musepack                                                            */
