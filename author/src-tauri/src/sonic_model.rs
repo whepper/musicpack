@@ -216,14 +216,12 @@ impl SonicModelManager {
         let tmp = self.dir.join(format!("{SONIC_MODEL_FILENAME}.download"));
         let _ = fs::remove_file(&tmp);
 
-        let response = ureq::get(&self.url)
-            .call()
-            .map_err(|e| match e {
-                ureq::Error::Status(code, _) => {
-                    ModelAcquireError::DownloadFailed(format!("HTTP {code}"))
-                }
-                ureq::Error::Transport(_) => ModelAcquireError::Offline(e.to_string()),
-            })?;
+        let response = ureq::get(&self.url).call().map_err(|e| match e {
+            ureq::Error::Status(code, _) => {
+                ModelAcquireError::DownloadFailed(format!("HTTP {code}"))
+            }
+            ureq::Error::Transport(_) => ModelAcquireError::Offline(e.to_string()),
+        })?;
         let mut reader = response.into_reader();
         let mut hasher = Sha256::new();
         let mut downloaded: u64 = 0;
@@ -242,7 +240,9 @@ impl SonicModelManager {
                 Err(e) => {
                     drop(out);
                     let _ = fs::remove_file(&tmp);
-                    return Err(ModelAcquireError::Offline(format!("download interrupted: {e}")));
+                    return Err(ModelAcquireError::Offline(format!(
+                        "download interrupted: {e}"
+                    )));
                 }
             };
             if n == 0 {
@@ -261,7 +261,9 @@ impl SonicModelManager {
             if let Err(e) = out.write_all(&buf[..n]) {
                 drop(out);
                 let _ = fs::remove_file(&tmp);
-                return Err(ModelAcquireError::Io(format!("cannot write temp file: {e}")));
+                return Err(ModelAcquireError::Io(format!(
+                    "cannot write temp file: {e}"
+                )));
             }
             on_progress(downloaded, self.size);
         }
@@ -285,7 +287,10 @@ impl SonicModelManager {
             let _ = fs::remove_file(&tmp);
             ModelAcquireError::Io(format!("cannot activate model: {e}"))
         })?;
-        let _ = fs::write(self.marker_path(), format!("{}\n{downloaded}\n", self.sha256));
+        let _ = fs::write(
+            self.marker_path(),
+            format!("{}\n{downloaded}\n", self.sha256),
+        );
         Ok(path)
     }
 }
@@ -412,8 +417,10 @@ mod tests {
         server.join().unwrap();
         assert_eq!(err, ModelAcquireError::ChecksumMismatch);
         assert!(!mgr.model_path().exists(), "no model activated");
-        assert!(!mgr.cache_dir().join("openl3_post.onnx.download").exists(),
-            "temp removed");
+        assert!(
+            !mgr.cache_dir().join("openl3_post.onnx.download").exists(),
+            "temp removed"
+        );
         assert_eq!(mgr.status().state, ModelState::Missing);
     }
 
@@ -498,9 +505,7 @@ mod tests {
         let body = valid_model();
         // Corrupt the cache with a valid-looking marker but wrong bytes.
         fs::create_dir_all(dir.path().join("sonic/models/musicpack-sonic-openl3-v1")).unwrap();
-        let model_dir = dir
-            .path()
-            .join("sonic/models/musicpack-sonic-openl3-v1");
+        let model_dir = dir.path().join("sonic/models/musicpack-sonic-openl3-v1");
         fs::write(model_dir.join(SONIC_MODEL_FILENAME), b"corrupt").unwrap();
         fs::write(
             model_dir.join(format!("{SONIC_MODEL_FILENAME}.ok")),

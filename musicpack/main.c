@@ -76,8 +76,9 @@
    GUI refuses to talk to a backend whose authorApi does not match, so the
    CLI and the GUI can evolve independently without coupling to exact patch
    versions. Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage);
-   version 3 removes its `--ffmpeg` argument (FLAC/WAV decode is native). */
-#define MUSICPACK_AUTHOR_API 3
+   version 3 removes its `--ffmpeg` argument (FLAC/WAV decode is native);
+   version 4 moves MusicBrainz transport into the Rust Author backend. */
+#define MUSICPACK_AUTHOR_API 4
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
@@ -790,17 +791,6 @@ cmd_verify(const char *dir, int quiet, int json)
 /* ------------------------------------------------------------------ */
 
 static int
-all_digits(const char *s)
-{
-    if (s == 0 || *s == '\0')
-        return 0;
-    for (; *s != '\0'; s++)
-        if (*s < '0' || *s > '9')
-            return 0;
-    return 1;
-}
-
-static int
 valid_uuid(const char *s)
 {
     size_t n = strlen(s), i;
@@ -848,63 +838,6 @@ read_file_bounded(const char *path, size_t max, musicpack_status *status)
     return buf;
 }
 
-/* Fetches a URL into a NUL-terminated buffer (bounded). */
-static char *
-curl_fetch(const char *url, size_t max)
-{
-    command_process process;
-    char max_size[32];
-    char user_agent[128];
-    char *argv[12];
-    char *buf;
-    size_t cap = 65536, len = 0;
-    int read_error, status;
-
-    snprintf(max_size, sizeof max_size, "%zu", max);
-    snprintf(user_agent, sizeof user_agent, "musicpack/%s (https://musicpack.dev)",
-             MUSICPACK_VERSION);
-    argv[0] = "curl";
-    argv[1] = "-s";
-    argv[2] = "-m"; argv[3] = "30";
-    argv[4] = "--max-filesize"; argv[5] = max_size;
-    argv[6] = "-A"; argv[7] = user_agent;
-    argv[8] = (char *) url;
-    argv[9] = 0;
-    if (start_command(&process, argv, 1, 0) != 0)
-        return 0;
-    buf = (char *) malloc(cap);
-    if (buf == 0) {
-        fclose(process.output);
-        process.output = 0;
-        finish_command(&process);
-        return 0;
-    }
-    for (;;) {
-        size_t n;
-        if (len + 65536 + 1 > cap) {
-            char *nb = (char *) realloc(buf, cap * 2);
-            if (nb == 0)
-                break;
-            buf = nb;
-            cap *= 2;
-        }
-        n = fread(buf + len, 1, 65536, process.output);
-        len += n;
-        if (n < 65536)
-            break;
-    }
-    read_error = ferror(process.output);
-    fclose(process.output);
-    process.output = 0;
-    status = finish_command(&process);
-    if (read_error || status != 0 || len > max) {
-        free(buf);
-        return 0;
-    }
-    buf[len] = '\0';
-    return buf;
-}
-
 static void
 usage_identify(void)
 {
@@ -941,44 +874,9 @@ cmd_identify(const char *dir, const char *mb_json_path)
             changed = 1;
         }
         free(json);
-    } else if (m->musicbrainz_release_id != 0 &&
-               valid_uuid(m->musicbrainz_release_id)) {
-        char url[512];
-        char *json;
-        snprintf(url, sizeof url,
-                 "https://musicbrainz.org/ws/2/release/%s?inc=artist-credits+labels+recordings+media&fmt=json",
-                 m->musicbrainz_release_id);
-        json = curl_fetch(url, 1u * 1024u * 1024u);
-        if (json == 0) {
-            fprintf(stderr, "identify: network lookup failed; identity unchanged\n");
-        } else {
-            conf = musicpack_mb_match_confidence(json, m);
-            if (strcmp(conf, "none") != 0) {
-                musicpack_mb_apply_release(json, m);
-                changed = 1;
-            }
-            free(json);
-        }
-    } else if (m->barcode != 0 && all_digits(m->barcode)) {
-        char url[512];
-        char *json;
-        snprintf(url, sizeof url,
-                 "https://musicbrainz.org/ws/2/release/?query=barcode:%s&fmt=json&limit=5",
-                 m->barcode);
-        json = curl_fetch(url, 1u * 1024u * 1024u);
-        if (json == 0) {
-            fprintf(stderr, "identify: network lookup failed; identity unchanged\n");
-        } else {
-            conf = musicpack_mb_match_confidence(json, m);
-            if (strcmp(conf, "none") != 0) {
-                musicpack_mb_apply_release(json, m);
-                changed = 1;
-            }
-            free(json);
-        }
     } else {
         fprintf(stderr,
-                "identify: no MusicBrainz release id or barcode to match;\n"
+                "identify: no local MusicBrainz release document supplied;\n"
                 "         use --mb-json with a release document to apply offline\n");
     }
 
@@ -3897,12 +3795,12 @@ usage_identify_draft(void)
 {
     fprintf(stderr,
         "usage: musicpack identify-draft --draft FILE\n"
-        "       (--mbid UUID | --barcode BC | --mb-json FILE) [--json]\n");
+        "       (--mb-json FILE [--mbid UUID] | --mb-search-json FILE) [--json]\n");
 }
 
 static int
-cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode,
-                   const char *mb_json_path, int json)
+cmd_identify_draft(const char *draft_path, const char *mbid,
+                   const char *mb_json_path, const char *mb_search_json_path, int json)
 {
     cJSON *draft, *out = 0;
     char err[512];
@@ -3929,9 +3827,6 @@ cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode
         return 1;
     }
 
-    /* curl_fetch runs curl through a shell, so the MBID/barcode values must
-       be constrained to their grammars BEFORE they reach the command line
-       (same validation the plain `identify` path applies). */
     if (mbid != 0 && !valid_uuid(mbid)) {
         snprintf(err, sizeof err, "invalid MusicBrainz release id '%s' "
                  "(expected a 36-character UUID)", mbid);
@@ -3943,17 +3838,6 @@ cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode
         musicpack_manifest_clear(&m);
         return 1;
     }
-    if (barcode != 0 && !all_digits(barcode)) {
-        snprintf(err, sizeof err, "invalid barcode '%s' (digits only)", barcode);
-        if (json)
-            json_error_out("invalid_input", err);
-        else
-            fprintf(stderr, "identify-draft: %s\n", err);
-        cJSON_Delete(draft);
-        musicpack_manifest_clear(&m);
-        return 1;
-    }
-
     if (mb_json_path != 0) {
         musicpack_status st = MUSICPACK_OK;
         char *mbjson = read_file_bounded(mb_json_path, 8u * 1024u * 1024u, &st);
@@ -3962,43 +3846,23 @@ cmd_identify_draft(const char *draft_path, const char *mbid, const char *barcode
             rc = 1;
             goto done;
         }
+        if (mbid != 0) {
+            free(m.musicbrainz_release_id);
+            m.musicbrainz_release_id = strdup(mbid);
+        }
         conf = musicpack_mb_match_confidence(mbjson, &m);
         if (strcmp(conf, "none") != 0) {
             musicpack_mb_apply_release(mbjson, &m);
             applied = 1;
         }
         free(mbjson);
-    } else if (mbid != 0) {
-        char url[512];
-        char *mbjson;
-        snprintf(url, sizeof url,
-                 "https://musicbrainz.org/ws/2/release/%s?inc=artist-credits+labels+recordings+media+release-groups&fmt=json",
-                 mbid);
-        mbjson = curl_fetch(url, 1u * 1024u * 1024u);
-        if (mbjson == 0) {
-            snprintf(err, sizeof err, "network lookup failed; identity unchanged");
-            rc = 1;
-            goto done;
-        }
-        /* the user asserted this release id: record it so the match is exact */
-        free(m.musicbrainz_release_id);
-        m.musicbrainz_release_id = strdup(mbid);
-        conf = musicpack_mb_match_confidence(mbjson, &m);
-        if (strcmp(conf, "none") != 0) {
-            musicpack_mb_apply_release(mbjson, &m);
-            applied = 1;
-        }
-        free(mbjson);
-    } else if (barcode != 0) {
-        char url[512];
+    } else if (mb_search_json_path != 0) {
+        musicpack_status st = MUSICPACK_OK;
         char *mbjson;
         cJSON *candidates;
-        snprintf(url, sizeof url,
-                 "https://musicbrainz.org/ws/2/release/?query=barcode:%s&fmt=json&limit=5",
-                 barcode);
-        mbjson = curl_fetch(url, 1u * 1024u * 1024u);
+        mbjson = read_file_bounded(mb_search_json_path, 8u * 1024u * 1024u, &st);
         if (mbjson == 0) {
-            snprintf(err, sizeof err, "network lookup failed");
+            snprintf(err, sizeof err, "cannot read '%s'", mb_search_json_path);
             rc = 1;
             goto done;
         }
@@ -5381,28 +5245,31 @@ main(int argc, char **argv)
         return cmd_build_draft(draft_path, out_dir, no_loudness, json);
     }
     if (strcmp(cmd, "identify-draft") == 0) {
-        const char *draft_path = 0, *mbid = 0, *barcode = 0, *mbjson = 0;
+        const char *draft_path = 0, *mbid = 0, *mbjson = 0, *mbsearchjson = 0;
         int json = 0, i;
         for (i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
                 draft_path = argv[++i];
             } else if (strcmp(argv[i], "--mbid") == 0 && i + 1 < argc) {
                 mbid = argv[++i];
-            } else if (strcmp(argv[i], "--barcode") == 0 && i + 1 < argc) {
-                barcode = argv[++i];
             } else if (strcmp(argv[i], "--mb-json") == 0 && i + 1 < argc) {
                 mbjson = argv[++i];
+            } else if (strcmp(argv[i], "--mb-search-json") == 0 && i + 1 < argc) {
+                mbsearchjson = argv[++i];
             } else if (strcmp(argv[i], "--json") == 0) {
                 json = 1;
             } else {
                 return usage_error("too many arguments");
             }
         }
-        if (draft_path == 0 || (mbid == 0 && barcode == 0 && mbjson == 0)) {
+        if (mbid != 0 && mbjson == 0)
+            return usage_error("identify-draft --mbid is an offline assertion and requires --mb-json");
+        if (draft_path == 0 || (mbjson == 0 && mbsearchjson == 0) ||
+            (mbjson != 0 && mbsearchjson != 0)) {
             usage_identify_draft();
             return 2;
         }
-        return cmd_identify_draft(draft_path, mbid, barcode, mbjson, json);
+        return cmd_identify_draft(draft_path, mbid, mbjson, mbsearchjson, json);
     }
     if (strcmp(cmd, "encode-draft") == 0) {
         const char *draft_path = 0, *out_dir = 0, *quality = 0;

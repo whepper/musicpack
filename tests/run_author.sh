@@ -290,6 +290,24 @@ else
     fail "identify-draft applies an MB release (exact) preserving draft fields"
 fi
 
+# 6a. A captured release delivered through the new local assertion path must
+# produce the identical draft that the former MBID lookup flow produced.
+if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
+    --mb-json "$META/mb-release.json" \
+    --mbid "11111111-2222-3333-4444-555555555555" --json 2>/dev/null > "$TMP/ident-assert.json" \
+   && $PY - "$TMP/ident.json" "$TMP/ident-assert.json" <<'EOF'
+import json, sys
+previous = json.load(open(sys.argv[1]))
+asserted = json.load(open(sys.argv[2]))
+assert asserted == previous, "captured release must preserve applied-draft semantics"
+print("ok")
+EOF
+then
+    pass "captured MB release keeps prior applied-draft semantics through --mbid assertion"
+else
+    fail "captured MB release keeps prior applied-draft semantics through --mbid assertion"
+fi
+
 # 6b. a build from the identified draft carries the exact identity
 $PY - "$TMP/ident.json" "$TMP/ident-draft.json" <<'EOF'
 import json, sys
@@ -335,34 +353,45 @@ else
     fail "identify-draft applies the live MB release shape (label-info + release-group)"
 fi
 
-# 6d. identify-draft rejects non-UUID MBIDs and non-numeric barcodes BEFORE
-# the URL is built: the lookup runs curl through a shell, so the grammar
-# check is a hard precondition (no shell metacharacters may reach it).
+# 6d. identify-draft is local-only. --mbid is an exact-release assertion for
+# an already-fetched --mb-json document, never a network lookup.
 if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
-   --mbid "not-a-uuid" >/dev/null 2>&1; then
+    --mbid "not-a-uuid" >/dev/null 2>&1; then
     fail "identify-draft rejects a non-UUID MBID"
 else
     pass "identify-draft rejects a non-UUID MBID"
 fi
 if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
-   --barcode "abc-123" >/dev/null 2>&1; then
-    fail "identify-draft rejects a non-numeric barcode"
+    --mbid "11111111-2222-3333-4444-555555555555" >/dev/null 2>&1; then
+    fail "identify-draft rejects a standalone MBID lookup"
 else
-    pass "identify-draft rejects a non-numeric barcode"
+    pass "identify-draft requires --mb-json with --mbid"
 fi
-MARK="/tmp/musicpack-shell-marker"
-rm -f "$MARK"
-if "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
-   --barcode '$(touch /tmp/musicpack-shell-marker)' >/dev/null 2>&1; then
-    fail "identify-draft rejects a shell-metachar barcode"
+if env PATH=/nonexistent "$MUSICPACK" identify-draft --draft "$TMP/ready.json" \
+    --mb-json "$META/mb-release.json" --json >/dev/null 2>&1; then
+    pass "identify-draft offline release apply needs no curl on PATH"
 else
-    pass "identify-draft rejects a shell-metachar barcode"
+    fail "identify-draft offline release apply needs no curl on PATH"
 fi
-if [ -f "$MARK" ]; then
-    fail "identify-draft executed a shell command for an invalid barcode"
-    rm -f "$MARK"
+# Construct a captured barcode-search envelope from the existing captured
+# release document, then verify candidate extraction remains C-owned.
+$PY - "$META/mb-release-live-shape.json" "$TMP/mb-search.json" <<'EOF'
+import json, sys
+json.dump({"releases": [json.load(open(sys.argv[1]))]}, open(sys.argv[2], "w"))
+EOF
+if env PATH=/nonexistent "$MUSICPACK" identify-draft --draft "$TMP/draft.json" \
+    --mb-search-json "$TMP/mb-search.json" --json 2>/dev/null > "$TMP/candidates.json" \
+   && $PY - "$TMP/candidates.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert len(d["candidates"]) == 1
+assert d["candidates"][0]["releaseId"] == "11111111-2222-3333-4444-555555555555"
+print("ok")
+EOF
+then
+    pass "identify-draft extracts candidates from captured MB search JSON without curl"
 else
-    pass "identify-draft never executes a shell command for an invalid barcode"
+    fail "identify-draft extracts candidates from captured MB search JSON without curl"
 fi
 
 # 7. author-API capability handshake is machine-readable and versioned
@@ -370,7 +399,7 @@ if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
    && $PY - "$TMP/api.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["authorApi"] == 3, "author API version"
+assert d["authorApi"] == 4, "author API version"
 assert d["musicpackVersion"], "musicpack version present"
 print("ok")
 EOF

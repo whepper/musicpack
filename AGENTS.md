@@ -109,6 +109,13 @@ packaged `.app`, or the encode/loudness tests. Do not reintroduce one.
   generators under `tests/` (their outputs are committed); it is never needed
   to build, test, or run MusicPack.
 
+## MusicBrainz transport
+
+MusicPack Author fetches MusicBrainz release/search JSON with Rust `ureq`.
+The local `musicpack` CLI never performs network I/O: it consumes supplied JSON
+through `--mb-json`/`--mb-search-json`, while `libmusicpack` remains the sole
+owner of MusicBrainz matching, candidate extraction, and draft semantics.
+
 ## Building
 
 CMake 3.16+. Configure, build, test:

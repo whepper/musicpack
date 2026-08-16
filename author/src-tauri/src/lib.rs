@@ -12,6 +12,7 @@
 // uses MUSICPACK_CLI / the CMake build tree / PATH.
 
 mod author_service;
+mod musicbrainz;
 mod sonic_model;
 
 use author_service::AuthorService;
@@ -71,7 +72,10 @@ impl SonicError {
         )
     }
     fn download_cancelled() -> Self {
-        Self::new("download_cancelled", "The Sonic model download was cancelled.")
+        Self::new(
+            "download_cancelled",
+            "The Sonic model download was cancelled.",
+        )
     }
     fn analyzer_unavailable(msg: impl Into<String>) -> Self {
         Self::new("analyzer_unavailable", msg.into())
@@ -214,10 +218,7 @@ fn inspect_album(state: State<AppState>, path: String) -> Result<serde_json::Val
 }
 
 #[tauri::command]
-fn validate_draft(
-    state: State<AppState>,
-    draft_json: String,
-) -> Result<serde_json::Value, String> {
+fn validate_draft(state: State<AppState>, draft_json: String) -> Result<serde_json::Value, String> {
     state
         .service
         .lock()
@@ -328,7 +329,9 @@ fn build_sonic_job_at(
         }
     }
     if tracks.is_empty() {
-        return Err(SonicError::analysis_failed("the draft has no tracks to analyse"));
+        return Err(SonicError::analysis_failed(
+            "the draft has no tracks to analyse",
+        ));
     }
     let job = json!({
         "profile": "musicpack-sonic-openl3-v1",
@@ -418,9 +421,10 @@ async fn sonic_analyze(
         svc.sonic_spawn(&job)
             .map_err(|e| SonicError::analyzer_unavailable(e.to_string()))?
     };
-    let stdout = child.stdout.take().ok_or_else(|| {
-        SonicError::analyzer_unavailable("sonic analyzer produced no stdout")
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SonicError::analyzer_unavailable("sonic analyzer produced no stdout"))?;
     *state.running.lock().unwrap() = Some(child);
 
     let app2 = app.clone();
@@ -453,7 +457,9 @@ async fn sonic_analyze(
         .map_err(|e| SonicError::analysis_failed(format!("no app data directory: {e}")))?
         .join("sonic/sonic.json");
     let Some(event) = final_event else {
-        return Err(SonicError::analysis_failed("sonic analyzer produced no result"));
+        return Err(SonicError::analysis_failed(
+            "sonic analyzer produced no result",
+        ));
     };
     let ev = event
         .get("event")
@@ -699,11 +705,17 @@ mod tests {
         assert_eq!(v["tracks"][0]["track"], 1);
         assert_eq!(
             v["cacheDir"],
-            dir.path().join("sonic/cache").to_string_lossy().into_owned()
+            dir.path()
+                .join("sonic/cache")
+                .to_string_lossy()
+                .into_owned()
         );
         assert_eq!(
             v["outPath"],
-            dir.path().join("sonic/sonic.json").to_string_lossy().into_owned()
+            dir.path()
+                .join("sonic/sonic.json")
+                .to_string_lossy()
+                .into_owned()
         );
     }
 

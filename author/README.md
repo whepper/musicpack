@@ -147,8 +147,8 @@ The standalone application bundles its MusicPack authoring backend **and the
 `mpcenc` encoder** and does not require a separate `musicpack` or `mpcenc`
 installation. It also does not require CMake, Node.js, Rust, the source
 repository, `MUSICPACK_CLI`, FFmpeg, Homebrew or MacPorts; copy the `.app` to
-another compatible Mac and launch it. `/usr/bin/curl` (MusicBrainz) remains the
-only external service.
+another compatible Mac and launch it. MusicBrainz requests use the bundled
+Rust backend and do not require an external command-line tool.
 
 The script (1) builds **fully static** `musicpack` and `mpcenc` binaries in
 `build-author/`, (2) verifies with `otool -L` that they reference only macOS
@@ -180,10 +180,10 @@ the same way. The resulting Mach-Os reference only `/usr/lib/libSystem.B.dylib`
 Homebrew paths. The build hard-fails if any sidecar references anything
 outside `/usr/lib`/`/System/Library` (`scripts/verify-backend-dylibs.sh`).
 
-The only external tool the backend shells out to is `/usr/bin/curl` (system,
-for MusicBrainz lookups). FLAC/WAV decode is native, so no FFmpeg (or any
-other multimedia tool) is bundled or resolved at runtime; the package audit
-rejects any bundled `ffmpeg*` file.
+MusicBrainz transport uses Rust `ureq`; release matching, candidate extraction,
+and draft application remain in the local C backend. FLAC/WAV decode is native,
+so no FFmpeg (or any other multimedia tool) is bundled or resolved at runtime;
+the package audit rejects any bundled `ffmpeg*` file.
 
 ## Backend resolution
 
@@ -218,7 +218,7 @@ machine-readable capability handshake:
 
 ```sh
 musicpack author-api-version --json
-# {"musicpackVersion":"0.1.0","authorApi":3}
+# {"musicpackVersion":"0.1.0","authorApi":4}
 ```
 
 On the first backend operation the `AuthorService` runs this and rejects a
@@ -236,8 +236,8 @@ handshake result at startup via the `backend_info` command
   data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5174
   http://localhost:5174`. No `unsafe-eval`; no `unsafe-inline`. `data:` covers
   artwork previews; `ws/http://localhost:5174` is the Vite dev-server/HMR
-  origin and is inert in the packaged app. MusicBrainz lookups happen in the
-  native backend (via `curl`), so the webview is never granted internet
+origin and is inert in the packaged app. MusicBrainz lookups happen in the
+native Rust backend (via `ureq`), so the webview is never granted internet
   access.
 - **Capabilities (least privilege).** `capabilities/default.json` grants only
   `core:default` (drag/drop + IPC), `dialog:allow-open` (directory/image
@@ -339,7 +339,7 @@ measured.
 - **Packaging** — `scripts/smoke-author-macos.sh` (run by
   `scripts/build-author-macos.sh`): `.app` exists, bundled backend and
   `mpcenc` present and executable, backend runs from its bundled location and
-  reports `authorApi: 3`, only system dylibs referenced, and a harmless
+   reports `authorApi: 4`, only system dylibs referenced, and a harmless
   structured backend operation succeeds.
 
 ## Limitations (Phase 3 MVP)

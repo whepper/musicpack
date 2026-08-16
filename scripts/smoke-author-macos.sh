@@ -30,8 +30,8 @@ echo "ok: bundled backend present and executable"
 echo "== backend capability handshake =="
 API="$("$BACKEND" author-api-version --json 2>/dev/null)"
 echo "$API"
-echo "$API" | grep -q '"authorApi":[[:space:]]*3' \
-  || { echo "fail: backend does not report author API 3" >&2; exit 1; }
+echo "$API" | grep -q '"authorApi":[[:space:]]*4' \
+  || { echo "fail: backend does not report author API 4" >&2; exit 1; }
 echo "$API" | grep -q '"musicpackVersion"' \
   || { echo "fail: backend does not report a musicpack version" >&2; exit 1; }
 echo "ok: author-API handshake matches"
@@ -53,6 +53,13 @@ if find "$APP/Contents" -type f -name 'ffmpeg*' -print -quit | grep -q .; then
   exit 1
 fi
 echo "ok: no FFmpeg in the bundle (native decode)"
+
+echo "== curl-free MusicBrainz transport =="
+if find "$APP/Contents" -type f -name 'curl' -print -quit | grep -q .; then
+  echo "fail: curl must not be bundled for MusicBrainz" >&2
+  exit 1
+fi
+echo "ok: no curl binary in the bundle (Rust ureq transport)"
 
 SONIC="$MACOS/musicpack-sonic"
 [ -f "$SONIC" ] || { echo "fail: bundled sonic analyzer missing at $SONIC" >&2; exit 1; }

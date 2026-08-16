@@ -15,24 +15,30 @@
 //     a `musicpack` from PATH or from a build tree.
 //   - Development: MUSICPACK_CLI -> build tree -> PATH, for `tauri dev`.
 
+use crate::musicbrainz::{self, MbError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// Authoring JSON surface version the GUI expects from the backend.
 /// Bump together with the CLI's `MUSICPACK_AUTHOR_API`.
 /// Version 2 adds `encode-draft`; version 3 removes its `--ffmpeg` argument
-/// (FLAC/WAV decode is native).
-const EXPECTED_AUTHOR_API: u32 = 3;
+/// (FLAC/WAV decode is native); version 4 moves MusicBrainz transport here.
+const EXPECTED_AUTHOR_API: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub enum AuthorError {
     CliNotFound(String),
     Io(String),
-    CliFailure { code: Option<String>, message: String },
+    CliFailure {
+        code: Option<String>,
+        message: String,
+    },
     Output(String),
+    MusicBrainz(MbError),
     IncompatibleBackend {
         expected: u32,
         found: u32,
@@ -54,6 +60,7 @@ impl std::fmt::Display for AuthorError {
                 message,
             } => write!(f, "{message}"),
             AuthorError::Output(msg) => write!(f, "{msg}"),
+            AuthorError::MusicBrainz(error) => write!(f, "{error}"),
             AuthorError::IncompatibleBackend {
                 expected,
                 found,
@@ -130,6 +137,7 @@ pub struct AuthorService {
     location: Result<BackendLocation, AuthorError>,
     handshake: Option<Result<AuthorApiInfo, AuthorError>>,
     counter: std::sync::atomic::AtomicU64,
+    last_mb_request: Option<Instant>,
 }
 
 impl AuthorService {
@@ -141,6 +149,7 @@ impl AuthorService {
             location,
             handshake: None,
             counter: std::sync::atomic::AtomicU64::new(0),
+            last_mb_request: None,
         }
     }
 
@@ -168,7 +177,10 @@ impl AuthorService {
         if let Some(p) = env.map(str::trim).filter(|s| !s.is_empty()) {
             return Ok(BackendLocation::Development(PathBuf::from(p)));
         }
-        for rel in ["build/musicpack/musicpack", "build-static/musicpack/musicpack"] {
+        for rel in [
+            "build/musicpack/musicpack",
+            "build-static/musicpack/musicpack",
+        ] {
             let candidate = repo_base.join(rel);
             if candidate.is_file() {
                 return Ok(BackendLocation::Development(candidate));
@@ -262,7 +274,9 @@ impl AuthorService {
     }
 
     fn temp_file(&self, name: &str, contents: &str) -> Result<PathBuf, AuthorError> {
-        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "musicpack-author-{}-{n}-{name}",
             std::process::id()
@@ -318,6 +332,39 @@ impl AuthorService {
             .map_err(|e| AuthorError::Output(format!("CLI returned non-JSON output: {e}")))
     }
 
+    fn pace_musicbrainz(&mut self) {
+        const MINIMUM_INTERVAL: Duration = Duration::from_secs(1);
+        if let Some(last) = self.last_mb_request {
+            if let Some(remaining) = MINIMUM_INTERVAL.checked_sub(last.elapsed()) {
+                std::thread::sleep(remaining);
+            }
+        }
+        self.last_mb_request = Some(Instant::now());
+    }
+
+    fn identify_result(value: Value) -> Result<Value, AuthorError> {
+        if let Some(candidates) = value.get("candidates") {
+            return Ok(serde_json::json!({
+                "kind": "candidates",
+                "candidates": candidates,
+            }));
+        }
+        if value.get("draft").is_some()
+            && value.get("confidence").is_some()
+            && value.get("applied").is_some()
+        {
+            return Ok(serde_json::json!({
+                "kind": "applied",
+                "draft": value["draft"],
+                "confidence": value["confidence"],
+                "applied": value["applied"],
+            }));
+        }
+        Err(AuthorError::Output(
+            "backend returned an invalid identify response".to_string(),
+        ))
+    }
+
     // ---- operations ---------------------------------------------------
 
     pub fn inspect_album(&mut self, path: &str) -> Result<Value, AuthorError> {
@@ -328,7 +375,12 @@ impl AuthorService {
     pub fn validate_draft(&mut self, draft_json: &str) -> Result<Value, AuthorError> {
         self.ensure_handshake()?;
         let tmp = self.temp_file("draft.json", draft_json)?;
-        let result = self.run_json(&["validate-draft", "--draft", tmp.to_str().unwrap_or(""), "--json"]);
+        let result = self.run_json(&[
+            "validate-draft",
+            "--draft",
+            tmp.to_str().unwrap_or(""),
+            "--json",
+        ]);
         let _ = std::fs::remove_file(&tmp);
         result
     }
@@ -348,28 +400,74 @@ impl AuthorService {
             tmp.to_string_lossy().into_owned(),
             "--json".to_string(),
         ];
-        if let Some(id) = mbid {
+        let mb_tmp = if let Some(id) = mbid {
+            self.pace_musicbrainz();
+            let response = match musicbrainz::fetch_release(id) {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(AuthorError::MusicBrainz(error));
+                }
+            };
+            let mb = match self.temp_file("mb-release.json", &response) {
+                Ok(mb) => mb,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
+            };
             args.push("--mbid".to_string());
             args.push(id.to_string());
-        } else if let Some(bc) = barcode {
-            args.push("--barcode".to_string());
-            args.push(bc.to_string());
-        } else if let Some(json) = mb_json {
-            let mb = self.temp_file("mb-release.json", json)?;
             args.push("--mb-json".to_string());
             args.push(mb.to_string_lossy().into_owned());
-            let result = self.run_json(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-            let _ = std::fs::remove_file(&mb);
-            let _ = std::fs::remove_file(&tmp);
-            return result;
-        }
+            Some(mb)
+        } else if let Some(bc) = barcode {
+            self.pace_musicbrainz();
+            let response = match musicbrainz::fetch_barcode_search(bc) {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(AuthorError::MusicBrainz(error));
+                }
+            };
+            let mb = match self.temp_file("mb-search.json", &response) {
+                Ok(mb) => mb,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
+            };
+            args.push("--mb-search-json".to_string());
+            args.push(mb.to_string_lossy().into_owned());
+            Some(mb)
+        } else if let Some(json) = mb_json {
+            let mb = match self.temp_file("mb-release.json", json) {
+                Ok(mb) => mb,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
+            };
+            args.push("--mb-json".to_string());
+            args.push(mb.to_string_lossy().into_owned());
+            Some(mb)
+        } else {
+            None
+        };
         let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let result = self.run_json(&refs);
+        let result = self.run_json(&refs).and_then(Self::identify_result);
+        if let Some(mb) = mb_tmp {
+            let _ = std::fs::remove_file(mb);
+        }
         let _ = std::fs::remove_file(&tmp);
         result
     }
 
-    pub fn create_package(&mut self, draft_json: &str, output_dir: &str) -> Result<Value, AuthorError> {
+    pub fn create_package(
+        &mut self,
+        draft_json: &str,
+        output_dir: &str,
+    ) -> Result<Value, AuthorError> {
         self.ensure_handshake()?;
         let tmp = self.temp_file("draft.json", draft_json)?;
         let result = self.run_json(&[
@@ -398,7 +496,10 @@ impl AuthorService {
     fn sonic_resolve(&self) -> Result<PathBuf, AuthorError> {
         match &self.location {
             Ok(BackendLocation::Bundled(cli)) => {
-                let sonic = cli.parent().unwrap_or_else(|| Path::new("")).join("musicpack-sonic");
+                let sonic = cli
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join("musicpack-sonic");
                 if sonic.is_file() {
                     Ok(sonic)
                 } else {
@@ -438,7 +539,10 @@ impl AuthorService {
     /// Spawns the sonic analyzer with a job document file. Returns the child
     /// (stdout piped, for progress events) and the job temp path (removed by
     /// the caller). The child handle is kept for cancellation.
-    pub fn sonic_spawn(&self, job_json: &str) -> Result<(std::process::Child, PathBuf), AuthorError> {
+    pub fn sonic_spawn(
+        &self,
+        job_json: &str,
+    ) -> Result<(std::process::Child, PathBuf), AuthorError> {
         let sonic = self.sonic_resolve()?;
         let job_tmp = self.temp_file("sonic-job.json", job_json)?;
         let child = Command::new(sonic)
@@ -465,10 +569,7 @@ impl AuthorService {
     pub fn encode_resolve_mpcenc(&self) -> Result<PathBuf, AuthorError> {
         match &self.location {
             Ok(BackendLocation::Bundled(cli)) => {
-                let p = cli
-                    .parent()
-                    .unwrap_or_else(|| Path::new(""))
-                    .join("mpcenc");
+                let p = cli.parent().unwrap_or_else(|| Path::new("")).join("mpcenc");
                 if p.is_file() {
                     Ok(p)
                 } else {
@@ -544,7 +645,9 @@ impl AuthorService {
     /// failures/cancels remove it (see `cleanup_staging`).
     pub fn encode_staging_dir(&self) -> Result<PathBuf, AuthorError> {
         for _ in 0..100 {
-            let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let n = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
                 "musicpack-author-encode-{}-{n}",
                 std::process::id()
@@ -626,6 +729,22 @@ mod tests {
         bin
     }
 
+    #[test]
+    fn identify_results_use_the_frontend_discriminator() {
+        let applied = AuthorService::identify_result(serde_json::json!({
+            "draft": {"album": {}},
+            "confidence": "exact",
+            "applied": true,
+        }))
+        .unwrap();
+        assert_eq!(applied["kind"], "applied");
+        let candidates = AuthorService::identify_result(serde_json::json!({
+            "candidates": [{"releaseId": "id"}],
+        }))
+        .unwrap();
+        assert_eq!(candidates["kind"], "candidates");
+    }
+
     // ---- backend resolution ----
 
     #[test]
@@ -694,8 +813,7 @@ mod tests {
     #[test]
     fn bundled_missing_is_actionable() {
         let tmp = TempDir::new().unwrap();
-        let err =
-            AuthorService::resolve_bundled(&tmp.path().join("MacOS/musicpack")).unwrap_err();
+        let err = AuthorService::resolve_bundled(&tmp.path().join("MacOS/musicpack")).unwrap_err();
         assert!(err.to_string().contains("reinstall MusicPack Author"));
     }
 
@@ -722,23 +840,21 @@ mod tests {
 
     #[test]
     fn handshake_accepts_matching_api() {
-        let info = AuthorService::parse_author_api(
-            "{\"musicpackVersion\":\"0.1.0\",\"authorApi\":3}\n",
-        )
-        .unwrap();
-        assert_eq!(info.author_api, 3);
+        let info =
+            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":4}\n")
+                .unwrap();
+        assert_eq!(info.author_api, 4);
         assert_eq!(info.musicpack_version, "0.1.0");
     }
 
     #[test]
     fn handshake_rejects_mismatched_api() {
-        let err = AuthorService::parse_author_api(
-            "{\"musicpackVersion\":\"0.2.0\",\"authorApi\":4}\n",
-        )
-        .unwrap_err();
+        let err =
+            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.2.0\",\"authorApi\":3}\n")
+                .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("author API 4"), "{msg}");
-        assert!(msg.contains("requires 3"), "{msg}");
+        assert!(msg.contains("author API 3"), "{msg}");
+        assert!(msg.contains("requires 4"), "{msg}");
     }
 
     #[test]
@@ -754,12 +870,11 @@ mod tests {
         let bin = make_cli(
             tmp.path(),
             "MacOS",
-            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":3}\\n'\n",
+            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":4}\\n'\n",
         );
-        let mut service =
-            AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let mut service = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let info = service.ensure_handshake().unwrap();
-        assert_eq!(info.author_api, 3);
+        assert_eq!(info.author_api, 4);
         // Cached: a second call still succeeds.
         assert!(service.ensure_handshake().is_ok());
     }
@@ -968,8 +1083,12 @@ mod tests {
     fn cleanup_staging_refuses_foreign_paths() {
         let tmp = TempDir::new().unwrap();
         let svc = AuthorService::new(Err(AuthorError::CliNotFound("unused".into())));
-        let err = svc.cleanup_staging(tmp.path().to_str().unwrap()).unwrap_err();
-        assert!(err.to_string().contains("not a MusicPack Author staging directory"));
+        let err = svc
+            .cleanup_staging(tmp.path().to_str().unwrap())
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("not a MusicPack Author staging directory"));
     }
 
     #[test]
@@ -999,30 +1118,32 @@ mod tests {
     fn encode_spawn_passes_tools_and_staging_through() {
         // A fake backend that echoes its encode-draft arguments.
         let tmp = TempDir::new().unwrap();
-        let bin = make_cli(
-            tmp.path(),
-            "MacOS",
-            "#!/bin/sh\necho \"$@\"\n",
-        );
+        let bin = make_cli(tmp.path(), "MacOS", "#!/bin/sh\necho \"$@\"\n");
         let svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let staging = tmp.path().join("stage");
         let mpcenc = tmp.path().join("mpcenc");
         let (mut child, draft_tmp) = svc
-            .encode_spawn(
-                "{\"schema\":\"musicpack-draft\"}",
-                &staging,
-                "6.0",
-                &mpcenc,
-            )
+            .encode_spawn("{\"schema\":\"musicpack-draft\"}", &staging, "6.0", &mpcenc)
             .unwrap();
         use std::io::Read;
         let mut out = String::new();
-        child.stdout.as_mut().unwrap().read_to_string(&mut out).unwrap();
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
         let _ = child.wait();
         let _ = std::fs::remove_file(&draft_tmp);
         assert!(out.contains("encode-draft"), "command dispatched: {out}");
-        assert!(out.contains(&format!("--mpcenc {}", mpcenc.display())), "{out}");
-        assert!(!out.contains("ffmpeg"), "no external decoder is passed: {out}");
+        assert!(
+            out.contains(&format!("--mpcenc {}", mpcenc.display())),
+            "{out}"
+        );
+        assert!(
+            !out.contains("ffmpeg"),
+            "no external decoder is passed: {out}"
+        );
         assert!(out.contains(&format!("-o {}", staging.display())), "{out}");
         assert!(out.contains("--quality 6.0"), "{out}");
     }

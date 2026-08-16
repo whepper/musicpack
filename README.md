@@ -123,9 +123,8 @@ original dates, country, label, catalogue number, medium, barcode);
 `import` reads embedded metadata (Vorbis Comments from FLAC, APEv2 from
 `.mpc`) to fill album/track/release/identifier/source fields — explicit flags
 override tags, and it never invents edition/country/label/catalogue/type from
-filenames. `identify` matches a package against MusicBrainz (exact release ID
-lookup, or barcode search via `curl`; `--mb-json` applies an offline release
-document) and enriches empty fields with honest `identity.confidence`
+filenames. `identify` applies a local MusicBrainz release document via
+`--mb-json` and enriches empty fields with honest `identity.confidence`
 (`exact`/`confirmed`/`probable`/`none`) — importing never requires a network.
 `update-metadata` reconciles the manifest from the tracks' tags and, with
 `--sync-tags`, writes the manifest back into `.mpc` APEv2 tags and refreshes

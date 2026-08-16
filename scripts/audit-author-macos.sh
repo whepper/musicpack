@@ -15,8 +15,8 @@
 #   - the analyzer carries an absolute rpath or an absolute ONNX Runtime
 #     load path (must be @rpath/@loader_path-relocatable),
 #   - an architecture does not match the app host build.
-#   - FFmpeg is accidentally included: FLAC/WAV decoding is native, so no
-#     external multimedia tool or bundled FFmpeg tree is expected.
+#   - FFmpeg or curl is accidentally included: decoding is native and
+#     MusicBrainz transport uses Rust ureq, so neither tool is bundled.
 #
 # Usage: scripts/audit-author-macos.sh <MusicPack Author.app>
 
@@ -45,6 +45,12 @@ if find "$APP/Contents" -type f -name 'ffmpeg*' -print -quit | grep -q .; then
   exit 1
 fi
 echo "ok: no FFmpeg binary is bundled (native decode)"
+
+if find "$APP/Contents" -type f -name 'curl' -print -quit | grep -q .; then
+  echo "fail: curl must not be bundled (MusicBrainz uses Rust ureq)" >&2
+  exit 1
+fi
+echo "ok: no curl binary is bundled (Rust ureq transport)"
 
 # The analyzer must have a bundled ONNX Runtime dylib.
 ONNX_DYLIB="$(ls "$FRAMEWORKS"/libonnxruntime*.dylib 2>/dev/null || true)"

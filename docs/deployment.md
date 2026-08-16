@@ -60,11 +60,10 @@ for remote/LAN clients.
 - **CMake ≥ 3.16**
 - **Node.js ≥ 20** and npm
 - **Rust toolchain** (Tauri 2 backend)
-- **curl** (system `/usr/bin/curl`, used for MusicBrainz lookups)
 
-No external multimedia tool is required. FLAC/WAV decoding for encoding and
-loudness is native (see "No external decoder requirement" below), so there is
-nothing extra to install.
+No external multimedia or MusicBrainz command-line tool is required. FLAC/WAV
+decoding for encoding and loudness is native (see "No external decoder
+requirement" below), so there is nothing extra to install.
 
 ### Build the standalone `.app`
 
