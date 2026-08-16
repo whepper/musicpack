@@ -6,6 +6,9 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  EMSDK_VERSION: '6.0.6'
+
 jobs:
   build-and-test:
     name: ${{ matrix.label || format('{0} ({1})', matrix.os, matrix.compiler) }}
@@ -188,8 +191,8 @@ jobs:
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-          /opt/emsdk/emsdk install latest
-          /opt/emsdk/emsdk activate latest
+          /opt/emsdk/emsdk install "$EMSDK_VERSION"
+          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
 
       - name: Configure
         shell: bash
@@ -228,7 +231,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -251,7 +254,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -261,8 +264,8 @@ jobs:
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-          /opt/emsdk/emsdk install latest
-          /opt/emsdk/emsdk activate latest
+          /opt/emsdk/emsdk install "$EMSDK_VERSION"
+          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
 
       - name: Build server
         run: |

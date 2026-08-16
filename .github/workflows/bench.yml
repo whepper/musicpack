@@ -25,6 +25,9 @@ on:
       - 'include/**'
       - '.github/workflows/bench.yml'
 
+env:
+  EMSDK_VERSION: '6.0.6'
+
 jobs:
   native-x64:
     name: native (x86-64)
@@ -92,7 +95,7 @@ jobs:
             --output bench/results/psy-profile-x86_64-simd.json
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bench-native-x64
           path: bench/results/
@@ -106,8 +109,8 @@ jobs:
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-          /opt/emsdk/emsdk install latest
-          /opt/emsdk/emsdk activate latest
+          /opt/emsdk/emsdk install "$EMSDK_VERSION"
+          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
 
       - name: Build scalar wasm
         shell: bash
@@ -194,7 +197,7 @@ jobs:
           cat bench/results/wasm-summary.tsv
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bench-wasm
           path: bench/results/

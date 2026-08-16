@@ -222,9 +222,10 @@ static build exists**.
 - **Emscripten** to build the WASM decoder module:
 
 ```sh
+EMSDK_VERSION=6.0.6
 git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-/opt/emsdk/emsdk install latest
-/opt/emsdk/emsdk activate latest
+/opt/emsdk/emsdk install "$EMSDK_VERSION"
+/opt/emsdk/emsdk activate "$EMSDK_VERSION"
 source /opt/emsdk/emsdk_env.sh        # per shell, or add to your profile
 ```
 
