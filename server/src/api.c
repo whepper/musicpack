@@ -981,6 +981,32 @@ track_object(mp_library *lib, sqlite3_stmt *t)
         mp_json_str(audio, "url", url);
         mp_json_add(o, "audio", audio);
     }
+    /* Waveform column offsets depend on the caller's SELECT. The detail-style
+       SELECT in handle_release_detail has 22 columns (0..21); the compact
+       SELECT in handle_tracks has 27 columns (0..26) and pushes the
+       waveform block to indices 22..26. We detect by looking at the
+       SELECTed column count: if column 22 is non-NULL and there are
+       >=23 columns, treat it as the handle_tracks layout; otherwise fall
+       back to the handle_release_detail layout (17..21). The fields the
+       code actually reads are identical in both. */
+    {
+        int wave_idx = sqlite3_column_count(t) >= 23 ? 22 : 17;
+        if (sqlite3_column_type(t, wave_idx) != SQLITE_NULL) {
+            mp_json *wf = mp_json_obj();
+            char wurl[64];
+            mp_json_int(wf, "version", sqlite3_column_int(t, wave_idx));
+            mp_json_int(wf, "intervalMs", sqlite3_column_int(t, wave_idx + 1));
+            mp_json_str(wf, "encoding", col_text(t, wave_idx + 2));
+            mp_json_int(wf, "floorDb", sqlite3_column_int(t, wave_idx + 3));
+            mp_json_int(wf, "points", sqlite3_column_int64(t, wave_idx + 4));
+            snprintf(wurl, sizeof wurl, "/api/%s/tracks/%lld/waveform",
+                     API_VERSION, sqlite3_column_int64(t, 0));
+            mp_json_str(wf, "url", wurl);
+            mp_json_add(o, "waveform", wf);
+        } else {
+            mp_json_null(o, "waveform");
+        }
+    }
     return o;
 }
 
@@ -999,13 +1025,15 @@ handle_tracks(mp_library *lib, long long id, unsigned int *st)
             "  a.codec, a.mime_type, a.stream_version, a.sample_rate, a.channels,"
             "  a.id, a.file_size, a.sha256,"
             "  t.has_duration, t.duration,"
-            "  me.disc_number, g.id, g.title, r.id, r.edition"
+            "  me.disc_number, g.id, g.title, r.id, r.edition,"
+            "  w.version, w.interval_ms, w.encoding, w.floor_db, w.points"
             " FROM tracks t"
             " JOIN media me ON me.id = t.media_id"
             " JOIN releases r ON r.id = me.release_id"
             " JOIN release_groups g ON g.id = r.group_id"
             " JOIN audio_objects a ON a.track_id = t.id"
             " JOIN packages p ON p.id = r.owner_package_id"
+            " LEFT JOIN track_waveforms w ON w.track_id = t.id"
             " WHERE t.id = ?1 AND " VISIBLE
             " LIMIT 1", -1, &t, 0) != SQLITE_OK) {
         *st = 500;
@@ -1129,8 +1157,11 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
                     "  t.has_loudness, t.loudness_lufs, t.loudness_true_peak_db,"
                     "  a.codec, a.mime_type, a.stream_version, a.sample_rate,"
                     "  a.channels, a.id, a.file_size, a.sha256,"
-                    "  t.has_duration, t.duration"
-                    " FROM tracks t JOIN audio_objects a ON a.track_id = t.id"
+                    "  t.has_duration, t.duration,"
+                    "  w.version, w.interval_ms, w.encoding, w.floor_db, w.points"
+                    " FROM tracks t"
+                    " JOIN audio_objects a ON a.track_id = t.id"
+                    " LEFT JOIN track_waveforms w ON w.track_id = t.id"
                     " WHERE t.media_id = ?1"
                     " ORDER BY t.track_number, t.id", -1, &t, 0) == SQLITE_OK) {
                 mp_json *trs = mp_json_arr();
@@ -1187,16 +1218,24 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
 
 static struct MHD_Response *
 handle_stream(mp_library *lib, struct MHD_Connection *c, long long id,
-              int is_audio, unsigned int *st)
+              int kind, unsigned int *st)
 {
     mp_object_ref ref;
-    int ok = is_audio
-        ? mp_library_track_audio(lib, id, &ref)
-        : mp_library_asset(lib, id, &ref);
+    int ok;
+    const char *err;
+    if (kind == 1) {
+        ok = mp_library_track_audio(lib, id, &ref);
+        err = "Track not found";
+    } else if (kind == 2) {
+        ok = mp_library_track_waveform(lib, id, &ref);
+        err = "Waveform not found";
+    } else {
+        ok = mp_library_asset(lib, id, &ref);
+        err = "Asset not found";
+    }
     if (!ok) {
         *st = 404;
-        return error_response(404, "not_found",
-                              is_audio ? "Track not found" : "Asset not found");
+        return error_response(404, "not_found", err);
     }
     return serve_object(lib, &ref, c, st);
 }
@@ -1540,18 +1579,27 @@ dispatch(mp_server_ctx *srv, struct MHD_Connection *c, const char *method,
         char *rest = path + 15;
         char *slash = strchr(rest, '/');
         if (slash != 0) {
-            /* /api/v1/tracks/{id}/audio */
-            if (strcmp(slash, "/audio") != 0) {
-                *status_out = 404;
-                return error_response(404, "not_found", "Unknown endpoint");
+            /* /api/v1/tracks/{id}/audio  or  /api/v1/tracks/{id}/waveform */
+            if (strcmp(slash, "/audio") == 0) {
+                *slash = '\0';
+                if (!parse_id(rest, &id)) {
+                    *status_out = 400;
+                    return error_response(400, "invalid_request",
+                                          "malformed track id");
+                }
+                return handle_stream(lib, c, id, 1, status_out);
             }
-            *slash = '\0';
-            if (!parse_id(rest, &id)) {
-                *status_out = 400;
-                return error_response(400, "invalid_request",
-                                      "malformed track id");
+            if (strcmp(slash, "/waveform") == 0) {
+                *slash = '\0';
+                if (!parse_id(rest, &id)) {
+                    *status_out = 400;
+                    return error_response(400, "invalid_request",
+                                          "malformed track id");
+                }
+                return handle_stream(lib, c, id, 2, status_out);
             }
-            return handle_stream(lib, c, id, 1, status_out);
+            *status_out = 404;
+            return error_response(404, "not_found", "Unknown endpoint");
         }
         if (!parse_id(rest, &id)) {
             *status_out = 400;

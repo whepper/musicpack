@@ -106,11 +106,11 @@ Field summary (see the JSON Schema for full constraints):
 | `identity`             | no       | `source` + `confidence` describing how IDs matched |
 | `source`               | no       | `type` (`cd-rip`, `digital-download`, ...), `store`, `sourceId` |
 | `media`                | yes      | non-empty array of media; each has `disc` (>=1), optional `format` (closed enum), `tracks[]` |
-| track fields           | yes/var  | `track` (>=1), `title`, `audio`; optional `artists`, `identifiers` (`isrc`, `musicbrainzTrackId`, `musicbrainzRecordingId`), `source`, `sourceAudio`, `duration` (derived), `loudness` |
+| track fields           | yes/var  | `track` (>=1), `title`, `audio`; optional `artists`, `identifiers` (`isrc`, `musicbrainzTrackId`, `musicbrainzRecordingId`), `source`, `sourceAudio`, `duration` (derived), `loudness`, `waveform` (see `specs/musicpack-waveform-v1.md`) |
 | `audio`                | yes      | object: `path` (required), `sha256` (required, 64 lowercase hex), `codec` (optional) |
 | `artwork`              | no       | array of `{ role, path, sha256 }`             |
 | `booklet`,`lyrics`,`extras` | no | arrays of `{ path, sha256 }`              |
-| `analysis`             | no       | optional analysis references: array of `{ type, profile?, path, sha256 }` (see below) |
+| `analysis`             | no       | optional package-scope analysis references: array of `{ type, profile?, path, sha256 }` (see below) |
 | `loudness`             | no       | album-level `algorithm`, `albumLUFS`, `albumTruePeakDbTP` |
 | `provenance`           | no       | `tool`, `toolVersion`; timestamps omitted by default for determinism |
 
@@ -269,13 +269,16 @@ Rules:
 
 ## 6. Integrity
 
-Every manifest-referenced asset — audio, artwork, booklet, lyrics, extras, and
-analysis — has a required SHA-256 in lowercase hexadecimal. `manifest.json`
-itself is not an asset and is not self-hashed.
+Every manifest-referenced asset — audio, artwork, booklet, lyrics, extras,
+analysis, and per-track `waveform` (see §10) — has a required SHA-256 in
+lowercase hexadecimal. `manifest.json` itself is not an asset and is not
+self-hashed.
 `musicpack verify` detects: missing files, checksum mismatches, malformed
 manifests, duplicate track identity, invalid paths, impossible numbering,
 invalid loudness values, invalid release-type / medium-format enumeration
-values, unsupported manifest version, and (as warnings) unreferenced files.
+values, unsupported manifest version, malformed or missing waveform
+references (when present), and (as warnings) unreferenced files. A package
+without any `waveform` references is fully valid.
 
 ## 7. Validation / forward compatibility
 
@@ -430,3 +433,35 @@ The three `Example Album` packages share the same release group (same
 `album.title` and, when known, the same `musicbrainzReleaseGroupId`) but are
 distinct collectible objects with different editions, dates, mediums,
 catalogue numbers, identifiers and provenance.
+
+## 10. Waveform Envelope
+
+A `.mpack` v1 package may optionally carry a precomputed **waveform
+envelope** for every track. Waveform is **track-scoped derived data** —
+track-scoped because it is not shared across tracks, derived because it is
+generated from source PCM during authoring and never recomputed by
+servers or clients. See `specs/musicpack-waveform-v1.md` for the
+normative specification (binary layout, quantization formula, manifest
+contract, integrity, server API, client rendering expectations,
+fallback behavior). Headlines:
+
+* **Optional at the format level**: a package without `waveform` on any
+  track is completely valid. Waveform is generated **automatically and
+  by default** in MusicPack Author; only an explicit Author opt-out
+  builds without waveform.
+* **Per-track binary**: `analysis/waveform/<DD>-<TT>.wfm` (multi-disc
+  safe). `~1.2 KB/minute` payload at 100 ms × peak+rms `uint8`; `<= 1.5
+  MiB` per track.
+* **Manifest reference**: per-track `waveform: { version, path, sha256,
+  intervalMs, encoding, floorDb, points }`. Closed enums for v1:
+  `version=1`, `intervalMs=100`, `encoding="peak-rms-u8"`,
+  `floorDb=-60`.
+* **Integrity**: same SHA-256 / containment / checksum-failed rules as
+  every other referenced asset.
+* **Codec safety**: waveform generation runs as a separate native source
+  decode pass and is provably independent of the encoder path;
+  Musepack-encoded output is unchanged whether or not it runs.
+* **Client**: when present, the Now Playing seek control renders the
+  full-track waveform as a click/touch/keyboard seek surface; when
+  absent, playback falls back to the linear progress bar and never
+  depends on waveform availability.

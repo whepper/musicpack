@@ -45,6 +45,9 @@ SPDX-License-Identifier: BSD-3-Clause
       <span class="chip {c.sonic}">
         Sonic {c.sonic === 'ok' ? '✓' : c.sonic === 'warn' ? '≈' : '· not analysed'}
       </span>
+      <span class="chip {c.waveform}">
+        Waveform {c.waveform === 'ok' ? '✓' : c.waveform === 'warn' ? '⚠' : '· not generated'}
+      </span>
     </div>
     <div class="actions">
       <button class="btn ghost" onclick={runValidate} disabled={$validating}>

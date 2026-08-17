@@ -23,6 +23,7 @@ mp_mime_for_path(const char *path)
     if (strcmp(e, ".flac") == 0) return "audio/flac";
     if (strcmp(e, ".wav") == 0)  return "audio/wav";
     if (strcmp(e, ".ogg") == 0)  return "audio/ogg";
+    if (strcmp(e, ".wfm") == 0)  return "application/vnd.musicpack.waveform-v1+octet-stream";
     if (strcmp(e, ".jpg") == 0 || strcmp(e, ".jpeg") == 0) return "image/jpeg";
     if (strcmp(e, ".png") == 0)  return "image/png";
     if (strcmp(e, ".gif") == 0)  return "image/gif";

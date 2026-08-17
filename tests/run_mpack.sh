@@ -544,6 +544,16 @@ draft = {
     "sonicAnalysis": {"status": "ready",
                       "profile": "musicpack-sonic-openl3-v1",
                       "path": sys.argv[1]},
+    # These integration tests use fake 4-byte .mpc source files that cannot
+    # be decoded by musicpack_audio_*; opt out of waveform generation so
+    # build-draft accepts the draft. Waveform generation is exercised
+    # separately in tests/run_author.sh / tests/run_encode.sh with real
+    # FLAC/WAV fixtures.
+    "waveformAnalysis": {"status": "disabled",
+                         "intervalMs": 100,
+                         "encoding": "peak-rms-u8",
+                         "floorDb": -60,
+                         "tracks": []},
 }
 json.dump(draft, open(sys.argv[2], "w"))
 EOF

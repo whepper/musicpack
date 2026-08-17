@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 /// Bump together with the CLI's `MUSICPACK_AUTHOR_API`.
 /// Version 2 adds `encode-draft`; version 3 removes its `--ffmpeg` argument
 /// (FLAC/WAV decode is native); version 4 moves MusicBrainz transport here.
-const EXPECTED_AUTHOR_API: u32 = 4;
+const EXPECTED_AUTHOR_API: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub enum AuthorError {
@@ -558,6 +558,36 @@ impl AuthorService {
         Ok((child, job_tmp))
     }
 
+    // ---- Waveform envelope generation -------------------------------
+
+    /// Spawns the `musicpack` CLI's `waveform-draft` subcommand with the
+    /// given draft JSON. Returns the child handle (for cancellation) plus its
+    /// temporary draft path, which the caller removes after the child exits.
+    pub fn waveform_spawn(
+        &self,
+        draft_json: &str,
+        staging: &Path,
+    ) -> Result<(std::process::Child, PathBuf), AuthorError> {
+        let cli = self.cli_path().to_path_buf();
+        let draft_tmp = self.temp_file("waveform-draft.json", draft_json)?;
+        let child = Command::new(cli)
+            .arg("waveform-draft")
+            .arg("--draft")
+            .arg(&draft_tmp)
+            .arg("-o")
+            .arg(staging)
+            .arg("--json")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&draft_tmp);
+                AuthorError::Io(format!("cannot run `musicpack waveform-draft`: {e}"))
+            })?;
+        Ok((child, draft_tmp))
+    }
+
     // ---- FLAC -> Musepack encoding ----------------------------------
 
     /// Resolves the `mpcenc` encoder binary. Bundled apps use the sidecar
@@ -841,9 +871,9 @@ mod tests {
     #[test]
     fn handshake_accepts_matching_api() {
         let info =
-            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":4}\n")
+            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":5}\n")
                 .unwrap();
-        assert_eq!(info.author_api, 4);
+        assert_eq!(info.author_api, 5);
         assert_eq!(info.musicpack_version, "0.1.0");
     }
 
@@ -854,7 +884,7 @@ mod tests {
                 .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("author API 3"), "{msg}");
-        assert!(msg.contains("requires 4"), "{msg}");
+        assert!(msg.contains("requires 5"), "{msg}");
     }
 
     #[test]
@@ -870,11 +900,11 @@ mod tests {
         let bin = make_cli(
             tmp.path(),
             "MacOS",
-            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":4}\\n'\n",
+            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":5}\\n'\n",
         );
         let mut service = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let info = service.ensure_handshake().unwrap();
-        assert_eq!(info.author_api, 4);
+        assert_eq!(info.author_api, 5);
         // Cached: a second call still succeeds.
         assert!(service.ensure_handshake().is_ok());
     }
@@ -1000,6 +1030,37 @@ mod tests {
             out.contains("\"modelDir\":\"/verified/models/profile\""),
             "analyzer received the verified model dir: {out}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waveform_spawn_passes_draft_path() {
+        // A fake `musicpack` that echoes the --draft file and exits.
+        let tmp = TempDir::new().unwrap();
+        let cli_dir = tmp.path().join("MacOS");
+        fs::create_dir_all(&cli_dir).unwrap();
+        let cli = cli_dir.join("musicpack");
+        // $3 is the argument after `waveform-draft --draft`.
+        fs::write(&cli, "#!/bin/sh\ncat \"$3\"\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&cli).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&cli, perms).unwrap();
+        }
+        let svc = AuthorService::new(Ok(BackendLocation::Bundled(cli)));
+
+        let staging = tmp.path().join("wf-out");
+        let draft = r#"{"sourceRoot":"/music/A","media":[{"disc":1,"tracks":[{"track":1,"audioPath":"01.mpc"}]}]}"#;
+        let (mut child, draft_tmp) = svc.waveform_spawn(draft, &staging).unwrap();
+        use std::io::Read;
+        let mut out = String::new();
+        let child_out = child.stdout.as_mut().unwrap();
+        child_out.read_to_string(&mut out).unwrap();
+        let _ = child.wait();
+        assert!(out.contains("\"media\""), "draft was passed by path: {out}");
+        assert!(out.contains("01.mpc"), "draft track preserved: {out}");
+        let _ = fs::remove_file(draft_tmp);
     }
 
     // ---- mpcenc resolution + encode spawn -------------------------------

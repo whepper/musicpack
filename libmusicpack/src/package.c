@@ -53,6 +53,7 @@
 #include <musicpack/checksum.h>
 #include <musicpack/path.h>
 #include <musicpack/sonic.h>
+#include <musicpack/waveform.h>
 
 #define MANIFEST_NAME "manifest.json"
 #define MANIFEST_MAX  (16u * 1024u * 1024u)
@@ -581,6 +582,12 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
             for (a = 0; a < m->analysis_count && !referenced; a++)
                 if (strcmp(m->analysis[a].asset.path, files[i]) == 0)
                     referenced = 1;
+        if (!referenced)
+            for (d = 0; d < m->disc_count && !referenced; d++)
+                for (t = 0; t < m->discs[d].track_count && !referenced; t++)
+                    if (m->discs[d].tracks[t].waveform.present &&
+                        strcmp(m->discs[d].tracks[t].waveform.path, files[i]) == 0)
+                        referenced = 1;
 
         if (!referenced) {
             char buf[512];
@@ -679,6 +686,117 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
     }
 }
 
+/* Per-track waveform verification: same containment + size + checksum rules
+   as every other asset, plus payload consistency (`points == bytes/2`,
+   closed-enum metadata, byte range) and an optional duration cross-check
+   (warning, not error). */
+static void
+verify_waveform_track(const musicpack_package *pkg, const musicpack_track *tr,
+                      musicpack_report *rep, musicpack_report_fn fn, void *ctx,
+                      int *failed)
+{
+    char abs[MUSICPACK_PATH_MAX + 2];
+    char buf[512];
+    long long size;
+    unsigned char *bytes = 0;
+    size_t bytes_len = 0;
+    musicpack_waveform_meta meta;
+    musicpack_status s;
+    FILE *f;
+
+    if (!tr->waveform.present)
+        return;
+
+    /* Containment + file existence + size budget. Reuse the generic asset
+       verifier (path safety, file size limit, hash). */
+    {
+        musicpack_asset a = { tr->waveform.path, tr->waveform.sha256 };
+        verify_assets(pkg, &a, 1, "waveform", rep, fn, ctx, failed, 0);
+    }
+    if (musicpack_package_resolve_path(pkg, tr->waveform.path, abs, sizeof abs) != MUSICPACK_OK)
+        return; /* already reported */
+
+    size = checked_file_size(abs);
+    if (size < 0) {
+        snprintf(buf, sizeof buf, "waveform: cannot size '%s'", tr->waveform.path);
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+    if ((unsigned long long) size != (unsigned long long) tr->waveform.points * 2ULL) {
+        snprintf(buf, sizeof buf,
+                 "waveform: '%s' payload size inconsistent with points (%lld vs %lu)",
+                 tr->waveform.path, size,
+                 (unsigned long) (tr->waveform.points * 2u));
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+
+    /* Read + structural validate the payload. */
+    if (size > (long long) MUSICPACK_WAVEFORM_MAX_BYTES) {
+        snprintf(buf, sizeof buf, "waveform: '%s' exceeds per-track payload limit",
+                 tr->waveform.path);
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+    f = fopen(abs, "rb");
+    if (f == 0) {
+        snprintf(buf, sizeof buf, "waveform: cannot open '%s'", tr->waveform.path);
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+    bytes_len = (size_t) size;
+    bytes = (unsigned char *) malloc(bytes_len > 0 ? bytes_len : 1);
+    if (bytes == 0) {
+        fclose(f);
+        report(rep, fn, ctx, "waveform: out of memory", 1);
+        *failed = 1;
+        return;
+    }
+    if (bytes_len > 0 && fread(bytes, 1, bytes_len, f) != bytes_len) {
+        free(bytes);
+        fclose(f);
+        snprintf(buf, sizeof buf, "waveform: cannot read '%s'", tr->waveform.path);
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+    fclose(f);
+
+    meta.version = (uint32_t) tr->waveform.version;
+    meta.interval_ms = (uint32_t) tr->waveform.interval_ms;
+    meta.floor_db = (int32_t) tr->waveform.floor_db;
+    meta.points = (uint32_t) tr->waveform.points;
+    s = musicpack_waveform_validate(bytes, bytes_len, &meta);
+    free(bytes);
+    bytes = 0;
+    if (s != MUSICPACK_OK) {
+        snprintf(buf, sizeof buf, "waveform: '%s' payload validation failed",
+                 tr->waveform.path);
+        report(rep, fn, ctx, buf, 1);
+        *failed = 1;
+        return;
+    }
+
+    /* Duration cross-check is a warning, not an error. */
+    if (tr->has_duration) {
+        long expected = (long) (tr->duration * 10.0 + 0.5);
+        long actual = (long) tr->waveform.points;
+        long diff = expected - actual;
+        if (diff < 0) diff = -diff;
+        if (diff > 2) {
+            snprintf(buf, sizeof buf,
+                     "waveform: '%s' points=%lu differs from duration=%g (%ld buckets)",
+                     tr->waveform.path, (unsigned long) tr->waveform.points,
+                     tr->duration, diff);
+            report(rep, fn, ctx, buf, 0);
+        }
+    }
+}
+
 musicpack_status
 musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
                           musicpack_report_fn fn, void *ctx)
@@ -711,6 +829,7 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
             musicpack_track *tr = &m->discs[d].tracks[t];
             verify_assets(pkg, &tr->audio, 1, "track", rep, fn, ctx, &failed,
                           &budget);
+            verify_waveform_track(pkg, tr, rep, fn, ctx, &failed);
         }
     }
     for (i = 0; i < m->artwork_count; i++)

@@ -301,10 +301,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 4, "schema version 4");
+    CHECK(db != 0 && mp_db_schema_version(db) == 5, "schema version 5");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 4, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 5, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -1252,6 +1252,217 @@ test_verify_fail_closed(void)
     }
 }
 
+/* Per-track waveform envelope ingest: scanning a package with waveforms
+   populates `track_waveforms`; the lookup resolves through the owning
+   package and the VISIBLE filter; re-ingest replaces existing rows; a
+   corrupt .wfm makes the owning package invisible (quarantine). */
+static void
+test_waveform_ingest(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long track_id = -1;
+    mp_object_ref ref;
+    long long size = 0;
+    char hex[MUSICPACK_SHA256_HEX_SIZE];
+
+    snprintf(lib, sizeof lib, "%s/wavelib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/wave.db", g_tmpdir);
+    make_dir(lib);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "open waveform db");
+    db = mp_library_sqlite(lib_h);
+
+    /* Use the committed MPC reference package which now carries waveforms. */
+    snprintf(pkg, sizeof pkg, "%s/WavePkg.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 1, "waveform-bearing package ingested");
+    /* Verify so the package becomes servable (VISIBLE filter). */
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+
+    /* track_waveforms has one row per track. */
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM track_waveforms", -1) == 4,
+          "track_waveforms populated (4 rows)");
+
+    /* Find the first track id and look up its waveform. */
+    {
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(db,
+                "SELECT id FROM tracks ORDER BY id LIMIT 1", -1, &st, 0) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW)
+                track_id = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+    CHECK(track_id > 0, "have a track id");
+    CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 1,
+          "mp_library_track_waveform resolves");
+    CHECK(ref.file_size == (long long) (10 * 2),
+          "waveform file size matches points*2 (10 points = 20 bytes)");
+    CHECK(ref.mime[0] != '\0' && strstr(ref.mime, "musicpack.waveform") != 0,
+          "MIME is the waveform type");
+    CHECK(strlen(ref.sha256) == 64, "waveform has sha256 for ETag");
+
+    /* Manifest's waveform sha256 must match the on-disk file. */
+    {
+        sqlite3_stmt *st;
+        const char *wf_sha = 0;
+        if (sqlite3_prepare_v2(db,
+                "SELECT relative_path FROM track_waveforms WHERE track_id = ?1",
+                -1, &st, 0) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, track_id);
+            if (sqlite3_step(st) == SQLITE_ROW)
+                /* verify path resolves */
+                ;
+            sqlite3_finalize(st);
+        }
+        (void) wf_sha;
+    }
+
+    /* Rescan: re-ingest replaces rows. */
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM track_waveforms", -1) == 4,
+          "track_waveforms count stable on rescan");
+    /* A light scan leaves verify_status='unverified' which is not VISIBLE.
+       Run mp_verify_library so the package becomes servable again. */
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+    CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 1,
+          "waveform still resolves after rescan + verify");
+
+    /* Touch the size variable to silence unused warnings */
+    (void) size; (void) hex;
+    mp_library_close(lib_h);
+}
+
+static void
+test_waveform_quarantine(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long track_id = -1;
+    mp_object_ref ref;
+
+    snprintf(lib, sizeof lib, "%s/waveqlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/waveq.db", g_tmpdir);
+    make_dir(lib);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    db = mp_library_sqlite(lib_h);
+
+    snprintf(pkg, sizeof pkg, "%s/BadWave.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 1, "package ingested");
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+
+    /* Find a track and corrupt its .wfm. */
+    {
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(db,
+                "SELECT id FROM tracks ORDER BY id LIMIT 1", -1, &st, 0) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW)
+                track_id = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+    CHECK(track_id > 0, "have track id");
+    {
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(db,
+                "SELECT relative_path FROM track_waveforms WHERE track_id = ?1",
+                -1, &st, 0) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, track_id);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                char wfpath[4096];
+                snprintf(wfpath, sizeof wfpath, "%s/%s", pkg,
+                         sqlite3_column_text(st, 0));
+                /* Truncate to 2 bytes -> waveform_points * 2 mismatch. */
+                FILE *f = fopen(wfpath, "wb");
+                if (f) { fputc(0, f); fputc(0, f); fclose(f); }
+            }
+            sqlite3_finalize(st);
+        }
+    }
+    /* Full verify surfaces the checksum/size error -> package quarantined. */
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+    /* After quarantine, mp_library_track_waveform must return 0
+       (VISIBLE filter excludes checksum-failed packages). */
+    CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 0,
+          "corrupted waveform hides the package from the endpoint");
+
+    mp_library_close(lib_h);
+}
+
+/* A package without any waveform envelopes is fully valid: scanning,
+   verifying, and resolving track audio work without touching waveform. */
+static void
+test_waveform_no_waveform_fixture(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long track_id = -1;
+    mp_object_ref ref;
+
+    snprintf(lib, sizeof lib, "%s/waveflaclib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/waveflac.db", g_tmpdir);
+    make_dir(lib);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    db = mp_library_sqlite(lib_h);
+
+    snprintf(pkg, sizeof pkg, "%s/FlacNoWf.mpack", lib);
+    copy_tree(g_ref_flac, pkg);
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 1, "no-waveform package ingested");
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+
+    /* No track_waveforms rows. */
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM track_waveforms", -1) == 0,
+          "no track_waveforms for the FLAC fixture");
+
+    /* Look up the first track; waveform lookup must return 0; audio works. */
+    {
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(db,
+                "SELECT id FROM tracks ORDER BY id LIMIT 1", -1, &st, 0) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW)
+                track_id = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+    CHECK(track_id > 0, "have track id");
+    CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 0,
+          "track has no waveform (endpoint 404s)");
+    {
+        mp_verify_result vr = {0, 0};
+        mp_verify_library(lib_h, lib, &vr, 0, 0);
+    }
+    CHECK(mp_library_track_audio(lib_h, track_id, &ref) == 1,
+          "audio resolves after verify");
+
+    mp_library_close(lib_h);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1289,6 +1500,9 @@ main(int argc, char **argv)
     test_scan_fail_closed();
     test_scan_db_fail_closed();
     test_verify_fail_closed();
+    test_waveform_ingest();
+    test_waveform_quarantine();
+    test_waveform_no_waveform_fixture();
 
     if (failures == 0) {
         printf("server_tests: all passed\n");

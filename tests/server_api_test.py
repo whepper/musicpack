@@ -380,6 +380,41 @@ def run(base, libdir, demo_dir, t):
                    {"If-None-Match": f'"{track["audio"]["sha256"]}"'})
     t.ok(st == 304, "If-None-Match -> 304")
 
+    # ---- waveform envelope endpoint + track JSON ---------------------
+    # The committed reference package carries waveform envelopes; verify
+    # the track JSON surfaces waveform metadata and the binary endpoint
+    # serves it with the documented security headers and ETag.
+    t.ok("waveform" in track and track["waveform"] is not None,
+         "track JSON carries waveform metadata")
+    wf = track["waveform"]
+    t.ok(wf["version"] == 1 and wf["intervalMs"] == 100
+         and wf["encoding"] == "peak-rms-u8" and wf["floorDb"] == -60
+         and isinstance(wf["points"], int) and wf["points"] > 0
+         and wf["url"].endswith("/waveform"),
+         "waveform metadata fields")
+    st, _, body = get(base, API + f"/tracks/{tid}/waveform")
+    t.ok(st == 200 and len(body) == wf["points"] * 2,
+         "waveform bytes = points * 2")
+    st, h, _ = get(base, API + f"/tracks/{tid}/waveform")
+    t.ok(st == 200 and h.get("ETag", "").startswith('"'),
+         "waveform response carries ETag")
+    st, h, _ = get(base, API + f"/tracks/{tid}/waveform")
+    t.ok(h.get("X-Content-Type-Options") == "nosniff"
+         and "sandbox" in h.get("Content-Security-Policy", "")
+         and "attachment" in h.get("Content-Disposition", ""),
+         "waveform security headers (nosniff + sandbox + attachment)")
+    # Auth gate: without a token, 401.
+    st, _, _ = get(base, API + f"/tracks/{tid}/waveform", auth=False)
+    t.ok(st == 401, "waveform requires auth")
+    # No-waveform fixture (FLAC) reports null and 404s.
+    classical_track_id = classical_tid
+    st, _, _ = get(base, API + f"/tracks/{classical_track_id}/waveform")
+    t.ok(st == 404, "no-waveform track waveform endpoint 404s")
+    st, _, body = get(base, API + f"/tracks/{classical_track_id}")
+    classical_track_obj = json.loads(body)
+    t.ok(classical_track_obj.get("waveform") is None,
+         "no-waveform package reports waveform: null")
+
     # ---- package-object response security headers ----------------------
     # body-bearing audio responses carry nosniff + sandbox CSP
     st, h, _ = get(base, API + f"/tracks/{tid}/audio")

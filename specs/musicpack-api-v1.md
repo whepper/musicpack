@@ -286,11 +286,25 @@ without inventing new package semantics.
 
 ### `GET /api/v1/tracks/{id}`
 
-Track detail with a small `context` block (album/release/disc).
+Track detail with a small `context` block (album/release/disc). Track
+JSON includes an optional `waveform` field — `null` when the package has
+no waveform envelope for the track, otherwise
+`{ version, intervalMs, encoding, floorDb, points, url }`. See
+`specs/musicpack-waveform-v1.md`.
 
 ### `GET /api/v1/tracks/{id}/audio`
 
 Direct byte serving of the original contained audio object. See §3.
+
+### `GET /api/v1/tracks/{id}/waveform`
+
+Direct byte serving of the track's precomputed waveform envelope
+(`peak-rms-u8`, 2 bytes/bucket). Returns `404` when the track has no
+waveform. Same authentication, ETag (`"<sha256>"`), `Cache-Control`,
+security headers, and disposition behavior as `/audio`; the payload is
+tiny (≤ 1.5 MiB per track, ~1.2 KB/minute of audio) and is consumed
+whole, so `Range` is intentionally not supported. See
+`specs/musicpack-waveform-v1.md` §12.
 
 ### `GET /api/v1/assets/{id}`
 

@@ -256,6 +256,104 @@ parse_loudness(cJSON *o, musicpack_loudness *l, musicpack_status *status)
     return 1;
 }
 
+/* Per-track waveform envelope reference (optional). Closed enums for v1
+   (`version`, `intervalMs`, `encoding`, `floorDb`). `points` is bounded
+   (≤ 864000). Path is validated by the canonical rules. `sha256` must be
+   64 lowercase hex characters. */
+static int
+parse_waveform(cJSON *o, musicpack_waveform_ref *w, musicpack_status *status)
+{
+    cJSON *v;
+    int have_version = 0, have_interval = 0, have_floor = 0;
+    int have_points = 0;
+    double version_d = 0.0, interval_d = 0.0, floor_d = 0.0;
+    double points_d = 0.0;
+
+    w->present = 0;
+    if (o == 0)
+        return 1;
+    if (!cJSON_IsObject(o)) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+
+    v = cJSON_GetObjectItemCaseSensitive(o, "version");
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble != floor(v->valuedouble)) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    version_d = v->valuedouble;
+    have_version = 1;
+
+    if (!get_req_string(o, "path", &w->path, status))
+        return 0;
+    if (musicpack_path_validate(w->path) != MUSICPACK_OK) {
+        *status = MUSICPACK_ERR_PATH;
+        return 0;
+    }
+
+    if (!get_req_string(o, "sha256", &w->sha256, status))
+        return 0;
+    if (!is_lower_hex(w->sha256)) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+
+    v = cJSON_GetObjectItemCaseSensitive(o, "intervalMs");
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble != floor(v->valuedouble)) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    interval_d = v->valuedouble;
+    have_interval = 1;
+
+    if (!get_req_string(o, "encoding", &w->encoding, status))
+        return 0;
+    if (strcmp(w->encoding, "peak-rms-u8") != 0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+
+    v = cJSON_GetObjectItemCaseSensitive(o, "floorDb");
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble != floor(v->valuedouble)) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    floor_d = v->valuedouble;
+    have_floor = 1;
+
+    v = cJSON_GetObjectItemCaseSensitive(o, "points");
+    if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble) ||
+        v->valuedouble != floor(v->valuedouble) || v->valuedouble < 0.0 ||
+        v->valuedouble > 864000.0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    points_d = v->valuedouble;
+    have_points = 1;
+
+    if (!have_version || !have_interval || !have_floor || !have_points) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+
+    /* v1 closed-enum checks */
+    if (version_d != 1.0 || interval_d != 100.0 || floor_d != -60.0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+
+    w->version = 1;
+    w->interval_ms = 100;
+    w->floor_db = -60;
+    w->points = (unsigned long) points_d;
+    w->present = 1;
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* parse                                                               */
 /* ------------------------------------------------------------------ */
@@ -334,6 +432,11 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
     }
     if (!get_opt_string(v, "codec", &t->audio_codec, status))
         return 0;
+
+    v = cJSON_GetObjectItemCaseSensitive(o, "waveform");
+    if (v != 0 && !parse_waveform(v, &t->waveform, status))
+        return 0;
+
     return 1;
 }
 
@@ -385,7 +488,7 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
     const char **paths;
     size_t count = m->artwork_count + m->booklet_count + m->lyrics_count +
                    m->extras_count + m->analysis_count;
-    size_t d, t, a;
+    size_t d, t, a, wf;
 
     if (count < m->artwork_count || count < m->booklet_count ||
         count < m->lyrics_count || count < m->extras_count ||
@@ -399,6 +502,9 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
             return 0;
         }
         count += m->discs[d].track_count;
+        for (t = 0; t < m->discs[d].track_count; t++)
+            if (m->discs[d].tracks[t].waveform.present)
+                count++;
     }
     if (count > MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS) {
         *status = MUSICPACK_ERR_INVALID;
@@ -413,11 +519,16 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
     for (d = 0; d < m->disc_count; d++)
         for (t = 0; t < m->discs[d].track_count; t++)
             paths[count++] = m->discs[d].tracks[t].audio.path;
+    for (d = 0; d < m->disc_count; d++)
+        for (t = 0; t < m->discs[d].track_count; t++)
+            if (m->discs[d].tracks[t].waveform.present)
+                paths[count++] = m->discs[d].tracks[t].waveform.path;
     for (a = 0; a < m->artwork_count; a++) paths[count++] = m->artwork[a].asset.path;
     for (a = 0; a < m->booklet_count; a++) paths[count++] = m->booklet[a].path;
     for (a = 0; a < m->lyrics_count; a++) paths[count++] = m->lyrics[a].path;
     for (a = 0; a < m->extras_count; a++) paths[count++] = m->extras[a].path;
     for (a = 0; a < m->analysis_count; a++) paths[count++] = m->analysis[a].asset.path;
+    (void) wf;
 
     for (a = 0; a < count; a++) {
         size_t b;
@@ -840,6 +951,9 @@ musicpack_manifest_clear(musicpack_manifest *m)
             free(tr->audio.path);
             free(tr->audio.sha256);
             free(tr->audio_codec);
+            free(tr->waveform.path);
+            free(tr->waveform.sha256);
+            free(tr->waveform.encoding);
         }
         free(d->tracks);
     }
@@ -1027,6 +1141,16 @@ build_tree(const musicpack_manifest *m)
             if (tr->audio_codec != 0)
                 cJSON_AddStringToObject(cJSON_GetObjectItemCaseSensitive(to, "audio"),
                                         "codec", tr->audio_codec);
+            if (tr->waveform.present) {
+                cJSON *wf = cJSON_AddObjectToObject(to, "waveform");
+                cJSON_AddNumberToObject(wf, "version", tr->waveform.version);
+                cJSON_AddStringToObject(wf, "path", tr->waveform.path);
+                cJSON_AddStringToObject(wf, "sha256", tr->waveform.sha256);
+                cJSON_AddNumberToObject(wf, "intervalMs", tr->waveform.interval_ms);
+                cJSON_AddStringToObject(wf, "encoding", tr->waveform.encoding);
+                cJSON_AddNumberToObject(wf, "floorDb", tr->waveform.floor_db);
+                cJSON_AddNumberToObject(wf, "points", (double) tr->waveform.points);
+            }
             cJSON_AddItemToArray(item, to);
         }
         cJSON_AddItemToArray(arr, o);

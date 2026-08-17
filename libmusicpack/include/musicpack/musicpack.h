@@ -54,5 +54,6 @@
 #include <musicpack/path.h>
 #include <musicpack/meta.h>
 #include <musicpack/sonic.h>
+#include <musicpack/waveform.h>
 
 #endif /* MUSICPACK_H_ */

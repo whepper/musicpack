@@ -25,6 +25,8 @@ import type {
   SonicProgress,
   SonicResult,
   ValidationResult,
+  WaveformProgress,
+  WaveformResult,
 } from './types';
 
 export type InvokeFn = (
@@ -170,6 +172,34 @@ export class AuthorApi {
   /** Cancels a running encode stage. */
   async encodeCancel(): Promise<void> {
     await this.invokeFn('encode_cancel', {});
+  }
+
+  /** Runs the per-track waveform envelope generation stage for the draft.
+   * Progress arrives as `waveform-progress` Tauri events (forwarded to
+   * `onProgress`); the promise resolves with the transformed draft on
+   * success. The waveform stage performs its own native source decode pass
+   * and never invokes the encoder. */
+  async waveformAnalyze(
+    draft: Draft,
+    onProgress?: (p: WaveformProgress) => void,
+  ): Promise<WaveformResult> {
+    const unlisten = onProgress
+      ? await this.eventListen<WaveformProgress>('waveform-progress', (event) =>
+          onProgress(event.payload),
+        )
+      : null;
+    try {
+      return (await this.invokeFn('waveform_analyze', {
+        draftJson: JSON.stringify(draft),
+      })) as WaveformResult;
+    } finally {
+      unlisten?.();
+    }
+  }
+
+  /** Cancels a running waveform stage. */
+  async waveformCancel(): Promise<void> {
+    await this.invokeFn('waveform_cancel', {});
   }
 
   /** Removes an encode staging directory after a successful package build. */

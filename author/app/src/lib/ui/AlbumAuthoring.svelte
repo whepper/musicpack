@@ -17,6 +17,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import IdentityPanel from './IdentityPanel.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
   import SonicPanel from './SonicPanel.svelte';
+  import WaveformPanel from './WaveformPanel.svelte';
   import CreateDialog from './CreateDialog.svelte';
 
   let { onReset }: { onReset: () => void } = $props();
@@ -127,6 +128,8 @@ SPDX-License-Identifier: BSD-3-Clause
   </section>
 
   <SonicPanel />
+
+  <WaveformPanel />
 
   <section class="section">
     <h2>Validation</h2>

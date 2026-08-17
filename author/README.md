@@ -33,9 +33,9 @@ Svelte 5 app (app/)                     ← in-memory AuthoringDraft, record-she
 Tauri commands (src-tauri/src/lib.rs)   ← thin JSON surface
    │  AuthorService (src-tauri/src/author_service.rs)
    ▼
-musicpack backend                       ← inspect / validate-draft / encode-draft /
+musicpack backend                       ← inspect / validate-draft / encode-draft / waveform-draft /
    ▼                                        build-draft / identify-draft / verify --json
-libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770
+libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770, waveform
    │
    └─ mpcenc (static sidecar)           ← Musepack encoder (encode-draft)
         (FLAC/WAV decoded natively by libmusicpack; no external tool)
@@ -67,12 +67,12 @@ parser / package logic) or first moving it into the library (a real
   can replace the subprocess later without touching the frontend.
 
 The CLI gained draft commands for this purpose (see `musicpack/main.c`):
-`inspect`, `validate-draft`, `encode-draft`, `build-draft`, `identify-draft`,
+`inspect`, `validate-draft`, `encode-draft`, `waveform-draft`, `build-draft`, `identify-draft`,
 and a `--json` mode on `verify`. `import`/`create`/`info` behaviour is
 unchanged (the scan logic was extracted into a shared helper).
 `author-api-version` is the machine-readable capability handshake the GUI
 uses to verify backend compatibility (see [Backend compatibility](#backend-compatibility));
-it is at version **2** since `encode-draft` was added.
+it is at version **5**, including native waveform-envelope generation.
 
 ## The authoring draft
 
@@ -80,7 +80,11 @@ The GUI edits an in-memory **authoring draft** (application state, not a
 MusicPack format) and serializes it to a `musicpack-draft` JSON only to cross
 the CLI boundary. It mirrors the `.mpack` v1 logical hierarchy — `album`
 (release group), `release` (specific edition), `media[]`, `tracks[]` — plus
-`identifiers`, `identity`, `source`, `artwork`, `booklet`, `lyrics`, `extras`.
+`identifiers`, `identity`, `source`, `artwork`, `booklet`, `lyrics`, `extras`,
+and `waveformAnalysis`. Waveform generation is default-on: it performs a
+separate native source-decode pass and creates one deterministic 100 ms
+peak/RMS envelope per track. It can be explicitly disabled for packages that
+must omit this optional derived asset.
 `release`, `source` and `identity` are kept strictly separate, exactly as the
 spec requires. Audio/artwork paths point at files under `sourceRoot`; no
 half-created package directory is mutated as the user edits.

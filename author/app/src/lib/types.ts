@@ -115,6 +115,30 @@ export interface SonicAnalysis {
   error?: string;
 }
 
+/** Waveform envelope state carried by the authoring draft (application state,
+ * not part of the .mpack manifest). Per-track envelopes live in a staging
+ * directory until build; `tracks` carries the per-track `points`, `path`,
+ * and `sha256` that build-draft will attach as the manifest `waveform`
+ * references. */
+export interface WaveformTrackResult {
+  disc: number;
+  track: number;
+  points: number;
+  sha256: string;
+  path: string;
+}
+
+export interface WaveformAnalysis {
+  status: 'not_generated' | 'pending' | 'ready' | 'disabled' | 'error';
+  intervalMs: number;
+  encoding: 'peak-rms-u8';
+  floorDb: number;
+  tracks: WaveformTrackResult[];
+  tracksGenerated?: number;
+  tracksTotal?: number;
+  error?: string;
+}
+
 export interface Draft {
   schema: 'musicpack-draft';
   version: 1;
@@ -130,6 +154,7 @@ export interface Draft {
   lyrics: AssetEntry[];
   extras: AssetEntry[];
   sonicAnalysis?: SonicAnalysis;
+  waveformAnalysis?: WaveformAnalysis;
 }
 
 export const RELEASE_TYPES = [
@@ -249,6 +274,37 @@ export interface SonicProgress {
   message?: string;
   contributing?: number;
   sha256?: string;
+}
+
+/** Result of a waveform envelope generation run. `cancelled` is distinct
+ * from failure; `tracks` is the count of envelopes successfully written
+ * into the staging directory; the transformed `draft` carries the
+ * `waveformAnalysis` block that build-draft will attach as manifest
+ * `waveform` references. */
+export interface WaveformResult {
+  ok: boolean;
+  cancelled?: boolean;
+  stagingDir?: string;
+  tracks?: number;
+  draft?: Draft;
+}
+
+/** Progress event emitted during waveform envelope generation. The
+ * protocol mirrors `encode-progress` for Author UI consistency. */
+export interface WaveformProgress {
+  event: 'stage' | 'track' | 'done' | 'error' | 'cancelled';
+  stage?: 'decoding';
+  done?: number;
+  total?: number;
+  disc?: number;
+  track?: number;
+  title?: string;
+  status?: 'ok';
+  points?: number;
+  sha256?: string;
+  path?: string;
+  code?: string;
+  message?: string;
 }
 
 /** Typed error rejection from the sonic commands: `{ code, message }`. */

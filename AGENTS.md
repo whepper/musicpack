@@ -108,11 +108,30 @@ reader handoff), never the reverse. The normative spec is
 `specs/musicpack-v1.md`; reference packages live in `tests/reference/`.
 `libmusepack` must remain codec-only and package-agnostic.
 
+Since Phase 4 (MusicPack v1), `libmusicpack` also owns the **waveform
+envelope** binary format and the per-track manifest reference (see
+`specs/musicpack-waveform-v1.md`). Waveform is track-scoped derived data
+generated from source PCM during authoring; `libmusicpack` parses,
+validates, quantizes, and round-trips it, and the package verify pass
+enforces declared payload size, hash, and bucket count.
+
+**Invariant:** Waveform envelopes are deterministic derived package data
+generated from source PCM during authoring. `libmusicpack` owns their
+format and validation. Servers and clients consume them; they must not
+independently regenerate package waveform data.
+
 ## Native source decoding (no FFmpeg)
 
 MusicPack Author and the `musicpack` CLI decode authoring sources **natively**;
 there is no runtime FFmpeg/ffprobe dependency anywhere in production code, the
 packaged `.app`, or the encode/loudness tests. Do not reintroduce one.
+
+The same native decoder (`musicpack_audio_*`) feeds BS.1770 loudness
+measurement and Waveform Envelope generation. Waveform generation runs as a
+**separate native source decode pass** in `musicpack waveform-draft`. It
+must not share or modify the `encode-draft` path: Musepack-encoded output
+is provably unchanged whether or not waveform generation runs
+(`tests/run_encode.sh` re-encodes and compares SHA-256).
 
 - `libmusicpack` owns a narrow decode abstraction, `musicpack_audio_*`
   (`include/musicpack/audio.h`, `src/audio.c`): open → get_format (rate,

@@ -77,8 +77,10 @@
    CLI and the GUI can evolve independently without coupling to exact patch
    versions. Version 2 adds `encode-draft` (the FLAC/WAV -> Musepack stage);
    version 3 removes its `--ffmpeg` argument (FLAC/WAV decode is native);
-   version 4 moves MusicBrainz transport into the Rust Author backend. */
-#define MUSICPACK_AUTHOR_API 4
+   version 4 moves MusicBrainz transport into the Rust Author backend;
+   version 5 adds the `waveform-draft` stage (per-track `peak-rms-u8`
+   envelope generation from source PCM). */
+#define MUSICPACK_AUTHOR_API 5
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
@@ -546,6 +548,16 @@ cmd_info(const char *dir, int json)
                     cJSON_AddNumberToObject(lo, "trackLUFS", tr->loudness.lufs);
                     cJSON_AddNumberToObject(lo, "truePeakDbTP", tr->loudness.true_peak_db);
                 }
+                if (tr->waveform.present) {
+                    cJSON *wf = cJSON_AddObjectToObject(to, "waveform");
+                    cJSON_AddNumberToObject(wf, "version", tr->waveform.version);
+                    cJSON_AddStringToObject(wf, "path", tr->waveform.path);
+                    cJSON_AddStringToObject(wf, "sha256", tr->waveform.sha256);
+                    cJSON_AddNumberToObject(wf, "intervalMs", tr->waveform.interval_ms);
+                    cJSON_AddStringToObject(wf, "encoding", tr->waveform.encoding);
+                    cJSON_AddNumberToObject(wf, "floorDb", tr->waveform.floor_db);
+                    cJSON_AddNumberToObject(wf, "points", (double) tr->waveform.points);
+                }
                 cJSON_AddItemToArray(item, to);
             }
             cJSON_AddItemToArray(arr, disc);
@@ -591,6 +603,29 @@ cmd_info(const char *dir, int json)
         } else {
             cJSON_AddNullToObject(root, "sonic");
         }
+
+        {
+            size_t wf_total = 0, wf_present = 0;
+            unsigned long wf_points_total = 0;
+            for (d = 0; d < m->disc_count; d++)
+                for (t = 0; t < m->discs[d].track_count; t++) {
+                    wf_total++;
+                    if (m->discs[d].tracks[t].waveform.present) {
+                        wf_present++;
+                        wf_points_total += m->discs[d].tracks[t].waveform.points;
+                    }
+                }
+            so = cJSON_AddObjectToObject(root, "waveform");
+            cJSON_AddNumberToObject(so, "version", (double) MUSICPACK_WAVEFORM_VERSION);
+            cJSON_AddStringToObject(so, "encoding", MUSICPACK_WAVEFORM_ENCODING);
+            cJSON_AddNumberToObject(so, "intervalMs",
+                                    (double) MUSICPACK_WAVEFORM_INTERVAL_MS);
+            cJSON_AddNumberToObject(so, "floorDb", (double) MUSICPACK_WAVEFORM_FLOOR_DB);
+            cJSON_AddNumberToObject(so, "tracks", (double) wf_total);
+            cJSON_AddNumberToObject(so, "tracksWithWaveform", (double) wf_present);
+            cJSON_AddNumberToObject(so, "pointsTotal", (double) wf_points_total);
+        }
+
         draft_print(root);
         cJSON_Delete(root);
         musicpack_package_close(pkg);
@@ -686,6 +721,21 @@ cmd_info(const char *dir, int json)
             printf("  profile: not supported for comparison\n");
     } else if (ss.failed) {
         printf("Sonic Analysis: referenced document is unreadable or malformed\n");
+    }
+
+    {
+        size_t wf_total = 0, wf_present = 0;
+        for (d = 0; d < m->disc_count; d++)
+            for (t = 0; t < m->discs[d].track_count; t++) {
+                wf_total++;
+                if (m->discs[d].tracks[t].waveform.present)
+                    wf_present++;
+            }
+        if (wf_present > 0)
+            printf("Waveform: %zu/%zu tracks have envelopes (%s)\n",
+                   wf_present, wf_total, MUSICPACK_WAVEFORM_ENCODING);
+        else
+            printf("Waveform: none\n");
     }
 
     s = musicpack_package_verify(pkg, &rep, 0, 0);
@@ -3409,6 +3459,262 @@ attach_sonic_document(cJSON *draft, musicpack_manifest *m, const char *out_dir,
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* waveform envelope attachment                                       */
+/* ------------------------------------------------------------------ */
+
+/* Adds the manifest `analysis[]` reference and copies the per-track
+   `.wfm` files into <out>/analysis/waveform/<DD>-<TT>.wfm. Called from
+   build-draft after the manifest has been built but before the
+   `musicpack_package_verify` re-check. Hard-fails (returns -1) when the
+   draft declares `waveformAnalysis.status == "ready"` but a track's
+   waveform file is unreadable / malformed / hash-mismatched / point-count
+   inconsistent. Returns 1 on success, 0 when waveform is absent (the
+   explicit `"disabled"` opt-out, or no `waveformAnalysis` block at all —
+   which is an error caught earlier via `waveform_error_for_missing`). */
+
+static int
+copy_file_with_sha256(const char *src, const char *dst, char *hex_out, size_t hex_cap,
+                      char *err, size_t err_cap)
+{
+    if (copy_file(src, dst) != 0) {
+        snprintf(err, err_cap, "cannot copy '%s' -> '%s'", src, dst);
+        return 0;
+    }
+    if (musicpack_sha256_file(dst, hex_out, hex_cap) != MUSICPACK_OK) {
+        snprintf(err, err_cap, "cannot hash '%s'", dst);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+attach_waveform_documents(cJSON *draft, musicpack_manifest *m, const char *out_dir,
+                          char *err, size_t err_cap)
+{
+    cJSON *wa, *tracks;
+    int ready = 0;
+
+    if (err != 0 && err_cap > 0)
+        err[0] = '\0';
+
+    wa = cJSON_GetObjectItemCaseSensitive(draft, "waveformAnalysis");
+    if (!cJSON_IsObject(wa))
+        return 0;
+
+    {
+        const char *status = 0;
+        cJSON *vs = cJSON_GetObjectItemCaseSensitive(wa, "status");
+        if (cJSON_IsString(vs))
+            status = vs->valuestring;
+        if (status == 0 || strcmp(status, "ready") != 0)
+            return 0; /* "disabled" or any other status -> skip */
+        ready = 1;
+    }
+
+    tracks = cJSON_GetObjectItemCaseSensitive(wa, "tracks");
+    if (!cJSON_IsArray(tracks)) {
+        snprintf(err, err_cap, "waveformAnalysis.tracks is missing or not an array");
+        return -1;
+    }
+
+    {
+        char wdir[MUSICPACK_PATH_MAX + 2];
+        snprintf(wdir, sizeof wdir, "%s/analysis/waveform", out_dir);
+        if (mkdir_p(wdir) != 0) {
+            snprintf(err, err_cap, "cannot create '%s'", wdir);
+            return -1;
+        }
+    }
+
+    {
+        cJSON *item;
+        size_t i = 0;
+        cJSON_ArrayForEach(item, tracks) {
+            int disc = 0, track = 0;
+            unsigned long points = 0;
+            const char *path = 0, *sha = 0;
+            cJSON *v;
+            char src[MUSICPACK_PATH_MAX + 2];
+            char dst[MUSICPACK_PATH_MAX + 2];
+            char hex[MUSICPACK_SHA256_HEX_SIZE];
+            musicpack_waveform_meta meta;
+            unsigned char *bytes = 0;
+            size_t bytes_len = 0;
+            long long file_size = 0;
+            FILE *f;
+            size_t di, ti;
+
+            v = cJSON_GetObjectItemCaseSensitive(item, "disc");
+            if (cJSON_IsNumber(v))
+                disc = (int) v->valuedouble;
+            v = cJSON_GetObjectItemCaseSensitive(item, "track");
+            if (cJSON_IsNumber(v))
+                track = (int) v->valuedouble;
+            v = cJSON_GetObjectItemCaseSensitive(item, "points");
+            if (cJSON_IsNumber(v))
+                points = (unsigned long) v->valuedouble;
+            path = djstr(item, "path");
+            sha = djstr(item, "sha256");
+
+            if (disc <= 0 || track <= 0 || points == 0 ||
+                path == 0 || sha == 0) {
+                snprintf(err, err_cap,
+                         "waveformAnalysis.tracks[%zu] missing required fields", i);
+                return -1;
+            }
+            if (strlen(sha) != 64) {
+                snprintf(err, err_cap,
+                         "waveformAnalysis.tracks[%zu] sha256 is malformed", i);
+                return -1;
+            }
+
+            /* locate the manifest track */
+            {
+                musicpack_disc *dp = 0;
+                musicpack_track *tp = 0;
+                for (di = 0; di < m->disc_count; di++) {
+                    if ((int) m->discs[di].disc == disc) {
+                        dp = &m->discs[di];
+                        break;
+                    }
+                }
+                if (dp == 0) {
+                    snprintf(err, err_cap,
+                             "waveformAnalysis references unknown disc %d", disc);
+                    return -1;
+                }
+                for (ti = 0; ti < dp->track_count; ti++) {
+                    if ((int) dp->tracks[ti].number == track) {
+                        tp = &dp->tracks[ti];
+                        break;
+                    }
+                }
+                if (tp == 0) {
+                    snprintf(err, err_cap,
+                             "waveformAnalysis references unknown track disc=%d track=%d",
+                             disc, track);
+                    return -1;
+                }
+
+                snprintf(src, sizeof src, "%s", path);
+                snprintf(dst, sizeof dst, "%s/analysis/waveform/%02d-%02d.wfm",
+                         out_dir, disc, track);
+
+                if (!copy_file_with_sha256(src, dst, hex, sizeof hex, err, err_cap))
+                    return -1;
+                if (!musicpack_sha256_eq(hex, sha)) {
+                    snprintf(err, err_cap,
+                             "waveformAnalysis.tracks[%zu] checksum mismatch", i);
+                    return -1;
+                }
+
+                /* validate the bytes */
+                f = fopen(dst, "rb");
+                if (f == 0) {
+                    snprintf(err, err_cap, "cannot reopen waveform '%s'", dst);
+                    return -1;
+                }
+                if (fseek(f, 0, SEEK_END) != 0) {
+                    fclose(f);
+                    snprintf(err, err_cap, "cannot seek waveform '%s'", dst);
+                    return -1;
+                }
+                file_size = (long long) ftell(f);
+                if (file_size < 0 ||
+                    (unsigned long long) file_size != points * 2ULL) {
+                    fclose(f);
+                    snprintf(err, err_cap,
+                             "waveform '%s' size inconsistent with points (%lld vs %lu)",
+                             dst, file_size, points * 2u);
+                    return -1;
+                }
+                if (fseek(f, 0, SEEK_SET) != 0) {
+                    fclose(f);
+                    snprintf(err, err_cap, "cannot rewind waveform '%s'", dst);
+                    return -1;
+                }
+                bytes_len = (size_t) file_size;
+                bytes = (unsigned char *) malloc(bytes_len > 0 ? bytes_len : 1);
+                if (bytes == 0) {
+                    fclose(f);
+                    snprintf(err, err_cap, "out of memory reading waveform");
+                    return -1;
+                }
+                if (bytes_len > 0 &&
+                    fread(bytes, 1, bytes_len, f) != bytes_len) {
+                    free(bytes);
+                    fclose(f);
+                    snprintf(err, err_cap, "cannot read waveform '%s'", dst);
+                    return -1;
+                }
+                fclose(f);
+
+                meta.version = MUSICPACK_WAVEFORM_VERSION;
+                meta.interval_ms = MUSICPACK_WAVEFORM_INTERVAL_MS;
+                meta.floor_db = MUSICPACK_WAVEFORM_FLOOR_DB;
+                meta.points = (uint32_t) points;
+                if (musicpack_waveform_validate(bytes, bytes_len, &meta) != MUSICPACK_OK) {
+                    free(bytes);
+                    snprintf(err, err_cap, "waveform '%s' payload validation failed", dst);
+                    return -1;
+                }
+                free(bytes);
+
+                /* set manifest fields */
+                tp->waveform.present = 1;
+                tp->waveform.version = MUSICPACK_WAVEFORM_VERSION;
+                tp->waveform.interval_ms = MUSICPACK_WAVEFORM_INTERVAL_MS;
+                tp->waveform.floor_db = MUSICPACK_WAVEFORM_FLOOR_DB;
+                tp->waveform.points = points;
+                tp->waveform.path = strdup(dst + strlen(out_dir) + 1); /* +1 for the slash */
+                tp->waveform.sha256 = strdup(hex);
+                tp->waveform.encoding = strdup(MUSICPACK_WAVEFORM_ENCODING);
+                if (tp->waveform.path == 0 || tp->waveform.sha256 == 0 ||
+                    tp->waveform.encoding == 0) {
+                    snprintf(err, err_cap, "out of memory recording waveform reference");
+                    return -1;
+                }
+                i++;
+            }
+        }
+    }
+
+    (void) ready;
+    return 1;
+}
+
+/* Surface a clear error when build-draft is invoked with a draft that has
+   no waveformAnalysis block at all: Author is default-on, so a missing
+   block is treated as a pipeline bug rather than an opt-out. Returns -1
+   with \p err set when the draft is missing the block (or has status
+   other than "ready"/"disabled"); 0 when the block is "disabled" (opt-out
+   allowed); 1 when the block is "ready" (attach the files). */
+static int
+waveform_status_for_draft(cJSON *draft, char *err, size_t err_cap)
+{
+    cJSON *wa = cJSON_GetObjectItemCaseSensitive(draft, "waveformAnalysis");
+    const char *status;
+    cJSON *vs;
+
+    if (!cJSON_IsObject(wa)) {
+        snprintf(err, err_cap,
+                 "waveformAnalysis block is missing; the waveform stage must run "
+                 "(default ON) or the user must explicitly disable waveform generation");
+        return -1;
+    }
+    vs = cJSON_GetObjectItemCaseSensitive(wa, "status");
+    status = (cJSON_IsString(vs) && vs->valuestring != 0) ? vs->valuestring : 0;
+    if (status != 0 && strcmp(status, "disabled") == 0)
+        return 0;
+    if (status != 0 && strcmp(status, "ready") == 0)
+        return 1;
+    snprintf(err, err_cap,
+             "waveformAnalysis.status must be \"ready\" or \"disabled\" (got %s)",
+             status != 0 ? status : "(missing)");
+    return -1;
+}
+
 static int
 cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, int json)
 {
@@ -3462,6 +3768,20 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
     }
     free_vec(errors, ecount);
     free_vec(warnings, wcount);
+
+    /* Default-on waveform gate: a missing waveformAnalysis block is an
+       error unless status is explicitly "disabled" (user opt-out). */
+    {
+        int ws = waveform_status_for_draft(draft, err, sizeof err);
+        if (ws < 0) {
+            if (json)
+                json_error_out("waveform_missing", err);
+            else
+                fprintf(stderr, "build-draft: %s\n", err);
+            cJSON_Delete(draft);
+            return 1;
+        }
+    }
 
     source_root = djstr(draft, "sourceRoot");
     if (source_root == 0 || *source_root == '\0') {
@@ -3702,6 +4022,18 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
             sonic_included = 1;
         } else if (sonichint[0] != '\0') {
             sonic_hint = strdup(sonichint);
+        }
+    }
+
+    if (!bad) {
+        char wavehint[512];
+        wavehint[0] = '\0';
+        int wr = attach_waveform_documents(draft, &m, out_dir,
+                                           wavehint, sizeof wavehint);
+        if (wr < 0) {
+            /* hard fail: missing/malformed waveform when status == "ready" */
+            snprintf(err, sizeof err, "%s", wavehint[0] != '\0' ? wavehint : "waveform attach failed");
+            bad = 1;
         }
     }
 
@@ -5107,6 +5439,434 @@ cmd_encode_draft(const char *draft_path, const char *out_dir, const char *qualit
     return g_encode_cancelled ? 130 : bad ? 1 : 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* command: waveform-draft (source PCM -> per-track .wfm)              */
+/* ------------------------------------------------------------------ */
+/*                                                                      */
+/* Generates per-track waveform envelopes from the original decoded     */
+/* source PCM (FLAC/WAV/MPC, whatever musicpack_audio_open accepts) and */
+/* writes <staging>/waveform/<DD>-<TT>.wfm files. The transformed       */
+/* draft gains a `waveformAnalysis` block that build-draft then         */
+/* attaches into the package. This stage never invokes mpcenc; the      */
+/* Musepack-encoded bytes are provably unchanged whether or not it      */
+/* runs.                                                                */
+/*                                                                      */
+/* Progress protocol (one JSON object per line on stdout, same shape as */
+/* encode-draft):                                                      */
+/*   {"event":"stage","stage":"decoding|done","done":i,"total":n,...}  */
+/*   {"event":"track","done":i,"total":n,"disc":d,"track":t,            */
+/*    "title":"...","status":"ok","sha256":"...","points":N}            */
+/*   {"event":"done","ok":true,"outputDir":"...","tracks":n,            */
+/*    "draft":{...transformed draft with waveformAnalysis block...}}    */
+/*   {"event":"error","code":"...","message":"...","disc":d,"track":t}  */
+/*   {"event":"cancelled"}                                             */
+/*                                                                      */
+
+#if defined(_WIN32)
+static volatile int g_waveform_cancelled = 0;
+#else
+static volatile sig_atomic_t g_waveform_cancelled = 0;
+
+static void
+on_waveform_sigterm(int sig)
+{
+    (void) sig;
+    g_waveform_cancelled = 1;
+}
+#endif
+
+static void
+emit_waveform_json(cJSON *o)
+{
+    char *s = cJSON_PrintUnformatted(o);
+    if (s != 0) {
+        printf("%s\n", s);
+        free(s);
+        fflush(stdout);
+    }
+}
+
+static int
+cmd_waveform_draft(const char *draft_path, const char *out_dir, int json)
+{
+    cJSON *draft;
+    char err[512];
+    char srcpath[MUSICPACK_PATH_MAX + 2];
+    char wdir[MUSICPACK_PATH_MAX + 2];
+    char wpath[MUSICPACK_PATH_MAX + 2];
+    char hex[MUSICPACK_SHA256_HEX_SIZE];
+    musicpack_audio_format fmt;
+    musicpack_audio *audio = 0;
+    int disc = 0, track = 0, title_idx = 0;
+    const char *source_root = 0;
+    cJSON *wa = 0, *wtracks = 0;
+    int total = 0, done_count = 0;
+    int bad = 0;
+    cJSON *med, *trk;
+#ifndef _WIN32
+    struct sigaction sa_old, sa_new;
+    sa_new.sa_handler = on_waveform_sigterm;
+    sigemptyset(&sa_new.sa_mask);
+    sa_new.sa_flags = 0;
+    sigaction(SIGTERM, &sa_new, &sa_old);
+#endif
+
+    if (json)
+        g_waveform_cancelled = 0;
+
+    draft = draft_read_json(draft_path, err, sizeof err);
+    if (draft == 0) {
+        if (json)
+            json_error_out("invalid_draft", err);
+        else
+            fprintf(stderr, "waveform-draft: %s\n", err);
+        return 1;
+    }
+
+    source_root = djstr(draft, "sourceRoot");
+    if (source_root == 0 || *source_root == '\0') {
+        snprintf(err, sizeof err, "draft has no sourceRoot");
+        if (json) json_error_out("invalid_draft", err);
+        else fprintf(stderr, "waveform-draft: %s\n", err);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    /* reject obvious user opt-out: explicit disabled waveform. We do not
+       silently build with no waveform — that is rejected upstream by
+       build-draft. waveform-draft always runs and emits status: "ready"
+       when successful; build-draft enforces the missing-block error. */
+    {
+        cJSON *existing = cJSON_GetObjectItemCaseSensitive(draft, "waveformAnalysis");
+        if (cJSON_IsObject(existing)) {
+            cJSON *vs = cJSON_GetObjectItemCaseSensitive(existing, "status");
+            if (cJSON_IsString(vs) && strcmp(vs->valuestring, "disabled") == 0) {
+                snprintf(err, sizeof err,
+                         "waveform generation is explicitly disabled; nothing to do");
+                if (json) json_error_out("waveform_disabled", err);
+                else fprintf(stderr, "waveform-draft: %s\n", err);
+                cJSON_Delete(draft);
+                return 0;
+            }
+        }
+    }
+
+    if (mkdir_p(out_dir) != 0) {
+        snprintf(err, sizeof err, "cannot create output directory '%s'", out_dir);
+        if (json) json_error_out("io_error", err);
+        else fprintf(stderr, "waveform-draft: %s\n", err);
+        cJSON_Delete(draft);
+        return 1;
+    }
+    snprintf(wdir, sizeof wdir, "%s/waveform", out_dir);
+    if (mkdir_p(wdir) != 0) {
+        snprintf(err, sizeof err, "cannot create '%s'", wdir);
+        if (json) json_error_out("io_error", err);
+        else fprintf(stderr, "waveform-draft: %s\n", err);
+        cJSON_Delete(draft);
+        return 1;
+    }
+
+    /* count tracks for progress */
+    {
+        cJSON *media = cJSON_GetObjectItemCaseSensitive(draft, "media");
+        cJSON_ArrayForEach(med, media) {
+            cJSON *tracks = cJSON_GetObjectItemCaseSensitive(med, "tracks");
+            cJSON_ArrayForEach(trk, tracks) {
+                (void) trk;
+                total++;
+            }
+        }
+    }
+
+    /* prepare draft's waveformAnalysis block (status: pending initially;
+       promoted to ready at the end on success). */
+    wa = cJSON_GetObjectItemCaseSensitive(draft, "waveformAnalysis");
+    if (cJSON_IsObject(wa)) {
+        cJSON_Delete(wa);
+    }
+    wa = cJSON_AddObjectToObject(draft, "waveformAnalysis");
+    cJSON_AddStringToObject(wa, "status", "pending");
+    cJSON_AddNumberToObject(wa, "intervalMs",
+                            (double) MUSICPACK_WAVEFORM_INTERVAL_MS);
+    cJSON_AddStringToObject(wa, "encoding", MUSICPACK_WAVEFORM_ENCODING);
+    cJSON_AddNumberToObject(wa, "floorDb", (double) MUSICPACK_WAVEFORM_FLOOR_DB);
+    wtracks = cJSON_AddArrayToObject(wa, "tracks");
+
+    {
+        cJSON *media = cJSON_GetObjectItemCaseSensitive(draft, "media");
+        cJSON_ArrayForEach(med, media) {
+            cJSON *mdisc = cJSON_GetObjectItemCaseSensitive(med, "disc");
+            if (cJSON_IsNumber(mdisc))
+                disc = (int) mdisc->valuedouble;
+            cJSON *tracks = cJSON_GetObjectItemCaseSensitive(med, "tracks");
+            cJSON_ArrayForEach(trk, tracks) {
+                cJSON *tnum = cJSON_GetObjectItemCaseSensitive(trk, "track");
+                cJSON *tpath = cJSON_GetObjectItemCaseSensitive(trk, "audioPath");
+                cJSON *ttitle = cJSON_GetObjectItemCaseSensitive(trk, "title");
+                const char *title = (cJSON_IsString(ttitle) && ttitle->valuestring)
+                                    ? ttitle->valuestring : "";
+                const char *ap;
+                musicpack_waveform_acc *acc = 0;
+                musicpack_waveform_bucket *buckets = 0;
+                size_t bcount = 0;
+                unsigned char *payload = 0;
+                size_t payload_len = 0;
+                musicpack_status s;
+                FILE *fp;
+
+                if (g_waveform_cancelled)
+                    goto cancelled;
+
+                if (cJSON_IsNumber(tnum))
+                    track = (int) tnum->valuedouble;
+                ap = (cJSON_IsString(tpath) && tpath->valuestring) ? tpath->valuestring : 0;
+                if (ap == 0 || *ap == '\0') {
+                    snprintf(err, sizeof err, "track %d has no audioPath", track);
+                    if (json)
+                        json_error_out("invalid_track", err);
+                    else
+                        fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+
+                if (json) {
+                    cJSON *o = cJSON_CreateObject();
+                    cJSON_AddStringToObject(o, "event", "stage");
+                    cJSON_AddStringToObject(o, "stage", "decoding");
+                    cJSON_AddNumberToObject(o, "done", done_count);
+                    cJSON_AddNumberToObject(o, "total", total);
+                    cJSON_AddNumberToObject(o, "disc", disc);
+                    cJSON_AddNumberToObject(o, "track", track);
+                    cJSON_AddStringToObject(o, "title", title);
+                    emit_waveform_json(o);
+                    cJSON_Delete(o);
+                }
+
+                if (snprintf(srcpath, sizeof srcpath, "%s/%s", source_root, ap)
+                        >= (int) sizeof srcpath) {
+                    snprintf(err, sizeof err, "audioPath too long");
+                    if (json) json_error_out("invalid_track", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+
+                audio = musicpack_audio_open(srcpath, &s);
+                if (audio == 0) {
+                    snprintf(err, sizeof err,
+                             "cannot open source '%s' for disc %d track %d (status=%d)",
+                             srcpath, disc, track, (int) s);
+                    if (json) {
+                        cJSON *o = cJSON_CreateObject();
+                        cJSON_AddStringToObject(o, "event", "error");
+                        cJSON_AddStringToObject(o, "code", "decode_open");
+                        cJSON_AddStringToObject(o, "message", err);
+                        cJSON_AddNumberToObject(o, "disc", disc);
+                        cJSON_AddNumberToObject(o, "track", track);
+                        emit_waveform_json(o);
+                        cJSON_Delete(o);
+                    } else {
+                        fprintf(stderr, "waveform-draft: %s\n", err);
+                    }
+                    bad = 1;
+                    goto finish;
+                }
+                if (musicpack_audio_get_format(audio, &fmt) != MUSICPACK_OK) {
+                    musicpack_audio_close(audio); audio = 0;
+                    snprintf(err, sizeof err, "cannot read format for '%s'", srcpath);
+                    if (json) json_error_out("decode_format", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+
+                acc = musicpack_waveform_acc_new(fmt.sample_rate, fmt.channels);
+                if (acc == 0) {
+                    musicpack_audio_close(audio); audio = 0;
+                    snprintf(err, sizeof err, "cannot create accumulator for '%s'", srcpath);
+                    if (json) json_error_out("internal", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+
+                {
+                    float *pcm = (float *) malloc((size_t) fmt.channels * 1152 * sizeof(float));
+                    if (pcm == 0) {
+                        musicpack_waveform_acc_free(acc);
+                        musicpack_audio_close(audio); audio = 0;
+                        snprintf(err, sizeof err, "out of memory");
+                        if (json) json_error_out("internal", err);
+                        else fprintf(stderr, "waveform-draft: %s\n", err);
+                        bad = 1;
+                        goto finish;
+                    }
+                    for (;;) {
+                        size_t got = 0;
+                        if (g_waveform_cancelled) {
+                            free(pcm);
+                            musicpack_waveform_acc_free(acc);
+                            musicpack_audio_close(audio); audio = 0;
+                            goto cancelled;
+                        }
+                        s = musicpack_audio_read_frames_f32(audio, pcm, 1152, &got);
+                        if (s != MUSICPACK_OK) {
+                            free(pcm);
+                            musicpack_waveform_acc_free(acc);
+                            musicpack_audio_close(audio); audio = 0;
+                            snprintf(err, sizeof err,
+                                     "decode error in '%s'", srcpath);
+                            if (json) json_error_out("decode_error", err);
+                            else fprintf(stderr, "waveform-draft: %s\n", err);
+                            bad = 1;
+                            goto finish;
+                        }
+                        if (got == 0)
+                            break;
+                        if (musicpack_waveform_acc_feed_f32(acc, pcm, got) != MUSICPACK_OK) {
+                            free(pcm);
+                            musicpack_waveform_acc_free(acc);
+                            musicpack_audio_close(audio); audio = 0;
+                            snprintf(err, sizeof err, "accumulator overflow at '%s'", srcpath);
+                            if (json) json_error_out("accumulator", err);
+                            else fprintf(stderr, "waveform-draft: %s\n", err);
+                            bad = 1;
+                            goto finish;
+                        }
+                    }
+                    free(pcm);
+                }
+
+                musicpack_audio_close(audio);
+                audio = 0;
+
+                if (musicpack_waveform_acc_finish(acc, &buckets, &bcount) != MUSICPACK_OK) {
+                    musicpack_waveform_acc_free(acc);
+                    snprintf(err, sizeof err, "cannot finalize accumulator");
+                    if (json) json_error_out("accumulator", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+                musicpack_waveform_acc_free(acc);
+
+                if (musicpack_waveform_encode(buckets, bcount, &payload, &payload_len)
+                        != MUSICPACK_OK) {
+                    free(buckets);
+                    snprintf(err, sizeof err, "cannot encode waveform payload");
+                    if (json) json_error_out("encode", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+                free(buckets);
+
+                snprintf(wpath, sizeof wpath, "%s/%02d-%02d.wfm", wdir, disc, track);
+                fp = fopen(wpath, "wb");
+                if (fp == 0) {
+                    free(payload);
+                    snprintf(err, sizeof err, "cannot write '%s'", wpath);
+                    if (json) json_error_out("io_error", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+                if (payload_len > 0 && fwrite(payload, 1, payload_len, fp) != payload_len) {
+                    fclose(fp);
+                    free(payload);
+                    snprintf(err, sizeof err, "short write to '%s'", wpath);
+                    if (json) json_error_out("io_error", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+                fclose(fp);
+                free(payload);
+
+                if (musicpack_sha256_file(wpath, hex, sizeof hex) != MUSICPACK_OK) {
+                    snprintf(err, sizeof err, "cannot hash '%s'", wpath);
+                    if (json) json_error_out("io_error", err);
+                    else fprintf(stderr, "waveform-draft: %s\n", err);
+                    bad = 1;
+                    goto finish;
+                }
+
+                {
+                    cJSON *o = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(o, "disc", disc);
+                    cJSON_AddNumberToObject(o, "track", track);
+                    cJSON_AddStringToObject(o, "path", wpath);
+                    cJSON_AddStringToObject(o, "sha256", hex);
+                    cJSON_AddNumberToObject(o, "points", (double) bcount);
+                    cJSON_AddItemToArray(wtracks, o);
+                }
+
+                done_count++;
+                title_idx++;
+                if (json) {
+                    cJSON *o = cJSON_CreateObject();
+                    cJSON_AddStringToObject(o, "event", "track");
+                    cJSON_AddNumberToObject(o, "done", done_count);
+                    cJSON_AddNumberToObject(o, "total", total);
+                    cJSON_AddNumberToObject(o, "disc", disc);
+                    cJSON_AddNumberToObject(o, "track", track);
+                    cJSON_AddStringToObject(o, "title", title);
+                    cJSON_AddStringToObject(o, "status", "ok");
+                    cJSON_AddStringToObject(o, "sha256", hex);
+                    cJSON_AddNumberToObject(o, "points", (double) bcount);
+                    emit_waveform_json(o);
+                    cJSON_Delete(o);
+                } else {
+                    printf("waveform disc=%d track=%d points=%zu sha256=%s\n",
+                           disc, track, bcount, hex);
+                }
+            }
+        }
+    }
+
+cancelled:
+    if (g_waveform_cancelled) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "event", "cancelled");
+        emit_waveform_json(o);
+        cJSON_Delete(o);
+        rm_rf(out_dir);
+        bad = 0;
+    } else if (!bad) {
+        cJSON_DeleteItemFromObject(wa, "status");
+        cJSON_AddStringToObject(wa, "status", "ready");
+        if (json) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "event", "done");
+            cJSON_AddBoolToObject(o, "ok", 1);
+            cJSON_AddStringToObject(o, "outputDir", out_dir);
+            cJSON_AddNumberToObject(o, "tracks", (double) done_count);
+            cJSON_AddItemToObject(o, "draft", draft);
+            draft = 0;
+            emit_waveform_json(o);
+            cJSON_Delete(o);
+        } else {
+            printf("generated %d waveform envelope(s) into '%s'\n",
+                   done_count, out_dir);
+        }
+    } else {
+        rm_rf(out_dir);
+    }
+
+finish:
+    if (audio != 0)
+        musicpack_audio_close(audio);
+    if (draft != 0)
+        cJSON_Delete(draft);
+#ifndef _WIN32
+    sigaction(SIGTERM, &sa_old, 0);
+#endif
+    (void) title_idx;
+    return g_waveform_cancelled ? 130 : bad ? 1 : 0;
+}
+
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5117,7 +5877,7 @@ main(int argc, char **argv)
 
     fprintf(stderr, "%s", ABOUT);
     if (argc < 2) {
-        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|inspect|validate-draft|build-draft|identify-draft|encode-draft|author-api-version> ...\n");
+        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|inspect|validate-draft|build-draft|identify-draft|encode-draft|waveform-draft|author-api-version> ...\n");
         return 2;
     }
     cmd = argv[1];
@@ -5295,6 +6055,27 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_encode_draft(draft_path, out_dir, quality, mpcenc_bin, json);
+    }
+    if (strcmp(cmd, "waveform-draft") == 0) {
+        const char *draft_path = 0, *out_dir = 0;
+        int json = 0, i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
+                draft_path = argv[++i];
+            } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+                out_dir = argv[++i];
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else {
+                return usage_error("too many arguments");
+            }
+        }
+        if (draft_path == 0 || out_dir == 0) {
+            fprintf(stderr,
+                    "usage: musicpack waveform-draft --draft <draft.json> -o <staging-dir> [--json]\n");
+            return 2;
+        }
+        return cmd_waveform_draft(draft_path, out_dir, json);
     }
     if (strcmp(cmd, "author-api-version") == 0) {
         /* Machine-readable capability handshake for MusicPack Author. */

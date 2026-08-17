@@ -77,6 +77,21 @@ typedef struct musicpack_loudness {
     double true_peak_db; ///< true peak, dBTP
 } musicpack_loudness;
 
+/// Per-track waveform envelope reference. Optional. When present, every
+/// field is required; the interpretation is fixed for v1 (closed enums on
+/// `version`, `interval_ms`, `encoding`, `floor_db`). See
+/// `specs/musicpack-waveform-v1.md`.
+typedef struct musicpack_waveform_ref {
+    int present;       ///< 0 when the track has no waveform declared
+    int version;       ///< 1
+    char *path;        ///< canonical package-relative path (unique across assets)
+    char *sha256;      ///< lowercase hex (64 chars)
+    int interval_ms;   ///< 100
+    char *encoding;    ///< "peak-rms-u8"
+    int floor_db;      ///< -60
+    unsigned long points; ///< bucket count, including final partial bucket
+} musicpack_waveform_ref;
+
 /// A single track on a disc.
 typedef struct musicpack_track {
     int number;
@@ -95,6 +110,7 @@ typedef struct musicpack_track {
     musicpack_loudness loudness;
     musicpack_asset audio;
     char *audio_codec;       ///< optional encoded audio codec ("mpc", "flac", ...)
+    musicpack_waveform_ref waveform; ///< optional per-track waveform reference
 } musicpack_track;
 
 /// A disc / medium.

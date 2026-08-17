@@ -793,6 +793,40 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
 
             if (insert_track_artists(lib, track_id, tr) != 0)
                 return -1;
+
+            if (tr->waveform.present) {
+                char wpath[MUSICPACK_PATH_MAX + 2];
+                long long wsize = 0;
+                if (snprintf(wpath, sizeof wpath, "%s/%s", root,
+                             tr->waveform.path) >= (int) sizeof wpath)
+                    return -1;
+                wsize = file_size_of(wpath);
+                st = stmt_prepare(lib,
+                    "INSERT INTO track_waveforms(track_id, version, relative_path,"
+                    "  sha256, file_size, mime_type, interval_ms, encoding,"
+                    "  floor_db, points) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)");
+                if (st == 0)
+                    return -1;
+                sqlite3_bind_int64(st, 1, track_id);
+                sqlite3_bind_int(st, 2, tr->waveform.version);
+                sqlite3_bind_text(st, 3, tr->waveform.path, -1,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, 4, tr->waveform.sha256, -1,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_int64(st, 5, wsize);
+                sqlite3_bind_text(st, 6, mp_mime_for_path(tr->waveform.path),
+                                  -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(st, 7, tr->waveform.interval_ms);
+                sqlite3_bind_text(st, 8, tr->waveform.encoding, -1,
+                                  SQLITE_TRANSIENT);
+                sqlite3_bind_int(st, 9, tr->waveform.floor_db);
+                sqlite3_bind_int64(st, 10, (long long) tr->waveform.points);
+                if (sqlite3_step(st) != SQLITE_DONE) {
+                    sqlite3_finalize(st);
+                    return -1;
+                }
+                sqlite3_finalize(st);
+            }
         }
     }
 
@@ -868,11 +902,38 @@ mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref)
          " WHERE a.id = ?1 AND a.kind IN ('artwork','booklet','lyrics')"
          "   AND p.status IN ('valid','warning')"
          "   AND p.verify_status IN ('valid','warning')"
-        " LIMIT 1");
+         " LIMIT 1");
     int rc = 0;
     if (st == 0)
         return 0;
     sqlite3_bind_int64(st, 1, asset_id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        fill_object_ref(st, ref);
+        rc = 1;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int
+mp_library_track_waveform(mp_library *lib, long long track_id, mp_object_ref *ref)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT w.track_id, r.id, p.path, w.relative_path, w.mime_type, '',"
+        "       w.file_size, p.status, 0, 0, 0, w.sha256"
+        "  FROM track_waveforms w"
+        "  JOIN tracks t ON t.id = w.track_id"
+        "  JOIN media me ON me.id = t.media_id"
+        "  JOIN releases r ON r.id = me.release_id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
+         " WHERE w.track_id = ?1"
+         "   AND p.status IN ('valid','warning')"
+         "   AND p.verify_status IN ('valid','warning')"
+         " LIMIT 1");
+    int rc = 0;
+    if (st == 0)
+        return 0;
+    sqlite3_bind_int64(st, 1, track_id);
     if (sqlite3_step(st) == SQLITE_ROW) {
         fill_object_ref(st, ref);
         rc = 1;

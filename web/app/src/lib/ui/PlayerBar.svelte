@@ -7,16 +7,25 @@ SPDX-License-Identifier: BSD-3-Clause
   import { player, playerModel } from '../bootstrap';
   import { fmtTime } from '../format';
   import Artwork from './Artwork.svelte';
+  import WaveformSeek from './WaveformSeek.svelte';
+  import type { Track } from '../api/types';
 
   const item = $derived($playerModel.current);
   let drag = $state<number | null>(null);
 
   const pos = $derived(drag ?? $playerModel.positionSeconds);
   const dur = $derived($playerModel.durationSeconds);
+  const trackStart = $derived($playerModel.currentTrackStartSeconds);
+  const trackDur = $derived($playerModel.currentTrackDurationSeconds);
 
   const normLabel = $derived(
     $playerModel.normalizeMode === 'album' ? 'Album' : $playerModel.normalizeMode === 'track' ? 'Track' : 'Off',
   );
+
+  /// The QueueItem carries the Track verbatim from ReleaseDetail, which
+  /// includes the `waveform` field when the server populates it. Forward
+  /// it through to the WaveformSeek component.
+  const wfTrack = $derived<Track | null>(item?.track ?? null);
 </script>
 
 {#if item}
@@ -46,20 +55,32 @@ SPDX-License-Identifier: BSD-3-Clause
       </button>
       <div class="progress">
         <span class="time">{fmtTime(pos)}</span>
-        <input
-          type="range"
-          min="0"
-          max={dur > 0 ? dur : 0}
-          step="0.5"
-          value={pos}
-          aria-label="Seek position"
-          oninput={(e) => (drag = Number((e.currentTarget as HTMLInputElement).value))}
-          onchange={(e) => {
-            drag = null;
-            void player.seek(Number((e.currentTarget as HTMLInputElement).value));
-          }}
-          disabled={!item}
-        >
+        {#if wfTrack && wfTrack.waveform}
+          <WaveformSeek
+            track={wfTrack}
+            startSeconds={trackStart}
+            durationSeconds={trackDur}
+            albumDurationSeconds={dur}
+            positionSeconds={pos}
+            onSeek={(s) => void player.seek(s)}
+            disabled={!item}
+          />
+        {:else}
+          <input
+            type="range"
+            min="0"
+            max={dur > 0 ? dur : 0}
+            step="0.5"
+            value={pos}
+            aria-label="Seek position"
+            oninput={(e) => (drag = Number((e.currentTarget as HTMLInputElement).value))}
+            onchange={(e) => {
+              drag = null;
+              void player.seek(Number((e.currentTarget as HTMLInputElement).value));
+            }}
+            disabled={!item}
+          >
+        {/if}
         <span class="time">{fmtTime(dur)}</span>
       </div>
     </div>

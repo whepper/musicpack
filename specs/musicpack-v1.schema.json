@@ -203,6 +203,28 @@
                     },
                     "codec": { "type": "string" }
                   }
+                },
+                "waveform": {
+                  "description": "Optional per-track waveform envelope (see specs/musicpack-waveform-v1.md).",
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["version", "path", "sha256", "intervalMs", "encoding", "floorDb", "points"],
+                  "properties": {
+                    "version": { "const": 1 },
+                    "path": { "$ref": "#/$defs/packagePath" },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "intervalMs": { "const": 100 },
+                    "encoding": { "const": "peak-rms-u8" },
+                    "floorDb": { "const": -60 },
+                    "points": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 864000
+                    }
+                  }
                 }
               }
             }

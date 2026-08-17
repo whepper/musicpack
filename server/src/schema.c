@@ -177,13 +177,29 @@ static const char *const mp_migrations[] = {
 "CREATE INDEX sessions_token_idx ON sessions(token_hash);",
 
 /* 3 -> 4: package-owned servable content. Logical release identity remains
-   shared for metadata deduplication, but a release now names the package
-   that owns its servable content graph. Only that owning package may replace
-   content; a package claiming the same identity with different content is
-   quarantined as `conflict` and cannot mutate the owner's graph or metadata.
-   Streaming resolves through the owning package, so no arbitrary visible
-   package can supply bytes for content it does not own. */
-"ALTER TABLE releases ADD COLUMN owner_package_id INTEGER; CREATE INDEX releases_owner_idx ON releases(owner_package_id);"
+    shared for metadata deduplication, but a release now names the package
+    that owns its servable content graph. Only that owning package may replace
+    content; a package claiming the same identity with different content is
+    quarantined as `conflict` and cannot mutate the owner's graph or metadata.
+    Streaming resolves through the owning package, so no arbitrary visible
+    package can supply bytes for content it does not own. */
+"ALTER TABLE releases ADD COLUMN owner_package_id INTEGER; CREATE INDEX releases_owner_idx ON releases(owner_package_id);",
+
+/* 4 -> 5: per-track waveform envelope (Phase 4 / MusicPack v1). One row per
+   track. PK = track_id (1:1) so re-ingest replaces the row. Servability
+   resolves through the same VISIBLE rule as audio; a checksum-mismatched
+   .wfm makes the owning package invisible. */
+"CREATE TABLE track_waveforms ("
+"  track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,"
+"  version INTEGER NOT NULL,"
+"  relative_path TEXT NOT NULL,"
+"  sha256 TEXT NOT NULL,"
+"  file_size INTEGER NOT NULL,"
+"  mime_type TEXT NOT NULL,"
+"  interval_ms INTEGER NOT NULL,"
+"  encoding TEXT NOT NULL,"
+"  floor_db INTEGER NOT NULL,"
+"  points INTEGER NOT NULL);"
 };
 
 const char *const *

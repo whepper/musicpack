@@ -31,6 +31,7 @@ struct AppState {
     service: Mutex<AuthorService>,
     running: Mutex<Option<Child>>,
     encode_running: Mutex<Option<(Child, PathBuf)>>,
+    waveform_running: Mutex<Option<(Child, PathBuf, PathBuf)>>,
     model: SonicModelManager,
     model_cancel: Arc<AtomicBool>,
 }
@@ -514,6 +515,188 @@ fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Typed error for the waveform envelope stage. Distinct codes from Sonic so
+/// the frontend can present them precisely.
+#[derive(Debug, Serialize)]
+pub struct WaveformError {
+    code: &'static str,
+    message: String,
+}
+
+impl WaveformError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        WaveformError {
+            code,
+            message: message.into(),
+        }
+    }
+    fn backend_unavailable(msg: impl Into<String>) -> Self {
+        Self::new("backend_unavailable", msg)
+    }
+    fn generation_failed(msg: impl Into<String>) -> Self {
+        Self::new("generation_failed", msg)
+    }
+}
+
+/// Validates a draft before passing it unchanged to `waveform-draft`. The CLI
+/// owns source-path resolution and package waveform semantics.
+fn build_waveform_job_at(
+    data_dir: &Path,
+    draft_json: &str,
+    out_dir: &Path,
+) -> Result<String, WaveformError> {
+    let draft: serde_json::Value = serde_json::from_str(draft_json)
+        .map_err(|e| WaveformError::generation_failed(format!("invalid draft: {e}")))?;
+    let _ = (data_dir, out_dir);
+    let mut tracks = 0;
+    if let Some(media) = draft.get("media").and_then(|m| m.as_array()) {
+        for disc in media {
+            if let Some(trs) = disc.get("tracks").and_then(|t| t.as_array()) {
+                tracks += trs.len();
+            }
+        }
+    }
+    if tracks == 0 {
+        return Err(WaveformError::generation_failed(
+            "the draft has no tracks to analyse",
+        ));
+    }
+    Ok(draft.to_string())
+}
+
+fn build_waveform_job(
+    app: &tauri::AppHandle,
+    draft_json: &str,
+    out_dir: &Path,
+) -> Result<String, WaveformError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| WaveformError::backend_unavailable(format!("no app data directory: {e}")))?;
+    build_waveform_job_at(&data_dir, draft_json, out_dir)
+}
+
+/// Runs the waveform envelope generation stage: decodes source PCM
+/// (native `musicpack_audio_*` inside the CLI, no encoder path touched)
+/// and writes `<staging>/<DD>-<TT>.wfm` per track. Streams
+/// `waveform-progress` events for the UI.
+#[tauri::command]
+async fn waveform_analyze(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    draft_json: String,
+) -> Result<serde_json::Value, WaveformError> {
+    // Staging dir lives under app data dir so it survives concurrent
+    // encode/waveform builds; cleaned up explicitly by the frontend
+    // when build-draft succeeds (or by the next waveform run).
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| WaveformError::backend_unavailable(format!("no app data directory: {e}")))?;
+    let staging_root = data_dir.join("waveform-staging");
+    std::fs::create_dir_all(&staging_root).map_err(|e| {
+        WaveformError::backend_unavailable(format!("cannot create staging dir: {e}"))
+    })?;
+    let staging = unique_staging_dir(&staging_root, "wf");
+
+    let draft = build_waveform_job(&app, &draft_json, &staging)?;
+
+    let (mut child, draft_tmp) = {
+        let svc = state.service.lock().unwrap();
+        svc.waveform_spawn(&draft, &staging)
+            .map_err(|e| WaveformError::backend_unavailable(e.to_string()))?
+    };
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| WaveformError::backend_unavailable("waveform child produced no stdout"))?;
+    *state.waveform_running.lock().unwrap() = Some((child, staging.clone(), draft_tmp));
+
+    let app2 = app.clone();
+    let staging_for_cleanup = staging.clone();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut final_event: Option<serde_json::Value> = None;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { continue };
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                let _ = app2.emit("waveform-progress", &v);
+                let ev = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
+                if matches!(ev, "done" | "error" | "cancelled") {
+                    final_event = Some(v);
+                }
+            }
+        }
+        final_event
+    });
+    let final_event = reader.join().unwrap_or(None);
+    if let Some((mut child, _, draft_tmp)) = state.waveform_running.lock().unwrap().take() {
+        let _ = child.wait();
+        let _ = std::fs::remove_file(draft_tmp);
+    }
+
+    let Some(event) = final_event else {
+        let _ = std::fs::remove_dir_all(&staging_for_cleanup);
+        return Err(WaveformError::generation_failed(
+            "waveform stage produced no result",
+        ));
+    };
+    let ev = event
+        .get("event")
+        .and_then(|e| e.as_str())
+        .unwrap_or("error");
+    if ev == "cancelled" {
+        let _ = std::fs::remove_dir_all(&staging_for_cleanup);
+        return Ok(json!({
+            "ok": false,
+            "cancelled": true,
+            "stagingDir": staging_for_cleanup,
+        }));
+    }
+    if ev == "error" {
+        let message = event
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("waveform generation failed");
+        let _ = std::fs::remove_dir_all(&staging_for_cleanup);
+        return Err(WaveformError::generation_failed(message.to_string()));
+    }
+    Ok(json!({
+        "ok": true,
+        "cancelled": false,
+        "stagingDir": staging_for_cleanup,
+        "tracks": event.get("tracks"),
+        "draft": event.get("draft"),
+    }))
+}
+
+/// Cancels a running waveform stage. The CLI gets SIGTERM first so it can
+/// emit its `cancelled` event and clean up its staging dir.
+#[tauri::command]
+fn waveform_cancel(state: State<AppState>) -> Result<(), String> {
+    let mut running = state.waveform_running.lock().unwrap();
+    if let Some((mut child, staging, draft_tmp)) = running.take() {
+        stop_child(&mut child);
+        drop(running);
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_file(draft_tmp);
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn unique_staging_dir(root: &Path, prefix: &str) -> PathBuf {
+    let pid = std::process::id();
+    let mut p = root.join(format!("{prefix}-{pid}"));
+    for n in 0..1000u32 {
+        if !p.exists() {
+            return p;
+        }
+        p = root.join(format!("{prefix}-{pid}-{n}"));
+    }
+    p
+}
+
 /// Runs the FLAC/WAV -> Musepack encode stage for the current draft. The
 /// `musicpack` CLI encodes every track into a fresh staging directory
 /// (streaming `encode-progress` events) and returns the transformed draft
@@ -661,6 +844,7 @@ pub fn run() {
                 service: Mutex::new(AuthorService::new(location)),
                 running: Mutex::new(None),
                 encode_running: Mutex::new(None),
+                waveform_running: Mutex::new(None),
                 model: manager,
                 model_cancel: Arc::new(AtomicBool::new(false)),
             });
@@ -679,6 +863,8 @@ pub fn run() {
             sonic_model_status,
             encode_tracks,
             encode_cancel,
+            waveform_analyze,
+            waveform_cancel,
             cleanup_staging
         ])
         .run(tauri::generate_context!())
@@ -717,6 +903,25 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         );
+    }
+
+    #[test]
+    fn waveform_job_preserves_draft() {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("wf-out");
+        let job = build_waveform_job_at(dir.path(), DRAFT, &out).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&job).unwrap();
+        assert_eq!(v["sourceRoot"], "/music/A");
+        assert_eq!(v["media"][0]["tracks"][0]["audioPath"], "01.mpc");
+    }
+
+    #[test]
+    fn waveform_job_rejects_empty_track_list() {
+        let dir = TempDir::new().unwrap();
+        let empty = r#"{"schema":"musicpack-draft","version":1,"sourceRoot":"","media":[]}"#;
+        let out = dir.path().join("wf-out");
+        let err = build_waveform_job_at(dir.path(), empty, &out).unwrap_err();
+        assert_eq!(err.code, "generation_failed");
     }
 
     #[cfg(unix)]

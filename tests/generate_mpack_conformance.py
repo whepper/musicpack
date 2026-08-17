@@ -117,6 +117,24 @@ def main():
                                     "sha256": HASH(b"back")}]
     add_case(cases, "valid", "unicode", unicode_manifest, unicode_files)
 
+    # ---- waveform envelope (peak-rms-u8, 100 ms, -60 dBFS floor) ---------
+    # Valid: a track with a correctly-sized .wfm payload (20 bytes for 10 buckets).
+    waveform_files = {
+        **one,
+        "analysis/waveform/01-01.wfm": b"\x00" * 20,
+    }
+    waveform_manifest = base_manifest()
+    waveform_manifest["media"][0]["tracks"][0]["waveform"] = {
+        "version": 1,
+        "path": "analysis/waveform/01-01.wfm",
+        "sha256": HASH(b"\x00" * 20),
+        "intervalMs": 100,
+        "encoding": "peak-rms-u8",
+        "floorDb": -60,
+        "points": 10,
+    }
+    add_case(cases, "valid", "with-waveform", waveform_manifest, waveform_files)
+
     malformed = os.path.join(out, "malformed-json.mpack")
     os.makedirs(malformed)
     with open(os.path.join(malformed, "manifest.json"), "w", encoding="utf-8") as f:
@@ -154,6 +172,44 @@ def main():
     for name, path in enumerate(["../x", "/tmp/x", "a\\b", "a//b", "a/./b", "a/../b", "", "audio/"]):
         manifest = base_manifest(path=path)
         add_case(cases, "invalid_manifest", "unsafe-path-%d" % name, manifest, one)
+
+    waveform_mutations = {
+        # Closed-enum violations
+        "waveform-bad-version": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 2, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "peak-rms-u8", "floorDb": -60, "points": 10}),
+        "waveform-bad-encoding": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "binary-f32le", "floorDb": -60, "points": 10}),
+        "waveform-bad-interval": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 50,
+                      "encoding": "peak-rms-u8", "floorDb": -60, "points": 10}),
+        "waveform-bad-floor": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "peak-rms-u8", "floorDb": -30, "points": 10}),
+        "waveform-too-many-points": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "peak-rms-u8", "floorDb": -60,
+                      "points": 900000}),
+        "waveform-traversal": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "../evil.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "peak-rms-u8", "floorDb": -60, "points": 10}),
+        "waveform-points-mismatch": lambda m: m["media"][0]["tracks"][0].update(
+            waveform={"version": 1, "path": "analysis/waveform/01-01.wfm",
+                      "sha256": "a" * 64, "intervalMs": 100,
+                      "encoding": "peak-rms-u8", "floorDb": -60,
+                      "points": 999}),
+    }
+    for name, mutate in waveform_mutations.items():
+        manifest = base_manifest()
+        mutate(manifest)
+        add_case(cases, "invalid_manifest", name, manifest, one)
 
     for asset_key in ("artwork", "booklet", "lyrics", "extras", "analysis"):
         manifest = base_manifest()
@@ -205,6 +261,20 @@ def main():
         os.makedirs(os.path.join(root, "audio"))
         os.symlink(outside, os.path.join(root, "audio", "01.bin"))
         cases["invalid_verify"].append("symlink-escape")
+
+    # Waveform checksum mismatch (file present, hash wrong).
+    waveform_bad = {
+        **one,
+        "analysis/waveform/01-01.wfm": b"\x00" * 20,
+    }
+    waveform_bad_manifest = base_manifest()
+    waveform_bad_manifest["media"][0]["tracks"][0]["waveform"] = {
+        "version": 1, "path": "analysis/waveform/01-01.wfm",
+        "sha256": "0" * 64, "intervalMs": 100,
+        "encoding": "peak-rms-u8", "floorDb": -60, "points": 10,
+    }
+    add_case(cases, "invalid_verify", "waveform-checksum-mismatch",
+             waveform_bad_manifest, waveform_bad)
 
     del cases["root"]
     with open(os.path.join(out, "cases.json"), "w", encoding="utf-8") as f:

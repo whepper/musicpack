@@ -29,6 +29,11 @@ Play Album → BS.1770 album normalization → Musepack demand-driven WASM
 The client is plain static assets (`npm run build` → `web/app/dist`) served by
 `musicpack-server --static-dir`. There is no Node runtime in production.
 
+When a track has a package-provided waveform envelope, the Now Playing seek
+control renders it on Canvas and supports pointer and keyboard seeking. Tracks
+without one retain the linear range fallback; the browser never decodes audio
+to synthesize an envelope.
+
 ## Layout
 
 ```text

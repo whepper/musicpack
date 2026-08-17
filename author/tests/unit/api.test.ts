@@ -98,6 +98,19 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'sonic_cancel', args: {} });
   });
 
+  it('runs and cancels waveform generation', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    const d = draft();
+    await api.waveformAnalyze(d);
+    await api.waveformCancel();
+    expect(calls[0]).toEqual({
+      cmd: 'waveform_analyze',
+      args: { draftJson: JSON.stringify(d) },
+    });
+    expect(calls[1]).toEqual({ cmd: 'waveform_cancel', args: {} });
+  });
+
   it('encodes tracks, cancels and cleans staging', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);

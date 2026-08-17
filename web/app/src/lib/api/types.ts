@@ -90,6 +90,15 @@ export interface AudioRef {
   url: string;
 }
 
+export interface WaveformRef {
+  version: number;
+  intervalMs: number;
+  encoding: string;
+  floorDb: number;
+  points: number;
+  url: string;
+}
+
 export interface Track {
   id: number;
   number: number;
@@ -100,6 +109,10 @@ export interface Track {
   loudness?: Loudness;
   codec: CodecInfo;
   audio: AudioRef;
+  /// Optional waveform envelope (see specs/musicpack-waveform-v1.md).
+  /// `null` (or undefined) means the track has no waveform — the player
+  /// falls back to the linear `<input type="range">` seek control.
+  waveform?: WaveformRef | null;
 }
 
 export interface MediaDisc {

@@ -181,6 +181,14 @@ typedef struct mp_object_ref {
 int mp_library_track_audio(mp_library *lib, long long track_id,
                            mp_object_ref *ref);
 
+/// Looks up a track's waveform envelope by track id. Returns 1 when the
+/// track has a stored waveform and the owning package is servable; 0
+/// otherwise. The ref's mime/sha256/file_size are populated; codec/sample
+/// rate/channels are zero (waveform is binary derived data, not an audio
+/// stream).
+int mp_library_track_waveform(mp_library *lib, long long track_id,
+                              mp_object_ref *ref);
+
 /// Looks up an asset by id and kind whitelist (artwork/booklet/lyrics).
 /// Returns 1 on success, 0 if not found or kind not servable.
 int mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref);

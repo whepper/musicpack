@@ -60,6 +60,7 @@ void mp_json_str(mp_json *o, const char *key, const char *value);
 void mp_json_str_opt(mp_json *o, const char *key, const char *value); /* omit NULL/empty */
 void mp_json_int(mp_json *o, const char *key, long long value);
 void mp_json_dbl(mp_json *o, const char *key, double value);
+void mp_json_null(mp_json *o, const char *key);
 
 /* scalar leaf nodes for arrays */
 mp_json *mp_json_strnode(const char *value);

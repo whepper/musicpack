@@ -56,6 +56,11 @@ variables, which override defaults.
 - **`serve`** runs a startup scan (unless `--no-scan`) then serves the HTTP
   API. Loopback binding is the safe default; expose it via a reverse proxy.
 
+Verified tracks with a waveform envelope expose its metadata in track JSON and
+the immutable binary payload at `GET /api/v1/tracks/{trackId}/waveform`.
+The server validates and indexes the package-provided envelope; it never
+regenerates waveform data.
+
 ### Token management
 
 `/api/v1/*` is protected by opaque bearer tokens (256-bit secrets; only their

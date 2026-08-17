@@ -115,6 +115,8 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 d["album"]["artists"] = [{"name": "Alphaville", "role": "main"}]
 d["identity"] = {"source": "local", "confidence": "none"}
+d["waveformAnalysis"] = {"status": "disabled", "intervalMs": 100,
+                        "encoding": "peak-rms-u8", "floorDb": -60, "tracks": []}
 json.dump(d, open(sys.argv[2], "w"))
 EOF
    "$MUSICPACK" build-draft --draft "$TMP/malformed-ready.json" \
@@ -167,6 +169,16 @@ d["release"] = {"releaseDate": "1984-06-01", "edition": "1984 7-inch",
 d["identifiers"] = {"musicbrainzReleaseId": "11111111-2222-3333-4444-555555555555",
                     "barcode": "198704979941"}
 d["identity"] = {"source": "local", "confidence": "none"}
+# Waveform envelopes are default-on in Author. This test uses 4-byte
+# placeholder .mpc files that libmusicpack_audio_* cannot decode, so
+# we explicitly opt out via the disabled status (per the waveform spec).
+d["waveformAnalysis"] = {
+    "status": "disabled",
+    "intervalMs": 100,
+    "encoding": "peak-rms-u8",
+    "floorDb": -60,
+    "tracks": [],
+}
 json.dump(d, open(sys.argv[2], "w"))
 EOF
 OUT="$("$MUSICPACK" validate-draft --draft "$TMP/ready.json" --json 2>/dev/null)"
@@ -399,7 +411,7 @@ if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
    && $PY - "$TMP/api.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["authorApi"] == 4, "author API version"
+assert d["authorApi"] == 5, "author API version"
 assert d["musicpackVersion"], "musicpack version present"
 print("ok")
 EOF

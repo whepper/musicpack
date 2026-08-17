@@ -6,29 +6,48 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import { player, playerModel } from '../bootstrap';
   import { fmtTime } from '../format';
+  import WaveformSeek from './WaveformSeek.svelte';
+  import type { Track } from '../api/types';
 
   const item = $derived($playerModel.current);
   let drag = $state<number | null>(null);
   const pos = $derived(drag ?? $playerModel.positionSeconds);
   const dur = $derived($playerModel.durationSeconds);
+  const trackStart = $derived($playerModel.currentTrackStartSeconds);
+  const trackDur = $derived($playerModel.currentTrackDurationSeconds);
+
+  const wfTrack = $derived<Track | null>(item?.track ?? null);
 </script>
 
 {#if item}
   <div class="mobile-player">
-    <input
-      type="range"
-      min="0"
-      max={dur > 0 ? dur : 0}
-      step="0.5"
-      value={pos}
-      aria-label="Seek position"
-      style="display:block;width:100%;height:6px;border-radius:0;border:none;background:var(--hairline)"
-      oninput={(e) => (drag = Number((e.currentTarget as HTMLInputElement).value))}
-      onchange={(e) => {
-        drag = null;
-        void player.seek(Number((e.currentTarget as HTMLInputElement).value));
-      }}
-    >
+    {#if wfTrack && wfTrack.waveform}
+      <div style="height:36px;width:100%;display:block">
+        <WaveformSeek
+          track={wfTrack}
+          startSeconds={trackStart}
+          durationSeconds={trackDur}
+          albumDurationSeconds={dur}
+          positionSeconds={pos}
+          onSeek={(s) => void player.seek(s)}
+        />
+      </div>
+    {:else}
+      <input
+        type="range"
+        min="0"
+        max={dur > 0 ? dur : 0}
+        step="0.5"
+        value={pos}
+        aria-label="Seek position"
+        style="display:block;width:100%;height:6px;border-radius:0;border:none;background:var(--hairline)"
+        oninput={(e) => (drag = Number((e.currentTarget as HTMLInputElement).value))}
+        onchange={(e) => {
+          drag = null;
+          void player.seek(Number((e.currentTarget as HTMLInputElement).value));
+        }}
+      >
+    {/if}
     <div class="row">
       <img class="thumb" src={item.artworkUrl ?? '/placeholder.svg'} alt="" aria-hidden="true"
         onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}>

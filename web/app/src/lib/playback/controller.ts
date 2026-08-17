@@ -33,6 +33,12 @@ export interface PlayerModel {
   current: QueueItem | null;
   positionSeconds: number;
   durationSeconds: number;
+  /// Album-absolute start sample/time of the current track (0 when no
+  /// current track). Used by the waveform seek control to map within-
+  /// track position <-> album-absolute seconds.
+  currentTrackStartSeconds: number;
+  /// Per-track duration in seconds (lengthOf(idx)/rate), 0 when unknown.
+  currentTrackDurationSeconds: number;
   volume: number;
   normalizeMode: NormalizationMode;
   normDb: number;
@@ -119,6 +125,8 @@ export class PlayerController {
       current: null,
       positionSeconds: 0,
       durationSeconds: 0,
+      currentTrackStartSeconds: 0,
+      currentTrackDurationSeconds: 0,
       volume: opts.initialVolume ?? 0.8,
       normalizeMode: opts.initialNormalize ?? 'album',
       normDb: 0,
@@ -395,14 +403,20 @@ export class PlayerController {
       this.queue.moveTo(idx);
       this.mutating = false;
     }
+    const offs = this.offsets();
+    const trackStart = offs[idx] ?? 0;
+    const trackDur = this.lengthOf(idx);
+    const rate = this.rate();
     const ended = this.pendingEnded && pos >= dur - END_TOLERANCE_SAMPLES;
     this.model.update((m) => ({
       ...m,
-      positionSeconds: pos / this.rate(),
-      durationSeconds: dur / this.rate(),
+      positionSeconds: pos / rate,
+      durationSeconds: dur / rate,
+      currentTrackStartSeconds: trackStart / rate,
+      currentTrackDurationSeconds: trackDur / rate,
       state: ended ? 'ended' : m.state,
     }));
-    setMediaPosition(dur / this.rate(), pos / this.rate());
+    setMediaPosition(dur / rate, pos / rate);
     if (ended) {
       this.pendingEnded = false;
       this.backend.pause();

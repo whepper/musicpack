@@ -180,6 +180,20 @@ if(WIN32)
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
 endif()
 
+# ---- Waveform envelope (musicpack-waveform v1) tests -----------------------
+add_executable(mpc_waveform_tests waveform_tests.c)
+target_link_libraries(mpc_waveform_tests PRIVATE musicpack)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_waveform_tests PRIVATE m)
+endif()
+target_include_directories(mpc_waveform_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+
+add_test(NAME waveform_unit COMMAND mpc_waveform_tests)
+if(WIN32)
+  set_tests_properties(waveform_unit PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+endif()
+
 # ---- musicpack-server core unit tests (all platforms) ---------------------
 add_executable(mpc_server_tests server_tests.c)
 target_link_libraries(mpc_server_tests PRIVATE musicpack_server)

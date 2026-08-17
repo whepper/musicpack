@@ -40,7 +40,8 @@ The guiding rule of this repository:
   codec tools. The decoder supports SV7/SV8; the encoder produces SV8.
 - **The `.mpack` album model** — `libmusicpack` owns the package format: a
   release-group → release/edition → media → track hierarchy, assets, SHA-256
-  integrity and BS.1770-5 loudness; the `musicpack` CLI authors, imports and
+   integrity, BS.1770-5 loudness, and optional precomputed waveform envelopes;
+   the `musicpack` CLI authors, imports and
   verifies packages. The format is codec-aware rather than Musepack-only —
   Musepack is the foundation codec, but FLAC-backed packages are valid v1.
 - **The server** — `musicpack-server` indexes an `.mpack` collection into a
@@ -56,7 +57,8 @@ The guiding rule of this repository:
   real authoring pipeline: inspect → metadata review → Musepack q6 encoding
   (bundled static `mpcenc`; FLAC/WAV sources decoded natively by
   `libmusicpack` — no FFmpeg and no other external tool) → `.mpack` assembly →
-  validation. The `.app` ships everything the authoring workflow needs. It
+   validation. It generates a deterministic per-track waveform envelope from
+   source PCM by default. The `.app` ships everything the authoring workflow needs. It
   drives the existing `musicpack` implementation through the
   CLI's JSON draft modes (`inspect`, `validate-draft`, `encode-draft`,
   `build-draft`, `identify-draft`) behind a clean service, so `libmusicpack`
@@ -85,7 +87,8 @@ deliberately a *digital record shelf*, not a streaming catalogue:
   AudioWorklet ring) for `.mpc`, and the browser's native media stack for
   FLAC and other supported codecs
 - BS.1770 album/track normalization (default −16 LUFS, true-peak capped),
-  **gapless album transitions**, a queue, Media Session, and a responsive
+   **gapless album transitions**, a queue, Media Session, responsive waveform
+   seek controls when the package provides envelopes, and a responsive
   mobile/desktop UI
 
 The client is a static Svelte 5 + Vite + TypeScript build served by
@@ -97,7 +100,8 @@ Vitest/Playwright suites.
 
 `libmusicpack` owns MusicPack package semantics: the `.mpack` v1 manifest,
 album/release-group → release/edition → media → track model, assets, SHA-256
-integrity, BS.1770-5 loudness (measured per track and as an album program)
+ integrity, BS.1770-5 loudness (measured per track and as an album program),
+ and the versioned per-track waveform envelope format
 and directory-bundle storage. It depends on `libmusepack` (for the Musepack
 track handoff) but never the reverse. It builds as `libmusicpack`, exported
 as `MusicPack::Package`:
@@ -122,8 +126,8 @@ musepack_decoder *d = musepack_decoder_open(&reader, 0);
 ```
 
 The `musicpack` CLI (`musicpack info|verify|identify|create|import|update-metadata`,
-plus the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/
-`build-draft`/`identify-draft`) builds, inspects and validates directory-form
+ plus the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/
+ `waveform-draft`/`build-draft`/`identify-draft`) builds, inspects and validates directory-form
 packages. `info` shows collector identity (release type, edition, release/
 original dates, country, label, catalogue number, medium, barcode);
 `create`/`import` accept release options.
@@ -146,7 +150,7 @@ rejected, numbers are parsed finitely and range-safely), every
 manifest-referenced file requires a SHA-256, referenced paths must be unique
 and stay contained within the package root, and unknown root-level fields are
 documented to survive a round-trip. A committed conformance corpus (3 valid
-manifests, 42 invalid manifests, 8 invalid asset cases) gates the contract
+ manifests, 49 invalid manifests, 9 invalid asset cases) gates the contract
 across platforms. See `docs/mpack-v1-contract-hardening.md` for the enforced
 rules.
 

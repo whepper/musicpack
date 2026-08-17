@@ -16,6 +16,7 @@ enum {
     MPJ_STR,
     MPJ_INT,
     MPJ_DBL,
+    MPJ_NULL,
 };
 
 struct mp_json {
@@ -116,6 +117,13 @@ mp_json_dbl(mp_json *o, const char *key, double value)
 {
     mp_json *j = leaf(MPJ_DBL);
     j->dbl = value;
+    mp_json_add(o, key, j);
+}
+
+void
+mp_json_null(mp_json *o, const char *key)
+{
+    mp_json *j = leaf(MPJ_NULL);
     mp_json_add(o, key, j);
 }
 
@@ -231,6 +239,9 @@ render(mp_json *j, sbuf *s)
             snprintf(tmp, sizeof tmp, "%.10g", j->dbl);
             sbuf_cstr(s, tmp);
         }
+        break;
+    case MPJ_NULL:
+        sbuf_cstr(s, "null");
         break;
     case MPJ_OBJ:
         sbuf_char(s, '{');

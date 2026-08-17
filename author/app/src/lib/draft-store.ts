@@ -20,6 +20,7 @@ import type {
   SonicAnalysis,
   SourceInfo,
   Track,
+  WaveformAnalysis,
 } from './types';
 
 export type ChipStatus = 'ok' | 'warn' | 'idle';
@@ -30,6 +31,7 @@ export interface ChipState {
   artwork: ChipStatus;
   identity: ChipStatus;
   sonic: ChipStatus;
+  waveform: ChipStatus;
 }
 
 export interface DraftStore {
@@ -52,6 +54,7 @@ export interface DraftStore {
   setArtwork(entries: ArtworkEntry[]): void;
   setAssets(kind: 'booklet' | 'lyrics' | 'extras', entries: AssetEntry[]): void;
   updateSonicAnalysis(fn: (s: SonicAnalysis) => void): void;
+  updateWaveformAnalysis(fn: (s: WaveformAnalysis) => void): void;
 }
 
 function mutate(draft: Draft, fn: (d: Draft) => void): Draft {
@@ -163,6 +166,31 @@ export function createDraftStore(): DraftStore {
         invalidateValidation();
       }
     },
+    updateWaveformAnalysis(fn: (s: WaveformAnalysis) => void) {
+      // Like Sonic, waveform results are derived stage output (per-track
+      // .wfm files + manifest references) that can never diverge from the
+      // encoded audio; they survive encode staging. Status flips between
+      // 'not_generated' / 'pending' / 'ready' / 'disabled' / 'error'; the
+      // build step reads the same block.
+      const current = draft.get();
+      if (current) {
+        draft.set(
+          mutate(current, (d) => {
+            if (!d.waveformAnalysis) {
+              d.waveformAnalysis = {
+                status: 'not_generated',
+                intervalMs: 100,
+                encoding: 'peak-rms-u8',
+                floorDb: -60,
+                tracks: [],
+              };
+            }
+            fn(d.waveformAnalysis);
+          }),
+        );
+        invalidateValidation();
+      }
+    },
   };
 }
 
@@ -173,6 +201,7 @@ export function chipState(d: Draft): ChipState {
   const metadataOk = d.album.title.trim().length > 0 && d.album.artists.length > 0;
   const conf = d.identity?.confidence;
   const sonic = d.sonicAnalysis;
+  const wf = d.waveformAnalysis;
   return {
     audio: tracks > 0 ? 'ok' : 'warn',
     metadata: metadataOk ? 'ok' : 'warn',
@@ -189,5 +218,13 @@ export function chipState(d: Draft): ChipState {
         : sonic?.status === 'error'
           ? 'warn'
           : 'idle',
+    waveform:
+      wf?.status === 'ready'
+        ? 'ok'
+        : wf?.status === 'disabled'
+          ? 'idle'
+          : wf?.status === 'error'
+            ? 'warn'
+            : 'idle',
   };
 }

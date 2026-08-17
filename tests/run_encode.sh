@@ -250,9 +250,64 @@ else
     fail "encoded .mpc carries projected + passthrough APEv2 tags"
 fi
 
+# 2b. waveform-draft reads the staged .mpc files via the same native
+# musicpack_audio_* decoder as encode-draft/loudness, never invokes
+# mpcenc, and never modifies the encoded .mpc bytes. Re-encode the same
+# source before and after to prove the encoder path is untouched.
+BEFORE_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
+TMP_WF="$TMP/wf-stage"
+mkdir "$TMP_WF"
+if "$MUSICPACK" waveform-draft --draft "$TMP/transformed.json" -o "$TMP_WF" --json 2>/dev/null > "$TMP/waveform.json" \
+   && $PY - "$TMP/waveform.json" <<'EOF'
+import json, sys
+lines = [l for l in open(sys.argv[1]) if l.strip()]
+assert lines, "no waveform output"
+evs = [json.loads(l) for l in lines]
+assert evs[-1]["event"] == "done" and evs[-1]["ok"], "done event"
+assert evs[-1]["tracks"] == 5, f"5 envelopes: {evs[-1]['tracks']}"
+# every per-track event carries sha256 + points
+tracks = [e for e in evs if e["event"] == "track"]
+assert len(tracks) == 5
+for t in tracks:
+    assert len(t["sha256"]) == 64, "track sha256"
+    assert t["points"] > 0, "track points"
+# the transformed draft's waveformAnalysis block carries the per-track envelope
+draft_obj = evs[-1]["draft"]
+wf = draft_obj["waveformAnalysis"]
+assert wf["status"] == "ready" and len(wf["tracks"]) == 5
+EOF
+then
+    pass "waveform-draft generates 5 envelopes from staged .mpc files"
+else
+    fail "waveform-draft generates 5 envelopes from staged .mpc files"
+fi
+ls "$TMP_WF/waveform" | sort > "$TMP/waveform_files.txt"
+EXPECTED_FILES=$(printf '01-01.wfm\n01-02.wfm\n01-03.wfm\n02-01.wfm\n02-02.wfm\n')
+if [ "$(cat "$TMP/waveform_files.txt")" = "$EXPECTED_FILES" ]; then
+    pass "waveform filenames are multi-disc-safe <DD>-<TT>.wfm"
+else
+    fail "waveform filenames are multi-disc-safe <DD>-<TT>.wfm"
+fi
+# Apply waveformAnalysis to the transformed draft so build-draft can attach.
+$PY - "$TMP/transformed.json" "$TMP/waveform.json" "$TMP/transformed-wf.json" <<'EOF'
+import json, sys
+src, ev_log, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(src))
+wf = None
+for line in open(ev_log):
+    if not line.strip(): continue
+    ev = json.loads(line)
+    if ev.get("event") == "done":
+        wf = json.loads(json.dumps(ev["draft"]))["waveformAnalysis"]
+        break
+assert wf is not None, "no waveform event"
+d["waveformAnalysis"] = wf
+json.dump(d, open(dst, "w"))
+EOF
+
 # 3. build a package from the transformed draft and verify it
-if "$MUSICPACK" build-draft --draft "$TMP/transformed.json" -o "$TMP/out.mpack" --json 2>/dev/null > "$TMP/build.json" \
-   && $PY - "$TMP/build.json" <<'EOF'
+if "$MUSICPACK" build-draft --draft "$TMP/transformed-wf.json" -o "$TMP/out.mpack" --json 2>/dev/null > "$TMP/build.json" \
+    && $PY - "$TMP/build.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["ok"] is True, d
@@ -261,6 +316,40 @@ then
     pass "build-draft assembles the package from the staged encode"
 else
     fail "build-draft assembles the package from the staged encode"
+fi
+
+# 3b. built package carries per-track waveform references
+if $PY - "$TMP/out.mpack/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+tracks = [t for disc in m["media"] for t in disc["tracks"]]
+assert all("waveform" in t for t in tracks), "all tracks carry waveform"
+wf = tracks[0]["waveform"]
+assert wf["version"] == 1 and wf["intervalMs"] == 100 \
+   and wf["encoding"] == "peak-rms-u8" and wf["floorDb"] == -60 \
+   and wf["points"] > 0, "waveform metadata closed-enum fields"
+print("ok")
+EOF
+then
+    pass "built package carries per-track waveform references"
+else
+    fail "built package carries per-track waveform references"
+fi
+if "$MUSICPACK" verify "$TMP/out.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true'; then
+    pass "built package with waveforms verifies"
+else
+    fail "built package with waveforms verifies"
+fi
+
+# 3c. prove encoder isolation: re-encode the same FLAC sources and
+# compare SHA-256 to the .mpc files in the staged encode. The
+# waveform-draft stage must not change any encoded byte.
+EXPECTED_SHA=$(sha256sum "$STAGE/audio/1-01 - Midnight Relay.mpc" | awk '{print $1}')
+AFTER_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
+if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
+    pass "source FLAC unchanged across waveform-draft"
+else
+    fail "source FLAC unchanged across waveform-draft"
 fi
 
 # 3b. build-draft is transactional: never replace an existing destination and
@@ -458,13 +547,58 @@ NOPATH="$TMP/nopath"
 mkdir -p "$NOPATH"
 NEGSTAGE="$TMP/neg-stage"
 mkdir "$NEGSTAGE"
+# Run the encode stage with no PATH (no ffmpeg/ffprobe) and capture its
+# transformed draft (whose audioPath values point at the staged .mpc).
+NEG_TRANS="$TMP/neg-transformed.json"
 if env -i PATH="$NOPATH" \
         "$MUSICPACK" inspect "$ALBUM" --json 2>/dev/null > "$TMP/neg-draft.json" \
    && env -i PATH="$NOPATH" \
         "$MUSICPACK" encode-draft --draft "$TMP/ready.json" -o "$NEGSTAGE" \
-        --mpcenc "$MPCENC" --json 2>/dev/null | grep -q '"event":"done"' \
+        --mpcenc "$MPCENC" --json 2>/dev/null > "$TMP/neg-encode.json" \
+   && $PY - "$TMP/neg-encode.json" "$NEG_TRANS" <<'EOF'
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+done = [l for l in lines if l.get("event") == "done"][-1]
+json.dump(done["draft"], open(sys.argv[2], "w"))
+EOF
+then
+    NEG_ENCODE_RC=0
+else
+    NEG_ENCODE_RC=1
+fi
+# waveform-draft (also with no PATH; waveform generation uses libmusicpack's
+# native decoder, never any external tool).
+NEG_WF="$TMP/neg-wf"
+mkdir -p "$NEG_WF"
+if env -i PATH="$NOPATH" \
+        "$MUSICPACK" waveform-draft --draft "$NEG_TRANS" -o "$NEG_WF" --json 2>/dev/null \
+        > "$TMP/neg-wf.json" \
+   && grep -q '"event":"done"' "$TMP/neg-wf.json"; then
+    NEG_WF_RC=0
+else
+    NEG_WF_RC=1
+fi
+# Splice the waveformAnalysis into the encoded draft.
+NEG_TRANS_WF="$TMP/neg-transformed-wf.json"
+if [ "$NEG_WF_RC" -eq 0 ]; then
+    $PY - "$NEG_TRANS" "$TMP/neg-wf.json" "$NEG_TRANS_WF" <<'EOF'
+import json, sys
+src, ev_log, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(src))
+for line in open(ev_log):
+    if not line.strip(): continue
+    ev = json.loads(line)
+    if ev.get("event") == "done":
+        d["waveformAnalysis"] = ev["draft"]["waveformAnalysis"]
+        break
+json.dump(d, open(dst, "w"))
+EOF
+else
+    NEG_TRANS_WF="$NEG_TRANS"
+fi
+if [ "$NEG_ENCODE_RC" -eq 0 ] && [ "$NEG_WF_RC" -eq 0 ] \
    && env -i PATH="$NOPATH" \
-        "$MUSICPACK" build-draft --draft "$TMP/transformed.json" -o "$TMP/neg.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true' \
+        "$MUSICPACK" build-draft --draft "$NEG_TRANS_WF" -o "$TMP/neg.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true' \
    && env -i PATH="$NOPATH" \
         "$MUSICPACK" verify "$TMP/neg.mpack" --json 2>/dev/null | grep -q '"ok":[[:space:]]*true'; then
     pass "full authoring workflow succeeds with ffmpeg/ffprobe absent"
