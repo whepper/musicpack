@@ -252,9 +252,11 @@ fi
 
 # 2b. waveform-draft reads the staged .mpc files via the same native
 # musicpack_audio_* decoder as encode-draft/loudness, never invokes
-# mpcenc, and never modifies the encoded .mpc bytes. Re-encode the same
-# source before and after to prove the encoder path is untouched.
-BEFORE_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
+# mpcenc, and never modifies the encoded .mpc bytes. Capture the .mpc
+# SHA-256 before the run; re-hash the same file after; equality proves
+# the waveform stage is read-only with respect to the encoded output.
+BEFORE_MPC_SHA=$(sha256sum "$STAGE/audio/1-01 - Midnight Relay.mpc" | awk '{print $1}')
+BEFORE_FLAC_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
 TMP_WF="$TMP/wf-stage"
 mkdir "$TMP_WF"
 if "$MUSICPACK" waveform-draft --draft "$TMP/transformed.json" -o "$TMP_WF" --json 2>/dev/null > "$TMP/waveform.json" \
@@ -341,12 +343,20 @@ else
     fail "built package with waveforms verifies"
 fi
 
-# 3c. prove encoder isolation: re-encode the same FLAC sources and
-# compare SHA-256 to the .mpc files in the staged encode. The
-# waveform-draft stage must not change any encoded byte.
-EXPECTED_SHA=$(sha256sum "$STAGE/audio/1-01 - Midnight Relay.mpc" | awk '{print $1}')
-AFTER_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
-if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
+# 3c. prove encoder isolation: the encoded .mpc bytes must be unchanged
+# after waveform-draft runs. The waveform stage is read-only with respect
+# to the encoder path; the .mpc SHA-256 captured before the run must
+# match the SHA-256 of the same file afterwards. (Source FLAC must also
+# be unchanged, since neither encode-draft nor waveform-draft writes to
+# the source tree.)
+AFTER_MPC_SHA=$(sha256sum "$STAGE/audio/1-01 - Midnight Relay.mpc" | awk '{print $1}')
+AFTER_FLAC_SHA=$(sha256sum "$FIXTURE/disc-1/01 - Midnight Relay.flac" | awk '{print $1}')
+if [ "$BEFORE_MPC_SHA" = "$AFTER_MPC_SHA" ]; then
+    pass "encoded .mpc unchanged across waveform-draft"
+else
+    fail "encoded .mpc unchanged across waveform-draft"
+fi
+if [ "$BEFORE_FLAC_SHA" = "$AFTER_FLAC_SHA" ]; then
     pass "source FLAC unchanged across waveform-draft"
 else
     fail "source FLAC unchanged across waveform-draft"

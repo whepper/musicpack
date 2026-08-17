@@ -1282,7 +1282,7 @@ test_waveform_ingest(void)
     CHECK(res.added == 1, "waveform-bearing package ingested");
     /* Verify so the package becomes servable (VISIBLE filter). */
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
 
@@ -1332,7 +1332,7 @@ test_waveform_ingest(void)
     /* A light scan leaves verify_status='unverified' which is not VISIBLE.
        Run mp_verify_library so the package becomes servable again. */
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
     CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 1,
@@ -1364,7 +1364,7 @@ test_waveform_quarantine(void)
     mp_scan_library(lib_h, lib, 0, &res, 0, 0);
     CHECK(res.added == 1, "package ingested");
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
 
@@ -1398,7 +1398,7 @@ test_waveform_quarantine(void)
     }
     /* Full verify surfaces the checksum/size error -> package quarantined. */
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
     /* After quarantine, mp_library_track_waveform must return 0
@@ -1432,7 +1432,7 @@ test_waveform_no_waveform_fixture(void)
     mp_scan_library(lib_h, lib, 0, &res, 0, 0);
     CHECK(res.added == 1, "no-waveform package ingested");
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
 
@@ -1454,7 +1454,7 @@ test_waveform_no_waveform_fixture(void)
     CHECK(mp_library_track_waveform(lib_h, track_id, &ref) == 0,
           "track has no waveform (endpoint 404s)");
     {
-        mp_verify_result vr = {0, 0};
+        mp_verify_result vr;
         mp_verify_library(lib_h, lib, &vr, 0, 0);
     }
     CHECK(mp_library_track_audio(lib_h, track_id, &ref) == 1,
