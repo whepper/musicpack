@@ -294,6 +294,139 @@ test_acc_partial_bucket(void)
 }
 
 static void
+test_acc_boundary_max_minus_one(void)
+{
+    /* At 10 Hz mono, one frame advances the cumulative bucket index by one,
+       so N frames produce exactly N buckets. */
+    const size_t n = (size_t) MUSICPACK_WAVEFORM_MAX_POINTS - 1u;
+    musicpack_waveform_acc *a = musicpack_waveform_acc_new(10, 1);
+    CHECK(a != 0, "acc new");
+    float *pcm = (float *) malloc(n * sizeof(float));
+    CHECK(pcm != 0, "pcm alloc");
+    for (size_t i = 0; i < n; i++) pcm[i] = 0.5f;
+    CHECK(musicpack_waveform_acc_feed_f32(a, pcm, n) == MUSICPACK_OK,
+          "feed MAX_POINTS-1");
+    musicpack_waveform_bucket *b = 0;
+    size_t c = 0;
+    CHECK(musicpack_waveform_acc_finish(a, &b, &c) == MUSICPACK_OK,
+          "finish MAX_POINTS-1");
+    CHECK(c == MUSICPACK_WAVEFORM_MAX_POINTS - 1u,
+          "MAX_POINTS-1 buckets emitted");
+    free(b); free(pcm);
+    musicpack_waveform_acc_free(a);
+}
+
+static void
+test_acc_boundary_max(void)
+{
+    const size_t n = (size_t) MUSICPACK_WAVEFORM_MAX_POINTS;
+    musicpack_waveform_acc *a = musicpack_waveform_acc_new(10, 1);
+    CHECK(a != 0, "acc new");
+    float *pcm = (float *) malloc(n * sizeof(float));
+    CHECK(pcm != 0, "pcm alloc");
+    for (size_t i = 0; i < n; i++) pcm[i] = 0.5f;
+    CHECK(musicpack_waveform_acc_feed_f32(a, pcm, n) == MUSICPACK_OK,
+          "feed exactly MAX_POINTS");
+    musicpack_waveform_bucket *b = 0;
+    size_t c = 0;
+    CHECK(musicpack_waveform_acc_finish(a, &b, &c) == MUSICPACK_OK,
+          "finish exactly MAX_POINTS");
+    CHECK(c == MUSICPACK_WAVEFORM_MAX_POINTS,
+          "exactly MAX_POINTS buckets emitted");
+    free(b); free(pcm);
+    musicpack_waveform_acc_free(a);
+}
+
+static void
+test_acc_boundary_exceed(void)
+{
+    const size_t n = (size_t) MUSICPACK_WAVEFORM_MAX_POINTS;
+    musicpack_waveform_acc *a = musicpack_waveform_acc_new(10, 1);
+    CHECK(a != 0, "acc new");
+    float *pcm = (float *) malloc(n * sizeof(float));
+    float extra[1] = { 0.5f };
+    CHECK(pcm != 0, "pcm alloc");
+    for (size_t i = 0; i < n; i++) pcm[i] = 0.5f;
+    CHECK(musicpack_waveform_acc_feed_f32(a, pcm, n) == MUSICPACK_OK,
+          "feed MAX_POINTS");
+    /* The (MAX_POINTS+1)th bucket must be rejected deterministically. */
+    CHECK(musicpack_waveform_acc_feed_f32(a, extra, 1) == MUSICPACK_ERR_INVALID,
+          "exceeding MAX_POINTS rejected with INVALID");
+    /* State stays intact: finish still yields MAX_POINTS buckets. */
+    musicpack_waveform_bucket *b = 0;
+    size_t c = 0;
+    CHECK(musicpack_waveform_acc_finish(a, &b, &c) == MUSICPACK_OK,
+          "finish after rejected feed");
+    CHECK(c == MUSICPACK_WAVEFORM_MAX_POINTS,
+          "MAX_POINTS buckets preserved after rejected feed");
+    free(b); free(pcm);
+    musicpack_waveform_acc_free(a);
+}
+
+static void
+test_encode_max_points(void)
+{
+    const size_t n = (size_t) MUSICPACK_WAVEFORM_MAX_POINTS;
+    musicpack_waveform_bucket *buckets =
+        (musicpack_waveform_bucket *) calloc(n, sizeof *buckets);
+    CHECK(buckets != 0, "bucket array alloc");
+    unsigned char *bytes = 0;
+    size_t len = 0;
+    CHECK(musicpack_waveform_encode(buckets, n, &bytes, &len) == MUSICPACK_OK,
+          "encode exactly MAX_POINTS buckets");
+    CHECK(len == n * MUSICPACK_WAVEFORM_BYTES_PER_BUCKET,
+          "encoded payload is MAX_POINTS*2 bytes");
+    CHECK(len == MUSICPACK_WAVEFORM_MAX_BYTES, "encoded length == MAX_BYTES");
+    /* Count MAX_POINTS+1 must be rejected. */
+    unsigned char *b2 = 0;
+    size_t l2 = 0;
+    CHECK(musicpack_waveform_encode(buckets, n + 1, &b2, &l2) == MUSICPACK_ERR_INVALID,
+          "encode MAX_POINTS+1 rejected");
+    free(bytes); free(buckets);
+}
+
+static void
+test_validate_max_points(void)
+{
+    const size_t n = (size_t) MUSICPACK_WAVEFORM_MAX_POINTS;
+    musicpack_waveform_bucket *buckets =
+        (musicpack_waveform_bucket *) calloc(n, sizeof *buckets);
+    unsigned char *bytes = 0;
+    size_t len = 0;
+    musicpack_waveform_encode(buckets, n, &bytes, &len);
+    musicpack_waveform_meta meta = {
+        .version = MUSICPACK_WAVEFORM_VERSION,
+        .interval_ms = MUSICPACK_WAVEFORM_INTERVAL_MS,
+        .floor_db = MUSICPACK_WAVEFORM_FLOOR_DB,
+        .points = (uint32_t) n,
+    };
+    CHECK(musicpack_waveform_validate(bytes, len, &meta) == MUSICPACK_OK,
+          "validator accepts exactly MAX_POINTS payload");
+    free(bytes); free(buckets);
+}
+
+static void
+test_validate_max_points_plus_one(void)
+{
+    /* Build a valid-sized payload that declares MAX_POINTS+1 points; the
+       validator must reject on the points bound before touching bytes. */
+    const size_t n = ((size_t) MUSICPACK_WAVEFORM_MAX_POINTS) + 1u;
+    unsigned char *data = (unsigned char *) calloc(
+        n * MUSICPACK_WAVEFORM_BYTES_PER_BUCKET, 1);
+    CHECK(data != 0, "payload alloc");
+    musicpack_waveform_meta meta = {
+        .version = MUSICPACK_WAVEFORM_VERSION,
+        .interval_ms = MUSICPACK_WAVEFORM_INTERVAL_MS,
+        .floor_db = MUSICPACK_WAVEFORM_FLOOR_DB,
+        .points = (uint32_t) n,
+    };
+    CHECK(musicpack_waveform_validate(data,
+          n * MUSICPACK_WAVEFORM_BYTES_PER_BUCKET, &meta) == MUSICPACK_ERR_INVALID,
+          "validator rejects MAX_POINTS+1 payload");
+    free(data);
+}
+
+static void
 test_acc_determinism(void)
 {
     /* Same input twice yields identical bucket bytes. */
@@ -636,7 +769,13 @@ main(void)
     test_acc_sample_rate_invariance();
     test_acc_cumulative_boundaries();
     test_acc_partial_bucket();
+    test_acc_boundary_max_minus_one();
+    test_acc_boundary_max();
+    test_acc_boundary_exceed();
     test_acc_determinism();
+    test_encode_max_points();
+    test_validate_max_points();
+    test_validate_max_points_plus_one();
     test_encode_decode_roundtrip();
     test_validate();
     test_manifest_parse_valid();

@@ -110,6 +110,10 @@ push_bucket(musicpack_waveform_acc *a)
     if (a->bucket_samples == 0)
         return 1; /* nothing to flush */
 
+    /* Format cap: emit no more than MUSICPACK_WAVEFORM_MAX_POINTS buckets. */
+    if (a->bucket_count >= MUSICPACK_WAVEFORM_MAX_POINTS)
+        return 2; /* at the cap; adding the next bucket would overflow */
+
     if (a->bucket_count == a->bucket_cap) {
         size_t ncap = a->bucket_cap == 0 ? 32u : a->bucket_cap * 2u;
         if (ncap > MUSICPACK_WAVEFORM_MAX_POINTS)
@@ -197,11 +201,12 @@ musicpack_waveform_acc_feed_f32(musicpack_waveform_acc *a, const float *interlea
         a->total_frames++;
         bucket_index = bucket_index_for(a->total_frames, a->rate);
         if (bucket_index > a->bucket_index) {
-            if (!push_bucket(a))
+            int pr = push_bucket(a);
+            if (pr == 0)
                 return MUSICPACK_ERR_NOMEM;
-            a->bucket_index = bucket_index;
-            if (a->bucket_count >= MUSICPACK_WAVEFORM_MAX_POINTS)
+            if (pr == 2)
                 return MUSICPACK_ERR_INVALID;
+            a->bucket_index = bucket_index;
         }
     }
     return MUSICPACK_OK;
@@ -214,12 +219,15 @@ musicpack_waveform_acc_finish(musicpack_waveform_acc *a, musicpack_waveform_buck
     if (a == 0 || out == 0 || count == 0)
         return MUSICPACK_ERR_INVALID;
     /* flush final partial bucket */
-    if (!push_bucket(a)) {
-        free(a->buckets);
-        a->buckets = 0;
-        a->bucket_cap = 0;
-        a->bucket_count = 0;
-        return MUSICPACK_ERR_NOMEM;
+    {
+        int pr = push_bucket(a);
+        if (pr != 1) {
+            free(a->buckets);
+            a->buckets = 0;
+            a->bucket_cap = 0;
+            a->bucket_count = 0;
+            return pr == 0 ? MUSICPACK_ERR_NOMEM : MUSICPACK_ERR_INVALID;
+        }
     }
     *out = a->buckets;
     *count = a->bucket_count;
