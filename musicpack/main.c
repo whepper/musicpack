@@ -4865,17 +4865,12 @@ rm_rf(const char *path)
         if (lstat(next, &st) != 0)
             continue;
         if (S_ISDIR(st.st_mode))
-            rm_rf(next);
+        rm_rf(next);
         else
-            /* cpp/toctou-race-condition: TOCTOU is acceptable risk for CLI tool.
-             * Requires local access and precise timing; worst case is deletion
-             * failure, not privilege escalation. */
-            remove(next);
+            remove(next); /* cpp/toctou-race-condition: CLI-only tool, acceptable risk */
     }
     closedir(d);
-    /* cpp/toctou-race-condition: Same rationale as above for rmdir().
-     * CLI tool, not server-side; acceptable risk. */
-    rmdir(path);
+    rmdir(path); /* cpp/toctou-race-condition: Same rationale as above */
 #endif
 }
 

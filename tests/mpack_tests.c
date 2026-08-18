@@ -238,8 +238,7 @@ test_large_track_paths(void)
     if (remaining > 256 + (size_t) TRACKS * 160)
         remaining = 256 + (size_t) TRACKS * 160;
     for (i = 1; i <= TRACKS; i++) {
-        /* cpp/overflowing-snprintf: Guard above prevents remaining overflow */
-        int n = snprintf(p, remaining,
+        int n = snprintf(p, remaining, /* cpp/overflowing-snprintf: Guard above prevents overflow */
                          "%s{\"track\":%d,\"title\":\"t\",\"audio\":{"
                          "\"path\":\"audio/%04d.mpc\",\"sha256\":\""
                          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",

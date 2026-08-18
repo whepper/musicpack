@@ -396,17 +396,12 @@ WeightedPartitionEnergy ( float*        erg0,
     }
 
     for ( ; n < 48; n++ ) {
-        /* cpp/integer-multiplication-cast-to-long: Float multiplication is safe -
-         * spec/cw are normalized spectral data (0-1 range), cannot overflow */
-        e0 = sqrt (*spec0++ * *cw0++);
-        /* cpp/integer-multiplication-cast-to-long: Same rationale as above */
-        e1 = sqrt (*spec1++ * *cw1++);
+        e0 = sqrt (*spec0++ * *cw0++); /* cpp/integer-multiplication-cast-to-long: Normalized spectral data (0-1) cannot overflow */
+        e1 = sqrt (*spec1++ * *cw1++); /* cpp/integer-multiplication-cast-to-long: Same rationale */
         k  = wh[n] - wl[n];
         while ( k-- ) {
-            /* cpp/integer-multiplication-cast-to-long: Same rationale */
-            e0 += sqrt (*spec0++ * *cw0++);
-            /* cpp/integer-multiplication-cast-to-long: Same rationale */
-            e1 += sqrt (*spec1++ * *cw1++);
+            e0 += sqrt (*spec0++ * *cw0++); /* cpp/integer-multiplication-cast-to-long: Same rationale */
+            e1 += sqrt (*spec1++ * *cw1++); /* cpp/integer-multiplication-cast-to-long: Same rationale */
         }
         *erg0++ = e0*e0 * iw[n];
         *erg1++ = e1*e1 * iw[n];
@@ -873,9 +868,7 @@ ApplyLtq ( float*        thr0,
         {
             // threshold in quiet (Partition)
             // Applies a much more gentle ATH rolloff + 6 dB more dynamic
-            /* cpp/integer-multiplication-cast-to-long: Safe - ms/fftLtq are
-             * bounded thresholds (normalized magnitude spectrum) */
-            ltq   = sqrt (ms * fftLtq [k]);
+            ltq = sqrt(ms * fftLtq[k]); /* cpp/integer-multiplication-cast-to-long: Bounded thresholds (normalized spectrum) */
             tmp   = tmpThr0 + ltq;
             *thr0 = tmp * tmp;
             tmp   = tmpThr1 + ltq;

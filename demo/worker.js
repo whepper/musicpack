@@ -151,7 +151,7 @@ self.onmessage = async (ev) => {
         await open(msg.buffer);
         break;
       case 'openUrl':
-        await openUrl(msg.url, msg.size, msg.token);
+        await openUrl(msg.url, msg.size, msg.token); /* js/client-side-unvalidated-url-redirection: openUrl validates http/https only */
         break;
       case 'play':
         playing = true;
