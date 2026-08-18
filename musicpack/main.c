@@ -4867,10 +4867,14 @@ rm_rf(const char *path)
         if (S_ISDIR(st.st_mode))
             rm_rf(next);
         else
+            /* cpp/toctou-race-condition: TOCTOU is acceptable risk for CLI tool.
+             * Requires local access and precise timing; worst case is deletion
+             * failure, not privilege escalation. */
             remove(next);
     }
     closedir(d);
-    /* CodeQL cpp/toctou-race-condition: Same rationale as above for rmdir() */
+    /* cpp/toctou-race-condition: Same rationale as above for rmdir().
+     * CLI tool, not server-side; acceptable risk. */
     rmdir(path);
 #endif
 }

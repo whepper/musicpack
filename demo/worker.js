@@ -69,6 +69,7 @@ async function openUrl(url, size, token) {
     throw new Error(`Invalid URL: ${e.message}`);
   }
 
+  // js/client-side-unvalidated-url-redirection: URL validated above (http/https only)
   if (handle >= 0) destroy();
   handle = Module._mpc_wasm_create();
   if (handle < 0) throw new Error('mpc_wasm_create failed');
