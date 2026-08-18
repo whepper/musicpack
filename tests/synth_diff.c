@@ -112,7 +112,7 @@ decode_with_impl(const char *path, int impl, pcm_t *out)
             break;
         if (frame.samples == 0)
             continue;
-        if (len + frame.samples * si.channels > cap) {
+        if (len + (size_t)frame.samples * si.channels > cap) {
             cap = cap ? cap * 2 : 1u << 16;
             float *new_buf = realloc(buf, cap * sizeof *buf);
             if (new_buf == 0) {
@@ -123,8 +123,8 @@ decode_with_impl(const char *path, int impl, pcm_t *out)
             buf = new_buf;
         }
         memcpy(buf + len, frame.buffer,
-               frame.samples * si.channels * sizeof *buf);
-        len += frame.samples * si.channels;
+               (size_t)frame.samples * si.channels * sizeof *buf);
+        len += (size_t)frame.samples * si.channels;
     }
 
     mpc_demux_exit(demux);

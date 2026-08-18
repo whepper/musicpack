@@ -200,11 +200,11 @@ Read_WAV_Samples ( wave_t*          t,
         }
     }
 #else
-    ReadSamples = fread ( b, t->BytesPerSample * t->Channels, RequestedSamples, t->fp );
+    ReadSamples = fread ( b, (size_t)t->BytesPerSample * t->Channels, RequestedSamples, t->fp );
 #endif
 
 
-    *Silence    = DigitalSilence ( b, ReadSamples * t->BytesPerSample * t->Channels );
+    *Silence    = DigitalSilence ( b, (size_t)ReadSamples * t->BytesPerSample * t->Channels );
 
     // Add Null Samples if EOF is reached
     if ( ReadSamples != RequestedSamples )

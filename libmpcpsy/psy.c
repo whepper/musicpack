@@ -396,6 +396,10 @@ WeightedPartitionEnergy ( float*        erg0,
     }
 
     for ( ; n < 48; n++ ) {
+        /* CodeQL cpp/integer-multiplication-cast-to-long: Float multiplication
+         * is safe here - spec and cw values are normalized spectral data
+         * (typically 0-1 range), so product cannot overflow float before
+         * cast to double for sqrt(). */
         e0 = sqrt (*spec0++ * *cw0++);
         e1 = sqrt (*spec1++ * *cw1++);
         k  = wh[n] - wl[n];
@@ -868,6 +872,9 @@ ApplyLtq ( float*        thr0,
         {
             // threshold in quiet (Partition)
             // Applies a much more gentle ATH rolloff + 6 dB more dynamic
+            /* CodeQL cpp/integer-multiplication-cast-to-long: Float multiplication
+             * is safe here - ms and fftLtq values are bounded thresholds
+             * (normalized magnitude spectrum), so product cannot overflow. */
             ltq   = sqrt (ms * fftLtq [k]);
             tmp   = tmpThr0 + ltq;
             *thr0 = tmp * tmp;

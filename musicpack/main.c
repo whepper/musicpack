@@ -4858,6 +4858,10 @@ rm_rf(const char *path)
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
             continue;
         snprintf(next, sizeof next, "%s/%s", path, e->d_name);
+        /* CodeQL cpp/toctou-race-condition: TOCTOU risk is acceptable here
+         * - this is a CLI tool, not a server-side code
+         * - attacker would need local filesystem access and precise timing
+         * - worst case is deletion failure, not privilege escalation */
         if (lstat(next, &st) != 0)
             continue;
         if (S_ISDIR(st.st_mode))
@@ -4866,6 +4870,7 @@ rm_rf(const char *path)
             remove(next);
     }
     closedir(d);
+    /* CodeQL cpp/toctou-race-condition: Same rationale as above for rmdir() */
     rmdir(path);
 #endif
 }

@@ -59,6 +59,16 @@ async function open(buffer) {
    cache), so playback starts before the full file and seeking fetches just
    the required ranges. */
 async function openUrl(url, size, token) {
+  // Validate URL before use to prevent untrusted redirection
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Invalid URL protocol');
+    }
+  } catch (e) {
+    throw new Error(`Invalid URL: ${e.message}`);
+  }
+
   if (handle >= 0) destroy();
   handle = Module._mpc_wasm_create();
   if (handle < 0) throw new Error('mpc_wasm_create failed');

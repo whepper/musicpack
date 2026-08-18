@@ -234,6 +234,9 @@ test_large_track_paths(void)
                   "\"album\":{\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},"
                   "\"media\":[{\"disc\":1,\"tracks\":[");
     remaining = 256 + (size_t) TRACKS * 160 - (size_t) (p - json);
+    /* Guard against arithmetic overflow in remaining calculation */
+    if (remaining > 256 + (size_t) TRACKS * 160)
+        remaining = 256 + (size_t) TRACKS * 160;
     for (i = 1; i <= TRACKS; i++) {
         int n = snprintf(p, remaining,
                          "%s{\"track\":%d,\"title\":\"t\",\"audio\":{"

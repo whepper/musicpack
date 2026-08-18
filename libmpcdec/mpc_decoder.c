@@ -223,7 +223,7 @@ void mpc_decoder_decode_frame(mpc_decoder * d,
 		} else {
 			i->samples -= d->samples_to_skip;
 			memmove(i->buffer, i->buffer + d->samples_to_skip * d->channels,
-					i->samples * d->channels * sizeof (MPC_SAMPLE_FORMAT));
+					(size_t)i->samples * d->channels * sizeof (MPC_SAMPLE_FORMAT));
 			d->samples_to_skip = 0;
 		}
 	}

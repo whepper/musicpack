@@ -138,7 +138,7 @@ int main(int argc, char **argv)
 	start_block = start_sample / (MPC_FRAME_LENGTH << si.block_pwr);
 	block_num = (end_sample + (MPC_FRAME_LENGTH << si.block_pwr) - 1) /
 			 (MPC_FRAME_LENGTH << si.block_pwr) - start_block;
-	end_sample -= start_block * (MPC_FRAME_LENGTH << si.block_pwr);
+	end_sample -= (mpc_int64_t)start_block * (mpc_int64_t)(MPC_FRAME_LENGTH << si.block_pwr);
 
 	mpc_encoder_init(&e, end_sample, si.block_pwr, 1);
 	e.outputFile = fopen( argv[optind + 1], "rb" );
