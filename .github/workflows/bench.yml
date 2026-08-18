@@ -25,6 +25,9 @@ on:
       - 'include/**'
       - '.github/workflows/bench.yml'
 
+permissions:
+  contents: read
+
 env:
   EMSDK_VERSION: '6.0.6'
 
