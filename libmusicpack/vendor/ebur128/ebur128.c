@@ -927,8 +927,9 @@ int ebur128_set_max_window(ebur128_state* st, unsigned long window) {
   CHECK_ERROR(!new_audio_data, EBUR128_ERROR_NOMEM, exit)
 
   st->d->window = window;
-  free(st->d->audio_data);
+  double* old_audio_data = st->d->audio_data;
   st->d->audio_data = new_audio_data;
+  free(old_audio_data);
   st->d->audio_data_frames = new_audio_data_frames;
   for (j = 0; j < st->d->audio_data_frames * st->channels; ++j) {
     st->d->audio_data[j] = 0.0;
