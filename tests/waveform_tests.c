@@ -40,6 +40,7 @@
  * Registered as the `waveform_unit` CTest suite.
  */
 
+#define _USE_MATH_DEFINES /* must precede <math.h> for M_PI on MSVC */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
