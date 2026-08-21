@@ -11,7 +11,7 @@ RUN emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
 
 # ---- 2. Web client (static SPA build) -----------------------------------
 FROM node:22-bookworm-slim AS web
-WORKDIR /web
+WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
 COPY web/ ./
@@ -44,7 +44,7 @@ COPY --from=build /src/build/server/musicpack-server /usr/local/bin/
 COPY --from=build /src/build/musicpack/musicpack       /usr/local/bin/
 COPY --from=build /src/build/mpcenc/mpcenc             /usr/local/bin/
 COPY --from=build /src/build/mpcdec/mpcdec             /usr/local/bin/
-COPY --from=web /web/app/dist /srv/web
+COPY --from=web /src/web/app/dist /srv/web
 USER musicpack
 ENV MUSICPACK_LISTEN=0.0.0.0 MUSICPACK_PORT=8080
 EXPOSE 8080
