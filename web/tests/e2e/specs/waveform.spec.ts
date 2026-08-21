@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
   await signIn(page);
 });
 
-test('waveform canvas renders for a track with envelope; click seeks', async ({ page }) => {
+test('waveform canvas renders for a track with envelope; click seeks within the track', async ({ page }) => {
   // The TestComp album carries waveform envelopes on every track.
   await page.getByText('Synthetic Test Compilation').first().click();
   await page.getByRole('button', { name: 'Play album' }).click();
@@ -24,19 +24,41 @@ test('waveform canvas renders for a track with envelope; click seeks', async ({ 
   await expect(page.locator('.playerbar canvas').first()).toBeVisible();
 
   // The hidden <input type=range> sibling remains the keyboard/a11y surface;
-  // its initial value reflects the per-track duration.
-  const dur = (await playerState(page)).durationSeconds;
-  expect(dur).toBeGreaterThan(0);
+  // it is track-scoped, so its max reflects the per-track duration.
+  const st = await playerState(page);
+  expect(st.currentTrackDurationSeconds).toBeGreaterThan(0);
   const rangeMax = await page.locator('.playerbar input[type=range]').first().getAttribute('max');
   expect(parseFloat(rangeMax ?? '0')).toBeGreaterThan(0);
 
-  // Click on the canvas at ~50% -> position advances past the middle.
+  // Pause first: the position must be stable to assert exact targeting.
+  // Go through the controller, not the Pause button: the fixture album is
+  // short and can reach 'ended' before we get here, at which point the
+  // button would read "Play" again. Pausing also sets pauseIntent, so the
+  // seek below will not resume playback.
+  await page.evaluate(() => void window.__musicpack?.player.pause());
+  await waitFor(page, async () => {
+    const s = await playerState(page);
+    return s.state === 'paused' || s.state === 'ended';
+  }, { label: 'paused' });
+  const paused = await playerState(page);
+  expect(paused.currentTrackDurationSeconds).toBeGreaterThan(0);
+
+  // Click on the canvas at ~25% -> must land ~25% into THIS track, not
+  // 25% into the album. A click mapped against the album duration would
+  // jump to another track entirely (the multi-file seek bug).
   const canvas = page.locator('.playerbar canvas').first();
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height / 2);
-  await waitFor(page, async () => (await playerState(page)).positionSeconds > dur * 0.3,
-              { label: 'click seeks to ~50%' });
+  await page.mouse.click(box!.x + box!.width * 0.25, box!.y + box!.height / 2);
+
+  const target = paused.currentTrackStartSeconds + paused.currentTrackDurationSeconds * 0.25;
+  await waitFor(
+    page,
+    async () => Math.abs((await playerState(page)).positionSeconds - target) < 1.0,
+    { label: 'click seeks to ~25% of the current track' },
+  );
+  // The seek must not have crossed into another track.
+  expect((await playerState(page)).currentTitle).toBe(paused.currentTitle);
 });
 
 test('focus on the hidden range draws the focus ring on the waveform container', async ({ page }) => {

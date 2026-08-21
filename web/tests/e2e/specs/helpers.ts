@@ -27,6 +27,8 @@ export async function playerState(page: Page): Promise<{
   state: string;
   positionSeconds: number;
   durationSeconds: number;
+  currentTrackStartSeconds: number;
+  currentTrackDurationSeconds: number;
   currentTitle: string | null;
   servedBytes: number;
   normDb: number;
@@ -39,6 +41,8 @@ export async function playerState(page: Page): Promise<{
       state: m?.state ?? 'idle',
       positionSeconds: m?.positionSeconds ?? 0,
       durationSeconds: m?.durationSeconds ?? 0,
+      currentTrackStartSeconds: m?.currentTrackStartSeconds ?? 0,
+      currentTrackDurationSeconds: m?.currentTrackDurationSeconds ?? 0,
       currentTitle: m?.current?.track.title ?? null,
       servedBytes: p?.getServedBytes() ?? 0,
       normDb: m?.normDb ?? 0,

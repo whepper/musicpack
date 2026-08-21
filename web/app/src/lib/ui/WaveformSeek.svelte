@@ -18,6 +18,12 @@ Position model:
 We compute within-track position = positionSeconds - startSeconds and map
 seek commits back to album-absolute via `onSeek(startSeconds + within)`.
 
+Pointer seeking belongs to the canvas (its handlers map clicks/drag to
+track fractions). The hidden `<input type=range>` is the keyboard/a11y
+surface only: it is pointer-transparent (`pointer-events: none`) and
+covers exactly the current track ([0, durationSeconds]) so its semantics
+match what is drawn.
+
 Falls back gracefully: a missing `track.waveform` is the parent's
 responsibility; this component only renders when waveform is present.
 -->
@@ -36,7 +42,6 @@ responsibility; this component only renders when waveform is present.
     track: Track;
     startSeconds: number;
     durationSeconds: number;
-    albumDurationSeconds: number;
     positionSeconds: number;
     onSeek: (albumAbsoluteSeconds: number) => void;
     disabled?: boolean;
@@ -49,7 +54,6 @@ responsibility; this component only renders when waveform is present.
     track,
     startSeconds,
     durationSeconds,
-    albumDurationSeconds,
     positionSeconds,
     onSeek,
     disabled = false,
@@ -232,10 +236,13 @@ responsibility; this component only renders when waveform is present.
     onpointercancel={onPointerUp}
   ></canvas>
   <!--
-    Visually-hidden but focusable <input type="range"> sibling. The canvas
-    is role=presentation so screen readers go to this input; arrow / Home /
-    End / PageUp / PageDown work natively; focus is visible on the canvas
-    via the .waveform:focus-within style below.
+    Visually-hidden but focusable <input type="range"> sibling. Pointer
+    transparent: the canvas owns click/drag seeking; this input is the
+    keyboard surface (arrow / Home / End / PageUp / PageDown work natively)
+    and shows the focus ring on the canvas via .waveform:focus-within.
+    Its scale is the CURRENT TRACK, matching what is drawn — mapping it to
+    the album would send clicks/keys to the wrong place once the queue
+    holds more than one track.
   -->
   <input
     bind:this={hidden}
@@ -243,11 +250,11 @@ responsibility; this component only renders when waveform is present.
     class="wf-hidden"
     aria-label="Seek position"
     min="0"
-    max={albumDurationSeconds > 0 ? albumDurationSeconds : 0}
+    max={durationSeconds > 0 ? durationSeconds : 0}
     step="0.5"
-    value={positionSeconds}
+    value={withinPos}
     disabled={disabled || durationSeconds <= 0}
-    oninput={(e) => onSeek(Number((e.currentTarget as HTMLInputElement).value))}
+    oninput={(e) => onSeek(startSeconds + Number((e.currentTarget as HTMLInputElement).value))}
   />
 </div>
 
@@ -284,7 +291,8 @@ responsibility; this component only renders when waveform is present.
     height: 100%;
     opacity: 0;
     margin: 0;
-    cursor: pointer;
+    /* Keyboard/a11y surface only; pointer events must reach the canvas. */
+    pointer-events: none;
   }
   /* Visible focus ring around the canvas while the hidden range has focus. */
   .waveform:focus-within {

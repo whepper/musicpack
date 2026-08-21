@@ -27,7 +27,6 @@ SPDX-License-Identifier: BSD-3-Clause
           track={wfTrack}
           startSeconds={trackStart}
           durationSeconds={trackDur}
-          albumDurationSeconds={dur}
           positionSeconds={pos}
           onSeek={(s) => void player.seek(s)}
         />

@@ -35,15 +35,25 @@ test('plays a Musepack album demand-driven and seeks without downloading the fil
   // Position advances without error.
   await waitFor(page, async () => (await playerState(page)).positionSeconds > 1, { label: 'position advances' });
 
-  // Seek to ~50% then 90%, then backwards: position jumps; the whole file is
-  // never fetched (the demand reader fetches only the needed blocks).
-  const dur = (await playerState(page)).durationSeconds;
-  await setSeek(page, Math.round(dur * 0.5));
-  await waitFor(page, async () => (await playerState(page)).positionSeconds > dur * 0.4, { label: 'seek 50%' });
-  await setSeek(page, Math.round(dur * 0.9));
-  await waitFor(page, async () => (await playerState(page)).positionSeconds > dur * 0.8, { label: 'seek 90%' });
-  await setSeek(page, Math.round(dur * 0.1));
-  await waitFor(page, async () => (await playerState(page)).positionSeconds < dur * 0.2, { label: 'seek backwards' });
+  // Seek to ~50%, then ~90%, then backwards to ~10% of the CURRENT TRACK
+  // (the hidden range is track-scoped, matching what the waveform draws).
+  // Position jumps accordingly; the whole file is never fetched (the demand
+  // reader fetches only the needed blocks).
+  const st = await playerState(page);
+  const t0 = st.currentTrackStartSeconds;
+  const td = st.currentTrackDurationSeconds;
+  expect(td).toBeGreaterThan(20); // room to seek inside the track
+  await setSeek(page, Math.round(td * 0.5));
+  await waitFor(page, async () => (await playerState(page)).positionSeconds > t0 + td * 0.4,
+              { label: 'seek 50%' });
+  await setSeek(page, Math.round(td * 0.9));
+  await waitFor(page, async () => (await playerState(page)).positionSeconds > t0 + td * 0.8,
+              { label: 'seek 90%' });
+  await setSeek(page, Math.round(td * 0.1));
+  await waitFor(page, async () => {
+    const s = await playerState(page);
+    return s.positionSeconds > t0 && s.positionSeconds < t0 + td * 0.3;
+  }, { label: 'seek backwards' });
 
   const final = await playerState(page);
   expect(final.servedBytes).toBeLessThan(size); // never downloaded the whole file
