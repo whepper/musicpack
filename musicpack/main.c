@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include <getopt.h>
 #include <musicpack/musicpack.h>
@@ -1754,6 +1755,31 @@ scan_result_clear(scan_result *s)
     memset(s, 0, sizeof *s);
 }
 
+/* Case-insensitive front-cover image names accepted at the source root (or
+   disc subdirectory): cover/front/folder with jpg/jpeg/png extensions.
+   A local file always wins over embedded artwork. */
+static int
+is_cover_image_name(const char *rel)
+{
+    static const char *const names[] = {
+        "cover.jpg", "cover.jpeg", "cover.png",
+        "front.jpg", "front.jpeg", "front.png",
+        "folder.jpg", "folder.jpeg", "folder.png",
+    };
+    size_t i;
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        const char *a = rel, *b = names[i];
+        while (*a != 0 && *b != 0 &&
+               tolower((unsigned char) *a) == tolower((unsigned char) *b)) {
+            a++;
+            b++;
+        }
+        if (*a == 0 && *b == 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* Walks, classifies, sorts and (where numbers are missing) numbers the
    audio files under `src`. Shared by `import` (which additionally renumbers
    duplicates) and `inspect` (which preserves tag-derived duplicate track
@@ -1783,9 +1809,7 @@ scan_source_dir(const char *src, scan_result *out)
             from_dir = 1;
             rel = rest;
         }
-        if (strcmp(rel, "cover.jpg") == 0 || strcmp(rel, "cover.png") == 0 ||
-            strcmp(rel, "front.jpg") == 0 || strcmp(rel, "front.png") == 0 ||
-            strcmp(rel, "folder.jpg") == 0) {
+        if (is_cover_image_name(rel)) {
             free(out->artwork_src);
             out->artwork_src = strdup(files[i]);
             continue;
