@@ -494,6 +494,11 @@ h3 {
   align-items: center;
   gap: var(--space-3);
   min-width: 320px;
+  /* Definite height: .waveform sizes itself with height:100%, which cannot
+     resolve against an auto-height parent — the canvas then falls back to
+     its 300x150 intrinsic size, blowing up the grid row and pushing the
+     right-zone controls past the viewport bottom (seek/queue unclickable). */
+  height: 36px;
 }
 
 .transport input[type="range"] {
@@ -593,11 +598,16 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex;
   flex-direction: column;
   transform: translateX(100%);
-  transition: transform 0.22s ease;
+  /* Fully remove the closed drawer from hit-testing, tab order and the
+     accessibility tree; delayed so the slide-out stays visible. */
+  visibility: hidden;
+  transition: transform 0.22s ease, visibility 0s 0.22s;
 }
 
 .queue-panel.open {
   transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.22s ease;
 }
 
 .queue-panel header {
