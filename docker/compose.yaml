@@ -1,0 +1,37 @@
+# MusicPack test stack — production-testing all server-side components.
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
+#
+#   docker compose up server        # build + start musicpack-server + web UI
+#   docker compose --profile tests up tests   # run the full CTest suite
+#
+# Web UI: http://localhost:8080  (API: http://localhost:8080/api/v1/health)
+
+name: musicpack
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./library:/data/library
+    environment:
+      MUSICPACK_LIBRARY: /data/library
+      MUSICPACK_DATABASE: /data/library/library.db
+    restart: unless-stopped
+
+  # Optional: run the repo's CTest suite (unit, package, server-core, ...) in
+  # the same image/toolchain used by the server. `docker compose run --rm tests`.
+  tests:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: build
+      args:
+        BUILD_TESTS: "ON"
+    command: ctest --test-dir build --output-on-failure -j4
+    profiles: ["tests"]
