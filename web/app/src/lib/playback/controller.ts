@@ -106,6 +106,10 @@ export class PlayerController {
   private token: () => string | null;
   private backend: Backend | null = null;
   private backendKind: 'musepack' | 'native' | null = null;
+  /** Exact decoded length per track id (samples at output rate). Keyed by
+   *  id, not queue index, so entries survive loads and navigation: album-
+   *  absolute bookkeeping must never fall back to unreliable manifest
+   *  durations for tracks we have already decoded. */
   private lengths = new Map<number, number>();
   private resetOffset = 0;
   private pendingEnded = false;
@@ -139,7 +143,10 @@ export class PlayerController {
       pause: () => void this.pause(),
       next: () => void this.next(),
       previous: () => void this.previous(),
-      seek: (s) => this.seek(s),
+      // Media Session delivers TRACK-relative seek times (see tick());
+      // convert to the album-absolute targets the transport speaks.
+      seek: (trackSeconds) =>
+        void this.seek(this.model.get().currentTrackStartSeconds + trackSeconds),
       seekBy: (d) => this.seek(this.model.get().positionSeconds + d),
     });
     // React to queue changes made OUTSIDE the controller (e.g. the queue
@@ -174,10 +181,10 @@ export class PlayerController {
   }
 
   private lengthOf(i: number): number {
-    const exact = this.lengths.get(i);
-    if (exact !== undefined) return exact;
     const item = this.queue.at(i);
     if (!item) return 0;
+    const exact = this.lengths.get(item.track.id);
+    if (exact !== undefined) return exact;
     return Math.floor((item.track.duration ?? 0) * this.rate());
   }
 
@@ -242,15 +249,34 @@ export class PlayerController {
   }
 
   async previous(): Promise<void> {
-    ++this.loadingSeq;
-    if (this.model.get().positionSeconds > 3) {
-      await this.seek(0);
+    const m = this.model.get();
+    // "Previous" restarts the CURRENT song; only a second press (or pressing
+    // it right after the song began) moves to the previous queue item.
+    if (m.current && m.positionSeconds - m.currentTrackStartSeconds > 3) {
+      await this.restartCurrentTrack();
       return;
     }
+    ++this.loadingSeq;
     this.mutating = true;
     const item = this.queue.previous();
     this.mutating = false;
     if (item) await this._load();
+  }
+
+  /** Seeks to sample 0 of the CURRENT track. Deliberately not routed through
+   *  seek(): an album-absolute target of 0 resolves to queue index 0, which
+   *  would restart the whole queue instead of this song. */
+  private async restartCurrentTrack(): Promise<void> {
+    if (!this.backend || !this.model.get().current) return;
+    ++this.transportSeq;
+    const seq = ++this.loadingSeq;
+    const base = this.offsets()[this.queue.get().index] ?? 0;
+    this.resetOffset = base;
+    this.setState(this.pauseIntent ? 'paused' : 'buffering');
+    this.model.update((mm) => ({ ...mm, positionSeconds: base / this.rate() }));
+    await this.backend.seek(0);
+    if (seq !== this.loadingSeq) return;
+    if (!this.pauseIntent) this.backend.startPumping();
   }
 
   // ---- load / playback -----------------------------------------------------
@@ -261,9 +287,8 @@ export class PlayerController {
     const seq = ++this.loadingSeq;
     ++this.transportSeq;
     this.pendingEnded = false;
-    // The queue may have been replaced (new album/edition): per-index lengths
-    // from a previous queue must never leak into the new one.
-    this.lengths.clear();
+    // Lengths are keyed by track id, so a replaced queue cannot leak
+    // another album's entries (ids are unique per server track row).
     this.model.update((m) => ({ ...m, state: 'loading', error: undefined }));
     try {
       const kind = this.chooseBackend(item.track);
@@ -272,13 +297,22 @@ export class PlayerController {
       const info = await this.backend!.open(item.track.audio.url, item.track.audio.size);
       if (seq !== this.loadingSeq) return false;
       const qi = this.queue.get().index;
-      this.lengths.set(qi, info.lengthSamples);
+      this.lengths.set(item.track.id, info.lengthSamples);
+      // Publish track geometry NOW: the seek control reads these fields, and
+      // waiting for the first rendered tick leaves a window where its hidden
+      // input has max=0 (clicks clamp to seek(0) = wrong song).
+      const offs = this.offsets();
+      this.model.update((m) => ({
+        ...m,
+        currentTrackStartSeconds: (offs[qi] ?? 0) / this.rate(),
+        currentTrackDurationSeconds: this.lengthOf(qi) / this.rate(),
+      }));
       // prepare the next track ahead of time (gapless)
       const next = this.queue.at(qi + 1);
       if (next) {
         const ni = await this.backend!.prepareNext(next.track.audio.url, next.track.audio.size);
         if (seq !== this.loadingSeq) return false;
-        if (ni) this.lengths.set(qi + 1, ni.lengthSamples);
+        if (ni) this.lengths.set(next.track.id, ni.lengthSamples);
       }
       this.resetOffset = this.offsets()[qi] ?? 0;
       this.applyGain(item);
@@ -316,14 +350,22 @@ export class PlayerController {
       return;
     }
     const qi = this.queue.get().index;
-    this.lengths.set(qi, info.lengthSamples);
+    this.lengths.set(item.track.id, info.lengthSamples);
+    // Same as _load(): publish geometry synchronously so the seek control
+    // never sees the previous track's start/duration after a handoff.
+    const handoffOffs = this.offsets();
+    this.model.update((m) => ({
+      ...m,
+      currentTrackStartSeconds: (handoffOffs[qi] ?? 0) / this.rate(),
+      currentTrackDurationSeconds: this.lengthOf(qi) / this.rate(),
+    }));
     this.applyGain(item);
     this.setMediaFor(item);
     const next = this.queue.at(qi + 1);
     if (next) {
       const ni = await this.backend.prepareNext(next.track.audio.url, next.track.audio.size);
       if (seq !== this.loadingSeq) return;
-      if (ni) this.lengths.set(qi + 1, ni.lengthSamples);
+      if (ni) this.lengths.set(next.track.id, ni.lengthSamples);
     }
     this.model.update((m) => ({
       ...m,
@@ -416,7 +458,11 @@ export class PlayerController {
       currentTrackDurationSeconds: trackDur / rate,
       state: ended ? 'ended' : m.state,
     }));
-    setMediaPosition(dur / rate, pos / rate);
+    // Media Session position state is TRACK-relative per spec: the OS
+    // scrubber shows/requests positions inside the current song, not the
+    // album. tick() therefore reports within-track values and converts
+    // incoming seekto times back to album-absolute in init().
+    setMediaPosition(trackDur / rate, Math.max(0, pos - trackStart) / rate);
     if (ended) {
       this.pendingEnded = false;
       this.backend.pause();

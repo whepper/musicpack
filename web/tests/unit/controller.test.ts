@@ -24,13 +24,13 @@ function track(id: number, title: string, seconds = 10): Track {
   };
 }
 
-function release(id: number, titles: string[], seconds = 10): ReleaseDetail {
+function release(id: number, titles: string[], seconds = 10, idBase = 0): ReleaseDetail {
   return {
     id,
     edition: '2016 Remaster',
     loudness: { algorithm: 'ITU-R BS.1770-5', albumLufs: -7.28, albumTruePeakDb: -4.19 },
     album: { id: 1, title: 'Test Album', artists: [] },
-    media: [{ disc: 1, tracks: titles.map((t, i) => track(i + 1, t, seconds)) }],
+    media: [{ disc: 1, tracks: titles.map((t, i) => track(idBase + i + 1, t, seconds)) }],
     artwork: [],
     assets: [],
   };
@@ -499,9 +499,9 @@ describe('PlayerController', () => {
     expect(player.model.get().current?.track.title).toBe('T2');
   });
 
-  it('clears stale per-index lengths when the queue is replaced', async () => {
+  it('keys decoded lengths by track id so replaced queues cannot leak them', async () => {
     const { player, getBackend, lengthsByUrl } = make();
-    // album A: 20 s tracks
+    // album A: 20 s tracks (ids 1, 2)
     lengthsByUrl.set('/api/v1/tracks/1/audio', 20 * RATE);
     lengthsByUrl.set('/api/v1/tracks/2/audio', 20 * RATE);
     await player.playAlbum(release(9, ['A1', 'A2'], 20), 'Album A', 'Artist');
@@ -509,20 +509,72 @@ describe('PlayerController', () => {
     b.emitPrimed();
     expect(player.model.get().durationSeconds).toBeCloseTo(40, 1);
 
-    // album B: same track numbers, 10 s each, started at index 1 so track 1
-    // is never opened (its length must come from B's metadata, not A's cache)
-    lengthsByUrl.set('/api/v1/tracks/1/audio', 10 * RATE);
-    lengthsByUrl.set('/api/v1/tracks/2/audio', 10 * RATE);
-    await player.playAlbum(release(10, ['B1', 'B2'], 10), 'Album B', 'Artist', 1);
+    // album B: DIFFERENT track rows (ids 101, 102), 10 s each, started at
+    // index 1. Its lengths must come from B's own metadata, never from A.
+    await player.playAlbum(release(10, ['B1', 'B2'], 10, 100), 'Album B', 'Artist', 1);
     b.emitPrimed();
     await flush();
-    // 10 + 10, not 20 (A) + 10
     expect(player.model.get().durationSeconds).toBeCloseTo(20, 1);
     // a seek across B's track boundary uses B's track lengths
     await player.seek(15);
     await flush();
     expect(player.model.get().current?.track.title).toBe('B2');
     expect(player.model.get().positionSeconds).toBeCloseTo(15, 1);
+  });
+
+  it('keeps decoded lengths across loads so later tracks report exact starts', async () => {
+    const { player, getBackend, lengthsByUrl } = make();
+    // Manifest placeholder says 48 s per track; real decodes differ
+    // (the Long Player fixture scenario).
+    const r = release(9, ['T1', 'T2', 'T3'], 48);
+    lengthsByUrl.set('/api/v1/tracks/1/audio', 39 * RATE);
+    lengthsByUrl.set('/api/v1/tracks/2/audio', 5 * RATE);
+    lengthsByUrl.set('/api/v1/tracks/3/audio', 7 * RATE);
+    await player.playAlbum(r, 'Album', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    b.setRendered(39 * RATE);
+    b.emitEos(); // gapless advance into T2
+    await flush();
+    b.emitPosition();
+    await flush();
+    expect(player.model.get().currentTrackStartSeconds).toBeCloseTo(39, 1);
+
+    // next() performs a fresh load at index > 0; the exact length of T1
+    // must survive it, or every later offset drifts into placeholder land.
+    await player.next();
+    await flush();
+    b.emitPrimed();
+    b.emitPosition();
+    await flush();
+    expect(player.model.get().currentTrackStartSeconds).toBeCloseTo(44, 1); // 39+5
+    expect(player.model.get().durationSeconds).toBeCloseTo(51, 1); // 39+5+7
+  });
+
+  it('previous() restarts the current song instead of the queue start', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'Test Album', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    // gapless advance into T2
+    b.setRendered(LENGTH);
+    b.emitEos();
+    await flush();
+    expect(queue.get().index).toBe(1);
+    // five seconds into T2 (rendered counts continuously across the handoff)
+    b.setRendered(LENGTH + 5 * RATE);
+    b.emitPosition();
+    await flush();
+    expect(player.model.get().positionSeconds).toBeCloseTo(15, 1);
+
+    await player.previous();
+    await flush();
+    // stays on T2 and restarts it, rather than reloading T1 at queue start
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(player.model.get().positionSeconds).toBeCloseTo(10, 1);
+    expect(b.seeks[b.seeks.length - 1]).toBe(0); // within-track seek to sample 0
   });
 
   it('teardown stops playback, disposes the backend and clears player state', async () => {

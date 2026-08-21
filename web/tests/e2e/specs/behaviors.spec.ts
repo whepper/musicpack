@@ -17,7 +17,22 @@ test('plays a native-codec (FLAC) track through the browser backend', async ({ p
   expect(state.state).not.toBe('error');
 });
 
-test('exposes Media Session metadata while playing', async ({ page }) => {
+test('exposes Media Session metadata and a track-relative position state', async ({ page }) => {
+  // Capture setPositionState calls (write-only API -> wrap it before app boot).
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__posStates = [];
+    const ms = navigator.mediaSession;
+    if (!ms) return;
+    const orig = ms.setPositionState?.bind(ms);
+    Object.defineProperty(ms, 'setPositionState', {
+      configurable: true,
+      value: (s: MediaPositionState) => {
+        (w.__posStates as MediaPositionState[]).push(s);
+        orig?.(s);
+      },
+    });
+  });
   await page.getByText('Synthetic Test Compilation').click();
   await page.getByRole('button', { name: 'Play album' }).click();
   await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
@@ -29,6 +44,20 @@ test('exposes Media Session metadata while playing', async ({ page }) => {
   expect(meta?.title).toBeTruthy();
   expect(meta?.album).toBe('Synthetic Test Compilation');
   expect(meta?.artist).toBe('Alphaville');
+
+  // The reported position state must describe the CURRENT TRACK, not an
+  // album-spanning timeline: OS scrubbers derive their seekTo times from
+  // it, and album-scale values send media-key seeks to the wrong place.
+  const last = await page.evaluate(() => {
+    const arr = (window as unknown as { __posStates?: MediaPositionState[] }).__posStates ?? [];
+    return arr[arr.length - 1] ?? null;
+  });
+  expect(last).not.toBeNull();
+  const st = await playerState(page);
+  expect(last!.duration).toBeGreaterThan(0);
+  expect(last!.duration).toBeLessThan(st.durationSeconds); // track < album
+  expect(last!.position).toBeGreaterThanOrEqual(0);
+  expect(last!.position).toBeLessThanOrEqual(last!.duration + 0.25);
 });
 
 test('an invalid session returns to the sign-in screen (re-auth)', async ({ page }) => {

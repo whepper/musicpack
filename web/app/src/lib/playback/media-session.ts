@@ -31,6 +31,7 @@ export interface MediaActionHandlers {
   pause: () => void;
   next: () => void;
   previous: () => void;
+  /** TRACK-relative absolute time (spec semantics of `seekto`). */
   seek: (seconds: number) => void;
   seekBy: (deltaSeconds: number) => void;
 }
@@ -60,6 +61,8 @@ export function setMediaPosition(durationSeconds: number, positionSeconds: numbe
   if (!mediaSessionSupported()) return;
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
   if (!Number.isFinite(positionSeconds) || positionSeconds < 0) positionSeconds = 0;
+  // duration/position describe the CURRENT TRACK (Media Session spec), not
+  // an album-spanning timeline; the controller reports track-relative values.
   try {
     navigator.mediaSession.setPositionState?.({ duration: durationSeconds, position: positionSeconds, playbackRate: 1 });
   } catch {
