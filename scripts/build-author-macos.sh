@@ -35,6 +35,17 @@
 
 set -euo pipefail
 
+# Resolve the Rust toolchain even when the calling shell predates the install
+# (long-lived IDE terminals inherit a PATH without ~/.cargo/bin).
+if ! command -v rustc >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+command -v rustc >/dev/null 2>&1 || {
+  echo "error: rustc not found; install Rust via https://rustup.rs" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AUTHOR_DIR="$ROOT/author"
 BUILD_DIR="${MUSICPACK_AUTHOR_BUILD_DIR:-$ROOT/build-author}"
