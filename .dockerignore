@@ -1,0 +1,13 @@
+# Copyright (c) 2026, The MusicPack Development Team
+# SPDX-License-Identifier: BSD-3-Clause
+build/
+build-*/
+build-wasm/
+.git/
+docker/library/
+node_modules/
+web/node_modules/
+web/app/public/
+author/node_modules/
+author/src-tauri/target/
+dist/
