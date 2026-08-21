@@ -812,7 +812,9 @@ pub struct RecentAlbum {
     pub path: String,
     #[serde(default)]
     pub title: Option<String>,
-    pub lastOpenedMs: u64,
+    /// Wire name stays camelCase to match the frontend's `RecentAlbum` type.
+    #[serde(rename = "lastOpenedMs")]
+    pub last_opened_ms: u64,
 }
 
 fn read_recents(path: &Path) -> Vec<RecentAlbum> {
@@ -845,7 +847,7 @@ fn recents_add(
         RecentAlbum {
             path,
             title,
-            lastOpenedMs: std::time::SystemTime::now()
+            last_opened_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
