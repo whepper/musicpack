@@ -22,6 +22,7 @@ import type {
   IdentifyResult,
   ModelStatus,
   ReadImageResult,
+  RecentAlbum,
   SonicProgress,
   SonicResult,
   ValidationResult,
@@ -200,6 +201,30 @@ export class AuthorApi {
   /** Cancels a running waveform stage. */
   async waveformCancel(): Promise<void> {
     await this.invokeFn('waveform_cancel', {});
+  }
+
+  /** Autosaves the in-progress draft (debounced by the caller). */
+  async draftSave(draftJson: string): Promise<void> {
+    await this.invokeFn('draft_save', { draftJson });
+  }
+
+  /** Returns the autosaved draft JSON, or null when no session exists. */
+  async draftLoad(): Promise<string | null> {
+    return (await this.invokeFn('draft_load', {})) as string | null;
+  }
+
+  /** Removes the autosaved draft. */
+  async draftClear(): Promise<void> {
+    await this.invokeFn('draft_clear', {});
+  }
+
+  /** Most recently opened albums, newest first. */
+  async recentsList(): Promise<RecentAlbum[]> {
+    return (await this.invokeFn('recents_list', {})) as RecentAlbum[];
+  }
+
+  async recentsAdd(path: string, title?: string): Promise<void> {
+    await this.invokeFn('recents_add', { path, title: title ?? null });
   }
 
   /** Removes an encode staging directory after a successful package build. */

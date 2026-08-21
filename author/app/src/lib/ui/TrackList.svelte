@@ -24,6 +24,24 @@ SPDX-License-Identifier: BSD-3-Clause
   function updateTrackField(disc: number, index: number, patch: Partial<Track>): void {
     draftStore.updateTrack(disc, index, patch);
   }
+
+  /** Edits the primary artist's name without destroying additional credited
+   * artists or non-main roles (composer, featured, …) filled in by
+   * inspection or MusicBrainz. */
+  function updateTrackArtist(disc: number, index: number, name: string): void {
+    const d = draft.get();
+    if (!d) return;
+    const track = d.media[disc]?.tracks[index];
+    if (!track) return;
+    const rest = (track.artists ?? []).slice(1);
+    if (!name.trim()) {
+      // clearing the field keeps any secondary credits
+      draftStore.updateTrack(disc, index, { artists: rest.length > 0 ? rest : undefined });
+      return;
+    }
+    const main = { ...(track.artists?.[0] ?? { role: 'main' }), name };
+    draftStore.updateTrack(disc, index, { artists: [main, ...rest] });
+  }
 </script>
 
 {#if $draft}
@@ -51,12 +69,7 @@ SPDX-License-Identifier: BSD-3-Clause
             aria-label="Track artist"
             placeholder="artist"
             value={track.artists?.[0]?.name ?? ''}
-            oninput={(e) =>
-              draftStore.updateTrack(di, ti, {
-                artists: e.currentTarget.value
-                  ? [{ name: e.currentTarget.value, role: 'main' }]
-                   : undefined,
-              })}
+            oninput={(e) => updateTrackArtist(di, ti, e.currentTarget.value)}
             disabled={$encodeStaging !== null}
           />
           <button class="btn ghost" onclick={() => commitEdit(di, ti, {})} disabled={$encodeStaging !== null}>Done</button>

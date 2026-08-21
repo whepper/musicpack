@@ -549,7 +549,7 @@ impl AuthorService {
             .arg(&job_tmp)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
                 let _ = std::fs::remove_file(&job_tmp);
@@ -579,7 +579,7 @@ impl AuthorService {
             .arg("--json")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
                 let _ = std::fs::remove_file(&draft_tmp);
@@ -661,7 +661,7 @@ impl AuthorService {
             .arg("--json")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
                 let _ = std::fs::remove_file(&draft_tmp);

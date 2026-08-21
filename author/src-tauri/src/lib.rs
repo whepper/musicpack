@@ -42,6 +42,8 @@ struct AppState {
 pub struct SonicError {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<String>,
 }
 
 impl SonicError {
@@ -49,7 +51,12 @@ impl SonicError {
         SonicError {
             code,
             message: message.into(),
+            details: None,
         }
+    }
+    fn with_details(mut self, details: Option<String>) -> Self {
+        self.details = details;
+        self
     }
     fn model_missing() -> Self {
         Self::new(
@@ -426,6 +433,7 @@ async fn sonic_analyze(
         .stdout
         .take()
         .ok_or_else(|| SonicError::analyzer_unavailable("sonic analyzer produced no stdout"))?;
+    let stderr_tail = drain_stderr(&mut child);
     *state.running.lock().unwrap() = Some(child);
 
     let app2 = app.clone();
@@ -445,6 +453,9 @@ async fn sonic_analyze(
         final_event
     });
     let final_event = reader.join().unwrap_or(None);
+    let details = stderr_tail
+        .and_then(|h| h.join().ok())
+        .and_then(|lines| details_from(&lines));
     let _ = std::fs::remove_file(&job_tmp);
     // Reap the child (mirrors encode_tracks). sonic_cancel may already have
     // taken + reaped it, in which case take() returns None.
@@ -460,7 +471,8 @@ async fn sonic_analyze(
     let Some(event) = final_event else {
         return Err(SonicError::analysis_failed(
             "sonic analyzer produced no result",
-        ));
+        )
+        .with_details(details));
     };
     let ev = event
         .get("event")
@@ -480,7 +492,8 @@ async fn sonic_analyze(
             "MODEL_MISSING" => Err(SonicError::model_missing()),
             "RUNTIME_LOAD_FAILED" => Err(SonicError::runtime_dependency_missing()),
             _ => Err(SonicError::analysis_failed(message.to_string())),
-        };
+        }
+        .map_err(|e: SonicError| e.with_details(details.clone()));
     }
     Ok(json!({
         "ok": true,
@@ -521,6 +534,8 @@ fn sonic_cancel(state: State<AppState>) -> Result<(), String> {
 pub struct WaveformError {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<String>,
 }
 
 impl WaveformError {
@@ -528,7 +543,12 @@ impl WaveformError {
         WaveformError {
             code,
             message: message.into(),
+            details: None,
         }
+    }
+    fn with_details(mut self, details: Option<String>) -> Self {
+        self.details = details;
+        self
     }
     fn backend_unavailable(msg: impl Into<String>) -> Self {
         Self::new("backend_unavailable", msg)
@@ -536,6 +556,37 @@ impl WaveformError {
     fn generation_failed(msg: impl Into<String>) -> Self {
         Self::new("generation_failed", msg)
     }
+}
+
+/// Collects a spawned child's stderr into a bounded tail on a worker thread.
+/// The GUI shows this tail next to task errors instead of dead-end messages
+/// (child stderr previously went to the dev terminal and was lost for
+/// packaged apps). Returns None when the child has no stderr pipe.
+fn drain_stderr(child: &mut Child) -> Option<std::thread::JoinHandle<Vec<String>>> {
+    let stderr = child.stderr.take()?;
+    Some(std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        use std::collections::VecDeque;
+        let mut tail: VecDeque<String> = VecDeque::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if tail.len() >= 40 {
+                tail.pop_front();
+            }
+            tail.push_back(line);
+        }
+        tail.into_iter().collect()
+    }))
+}
+
+/// Formats a stderr tail as user-presentable detail text: drops blank lines
+/// and the CLI banner; None when nothing usable was captured.
+fn details_from(lines: &[String]) -> Option<String> {
+    let kept: Vec<&str> = lines
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.starts_with("musicpack - MusicPack"))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("\n"))
 }
 
 /// Validates a draft before passing it unchanged to `waveform-draft`. The CLI
@@ -610,6 +661,7 @@ async fn waveform_analyze(
         .stdout
         .take()
         .ok_or_else(|| WaveformError::backend_unavailable("waveform child produced no stdout"))?;
+    let stderr_tail = drain_stderr(&mut child);
     *state.waveform_running.lock().unwrap() = Some((child, staging.clone(), draft_tmp));
 
     let app2 = app.clone();
@@ -630,6 +682,9 @@ async fn waveform_analyze(
         final_event
     });
     let final_event = reader.join().unwrap_or(None);
+    let details = stderr_tail
+        .and_then(|h| h.join().ok())
+        .and_then(|lines| details_from(&lines));
     if let Some((mut child, _, draft_tmp)) = state.waveform_running.lock().unwrap().take() {
         let _ = child.wait();
         let _ = std::fs::remove_file(draft_tmp);
@@ -639,7 +694,8 @@ async fn waveform_analyze(
         let _ = std::fs::remove_dir_all(&staging_for_cleanup);
         return Err(WaveformError::generation_failed(
             "waveform stage produced no result",
-        ));
+        )
+        .with_details(details));
     };
     let ev = event
         .get("event")
@@ -659,7 +715,9 @@ async fn waveform_analyze(
             .and_then(|m| m.as_str())
             .unwrap_or("waveform generation failed");
         let _ = std::fs::remove_dir_all(&staging_for_cleanup);
-        return Err(WaveformError::generation_failed(message.to_string()));
+        return Err(
+            WaveformError::generation_failed(message.to_string()).with_details(details)
+        );
     }
     Ok(json!({
         "ok": true,
@@ -695,6 +753,107 @@ fn unique_staging_dir(root: &Path, prefix: &str) -> PathBuf {
         p = root.join(format!("{prefix}-{pid}-{n}"));
     }
     p
+}
+
+// ---- authoring-session persistence -----------------------------------------
+//
+// The draft lives only in memory while the window is open, which used to
+// mean an accidental quit discarded all curation work. These commands keep
+// one autosaved draft plus a short recents list under the app data dir; the
+// frontend writes on change (debounced) and offers resume/recents on the
+// Welcome screen.
+
+fn session_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?
+        .join("session");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create session dir: {e}"))?;
+    Ok(dir)
+}
+
+/// Atomically replaces a file (tmp write + rename so a crash never leaves a
+/// truncated document).
+fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("cannot replace {}: {e}", path.display()))
+}
+
+#[tauri::command]
+fn draft_save(app: tauri::AppHandle, draft_json: String) -> Result<(), String> {
+    let path = session_dir(&app)?.join("draft.json");
+    atomic_write(&path, &draft_json)
+}
+
+/// Returns the autosaved draft JSON, or None when no session exists.
+#[tauri::command]
+fn draft_load(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(session_dir(&app)?.join("draft.json")) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read saved draft: {e}")),
+    }
+}
+
+#[tauri::command]
+fn draft_clear(app: tauri::AppHandle) -> Result<(), String> {
+    match std::fs::remove_file(session_dir(&app)?.join("draft.json")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove saved draft: {e}")),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct RecentAlbum {
+    pub path: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub lastOpenedMs: u64,
+}
+
+fn read_recents(path: &Path) -> Vec<RecentAlbum> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn recents_list(app: tauri::AppHandle) -> Result<Vec<RecentAlbum>, String> {
+    Ok(read_recents(
+        &session_dir(&app)?.join("recents.json"),
+    ))
+}
+
+/// Adds/moves `path` to the front of the recents list (bounded, newest
+/// first). Called when an album is opened successfully.
+#[tauri::command]
+fn recents_add(
+    app: tauri::AppHandle,
+    path: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let file = session_dir(&app)?.join("recents.json");
+    let mut list: Vec<RecentAlbum> =
+        read_recents(&file).into_iter().filter(|r| r.path != path).collect();
+    list.insert(
+        0,
+        RecentAlbum {
+            path,
+            title,
+            lastOpenedMs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        },
+    );
+    list.truncate(8);
+    let json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
+    atomic_write(&file, &json)
 }
 
 /// Runs the FLAC/WAV -> Musepack encode stage for the current draft. The
@@ -739,6 +898,7 @@ async fn encode_tracks(
         cleanup_encode_staging(&state, &staging);
         return Err("encode backend produced no stdout".to_string());
     };
+    let stderr_tail = drain_stderr(&mut child);
     *state.encode_running.lock().unwrap() = Some((child, staging.clone()));
 
     let app2 = app.clone();
@@ -758,14 +918,30 @@ async fn encode_tracks(
         final_event
     });
     let final_event = reader.join().unwrap_or(None);
+    let details = stderr_tail
+        .and_then(|h| h.join().ok())
+        .and_then(|lines| details_from(&lines));
     let _ = std::fs::remove_file(&draft_tmp);
     if let Some((mut child, _)) = state.encode_running.lock().unwrap().take() {
         let _ = child.wait();
     }
 
+    // Encode errors are plain strings in this command; append captured
+    // stderr so the GUI's details expander has substance.
+    fn with_details(mut message: String, details: Option<String>) -> String {
+        if let Some(d) = details {
+            message.push_str("\n\n--- backend output ---\n");
+            message.push_str(&d);
+        }
+        message
+    }
+
     let Some(event) = final_event else {
         cleanup_encode_staging(&state, &staging);
-        return Err("encode backend produced no result".to_string());
+        return Err(with_details(
+            "encode backend produced no result".to_string(),
+            details,
+        ));
     };
     let ev = event
         .get("event")
@@ -779,9 +955,10 @@ async fn encode_tracks(
         let message = event
             .get("message")
             .and_then(|m| m.as_str())
-            .unwrap_or("encoding failed");
+            .unwrap_or("encoding failed")
+            .to_string();
         cleanup_encode_staging(&state, &staging);
-        return Err(message.to_string());
+        return Err(with_details(message, details));
     }
     Ok(json!({
         "ok": true,
@@ -865,7 +1042,12 @@ pub fn run() {
             encode_cancel,
             waveform_analyze,
             waveform_cancel,
-            cleanup_staging
+            cleanup_staging,
+            draft_save,
+            draft_load,
+            draft_clear,
+            recents_list,
+            recents_add
         ])
         .run(tauri::generate_context!())
         .expect("error while running MusicPack Author");

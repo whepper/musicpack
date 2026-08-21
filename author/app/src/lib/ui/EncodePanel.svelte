@@ -5,8 +5,9 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { api, draft, draftStore } from '../bootstrap';
-  import { setEncodeStaging } from '../authoring-state';
+  import { activeTask, setEncodeStaging } from '../authoring-state';
   import { needsEncoding } from '../format';
+  import ErrorDetails from './ErrorDetails.svelte';
   import type { EncodeProgress } from '../types';
 
   const DEFAULT_QUALITY = '6.0';
@@ -24,6 +25,7 @@ SPDX-License-Identifier: BSD-3-Clause
   let currentTitle = $state<string | null>(null);
   let quality = $state(DEFAULT_QUALITY);
   let error = $state<string | null>(null);
+  let errorDetails = $state<string | null>(null);
   let encoded = $state(false);
 
   function trackCount(): number {
@@ -39,8 +41,10 @@ SPDX-License-Identifier: BSD-3-Clause
     const d = draft.get();
     if (!d || running) return;
     running = true;
+    activeTask.set('encode');
     encoded = false;
     error = null;
+    errorDetails = null;
     done = 0;
     total = trackCount();
     stage = null;
@@ -70,9 +74,20 @@ SPDX-License-Identifier: BSD-3-Clause
       }
     } catch (e) {
       setEncodeStaging(null);
-      error = e instanceof Error ? e.message : 'Encoding failed.';
+      const msg = e instanceof Error ? e.message : 'Encoding failed.';
+      // encode errors arrive as one string with an appended backend-output
+      // section; split it so the details expander renders it properly
+      const sep = '\n\n--- backend output ---\n';
+      const at = msg.indexOf(sep);
+      if (at >= 0) {
+        error = msg.slice(0, at);
+        errorDetails = msg.slice(at + sep.length);
+      } else {
+        error = msg;
+      }
     } finally {
       running = false;
+      activeTask.set(null);
       stage = null;
       currentTitle = null;
     }
@@ -103,7 +118,7 @@ SPDX-License-Identifier: BSD-3-Clause
     </p>
 
     {#if running}
-      <p>
+      <p role="status" aria-live="polite">
         <span class="chip idle">◐</span>
         {stage ? stageLabel[stage] ?? stage : 'Preparing'} —
         {done} / {total} tracks{currentTitle ? ` · ${currentTitle}` : ''}
@@ -121,7 +136,7 @@ SPDX-License-Identifier: BSD-3-Clause
       </p>
     {:else}
       {#if error}
-        <p class="error-banner" style="margin:0">{error}</p>
+        <ErrorDetails message={error} details={errorDetails} />
       {/if}
       <button class="btn" onclick={runEncode} disabled={running}>
         Encode to Musepack

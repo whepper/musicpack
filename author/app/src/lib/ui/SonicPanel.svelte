@@ -5,6 +5,8 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { api, draft, draftStore } from '../bootstrap';
+  import { activeTask } from '../authoring-state';
+  import ErrorDetails from './ErrorDetails.svelte';
   import type { ModelStatus, SonicError, SonicProgress } from '../types';
 
   /** The profiles exposed in the UI. Only the permissive openl3-v1 profile is
@@ -21,6 +23,7 @@ SPDX-License-Identifier: BSD-3-Clause
   let modelStatus = $state<ModelStatus | null>(null);
   let modelProgress = $state<{ downloaded: number; total: number } | null>(null);
   let verifying = $state(false);
+  let errorDetails = $state<string | null>(null);
 
   function selectedProfile(): { id: string; label: string } {
     const id = $draft?.sonicAnalysis?.profile ?? DEFAULT_PROFILE.id;
@@ -71,6 +74,8 @@ SPDX-License-Identifier: BSD-3-Clause
     const d = draft.get();
     if (!d || running) return;
     running = true;
+    activeTask.set('sonic');
+    errorDetails = null;
     const n = trackCount();
     done = 0;
     total = n;
@@ -127,12 +132,15 @@ SPDX-License-Identifier: BSD-3-Clause
         });
       }
     } catch (e) {
+      const err = e as SonicError;
+      errorDetails = err?.details ?? null;
       draftStore.updateSonicAnalysis((s) => {
         s.status = 'error';
         s.error = errorMessage(e);
       });
     } finally {
       running = false;
+      activeTask.set(null);
       modelProgress = null;
       verifying = false;
     }
@@ -167,7 +175,7 @@ SPDX-License-Identifier: BSD-3-Clause
         {/if}
         <button class="btn ghost" onclick={cancel}>Cancel</button>
       {:else}
-        <p><span class="chip idle">◐</span> Analysing {done} / {total} tracks…</p>
+        <p role="status" aria-live="polite"><span class="chip idle">◐</span> Analysing {done} / {total} tracks…</p>
         <button class="btn ghost" onclick={cancel}>Cancel</button>
       {/if}
     {:else}
@@ -203,10 +211,12 @@ SPDX-License-Identifier: BSD-3-Clause
         <button class="btn ghost" onclick={analyse}>Re-analyse</button>
       {:else if s.status === 'error'}
         <p><span class="chip warn">✕</span> Analysis failed</p>
-        {#if s.error}
-          <p class="muted">{s.error}</p>
-        {/if}
-        <button class="btn" onclick={analyse}>Retry Sonic Analysis</button>
+        <ErrorDetails
+          message={s.error ?? 'Sonic analysis failed.'}
+          details={errorDetails}
+          onRetry={analyse}
+          retryLabel="Retry Sonic Analysis"
+        />
       {:else}
         <p>○ Not analysed</p>
         <button class="btn" onclick={analyse}>Analyse Sonic</button>

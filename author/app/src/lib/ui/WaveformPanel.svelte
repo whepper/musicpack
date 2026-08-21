@@ -6,6 +6,8 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import { api } from '../bootstrap';
   import { draftStore, draft } from '../bootstrap';
+  import ErrorDetails from './ErrorDetails.svelte';
+  import { activeTask } from '../authoring-state';
   import type { Draft, WaveformProgress } from '../types';
 
   let d = $derived($draft);
@@ -14,6 +16,7 @@ SPDX-License-Identifier: BSD-3-Clause
   let progressTotal = $state(0);
   let cancelled = $state(false);
   let autoStarted = $state(false);
+  let errorDetails = $state<string | null>(null);
 
   const status = $derived(d?.waveformAnalysis?.status ?? 'not_generated');
   const tracksTotal = $derived(
@@ -31,9 +34,11 @@ SPDX-License-Identifier: BSD-3-Clause
   async function generate() {
     if (!d || generating) return;
     generating = true;
+    activeTask.set('waveform');
     cancelled = false;
     progressDone = 0;
     progressTotal = tracksTotal;
+    errorDetails = null;
 
     // Mark pending so build-draft will reject a missing block.
     draftStore.updateWaveformAnalysis((s) => {
@@ -82,13 +87,15 @@ SPDX-License-Identifier: BSD-3-Clause
         });
       }
     } catch (e) {
-      const err = e as { code?: string; message?: string };
+      const err = e as { code?: string; message?: string; details?: string };
+      errorDetails = err.details ?? null;
       draftStore.updateWaveformAnalysis((s) => {
         s.status = 'error';
         s.error = err.message ?? String(e);
       });
     } finally {
       generating = false;
+      activeTask.set(null);
     }
   }
 
@@ -127,15 +134,22 @@ SPDX-License-Identifier: BSD-3-Clause
     </span>
   </header>
 
-  {#if status === 'not_generated' || status === 'error'}
+  {#if status === 'error'}
+    <ErrorDetails
+      message={d?.waveformAnalysis?.error ?? 'Waveform generation failed.'}
+      details={errorDetails}
+      onRetry={generate}
+      retryLabel="Regenerate waveforms"
+    />
+  {:else if status === 'not_generated'}
     <div class="row">
       <button onclick={generate} disabled={generating || tracksTotal === 0}>
-        {status === 'error' ? 'Regenerate waveforms' : 'Generate waveforms'}
+        Generate waveforms
       </button>
       <span class="hint">100 ms · peak + RMS · 1.2 KB/minute</span>
     </div>
   {:else if status === 'pending'}
-    <div class="row">
+    <div class="row" role="status" aria-live="polite">
       <progress max={tracksTotal} value={progressDone}></progress>
       <button onclick={cancel}>Cancel</button>
     </div>

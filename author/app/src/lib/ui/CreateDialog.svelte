@@ -15,14 +15,38 @@ SPDX-License-Identifier: BSD-3-Clause
   let packageName = $state('');
   let creating = $state(false);
   let reVerifying = $state(false);
+  let panel: HTMLDivElement | null = $state(null);
 
   onMount(() => {
     const fn = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') close();
+      // keep Tab cycling inside the modal
+      if (e.key === 'Tab' && panel) {
+        const focusable = Array.from(
+          panel.querySelectorAll<HTMLElement>(
+            'button, input, select, [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0] as HTMLElement;
+        const last = focusable[focusable.length - 1] as HTMLElement;
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   });
+
+  function mount(node: HTMLDivElement): void {
+    panel = node;
+    node.querySelector<HTMLElement>('button')?.focus();
+  }
 
   function outputPath(): string | null {
     if (!outputParent) return null;
@@ -53,8 +77,10 @@ SPDX-License-Identifier: BSD-3-Clause
     } finally {
       creating = false;
     }
-    // a successfully built package no longer needs its encode staging area
+    // a successfully built package no longer needs its encode staging area,
+    // and the authoring session is complete — drop the autosaved draft too
     if (createResult.get()?.ok) {
+      void api.draftClear().catch(() => {});
       const staging = encodeStaging.get();
       if (staging) {
         encodeStaging.set(null);
@@ -112,6 +138,7 @@ SPDX-License-Identifier: BSD-3-Clause
       style="text-align:left;max-width:640px;width:92%"
       role="document"
       tabindex="-1"
+      use:mount
     >
       {#if $createResult}
         {@const r = $createResult}

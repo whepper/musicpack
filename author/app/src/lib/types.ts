@@ -319,6 +319,14 @@ export interface SonicError {
     | 'runtime_dependency_missing'
     | 'analysis_failed';
   message?: string;
+  /** Captured backend stderr tail, shown in a details expander. */
+  details?: string;
+}
+
+export interface RecentAlbum {
+  path: string;
+  title?: string | null;
+  lastOpenedMs: number;
 }
 
 export interface BackendInfo {

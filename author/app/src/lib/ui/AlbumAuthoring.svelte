@@ -6,9 +6,9 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, draft, draftStore } from '../bootstrap';
-  import { chipState } from '../draft-store';
-  import { validating, validation } from '../authoring-state';
-  import type { IdentifyCandidate, IdentifyResult, ValidationResult } from '../types';
+  import { validating, validation, encodeStaging } from '../authoring-state';
+  import { runValidation } from '../validate';
+  import type { IdentifyCandidate, IdentifyResult } from '../types';
   import { artistLine, formatDate } from '../format';
   import ConfidenceBadge from './ConfidenceBadge.svelte';
   import ReleaseForm from './ReleaseForm.svelte';
@@ -16,6 +16,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import EncodePanel from './EncodePanel.svelte';
   import ArtworkManager from './ArtworkManager.svelte';
   import IdentityPanel from './IdentityPanel.svelte';
+  import SectionRail from './SectionRail.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
   import SonicPanel from './SonicPanel.svelte';
   import WaveformPanel from './WaveformPanel.svelte';
@@ -41,23 +42,48 @@ SPDX-License-Identifier: BSD-3-Clause
     }
   }
 
-  async function runValidation(): Promise<void> {
-    const d = draft.get();
+  // ---- autosave + window title + debounced auto-validation ----------------
+
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let validateTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    const d = $draft;
     if (!d) return;
-    validating.set(true);
-    try {
-      const result: ValidationResult = await api.validateDraft(d);
-      validation.set(result);
-    } catch (e) {
-      validation.set({
-        ok: false,
-        errors: [e instanceof Error ? e.message : 'Validation failed'],
-        warnings: [],
-      });
-    } finally {
-      validating.set(false);
+
+    // window title reflects the album being authored
+    const artist = d.album.artists?.[0]?.name ?? '';
+    document.title =
+      `${d.album.title || 'Untitled album'}${artist ? ` — ${artist}` : ''} · MusicPack Author`;
+
+    // autosave (debounced): an accidental quit no longer discards the draft.
+    // Skipped while encode staging is active — that transformed draft points
+    // at temporary encoded files which won't survive a restart.
+    const staged = encodeStaging.get();
+    if (!staged && saveTimer) clearTimeout(saveTimer);
+    if (!staged) {
+      saveTimer = setTimeout(() => {
+        void api.draftSave(JSON.stringify(d)).catch(() => {
+          /* persistence is best-effort; authoring continues in memory */
+        });
+      }, 800);
     }
-  }
+
+    // auto-validation (debounced): keeps the verdict fresh after edits so
+    // Create is gated by a current result rather than a stale one
+    if (validateTimer) clearTimeout(validateTimer);
+    validateTimer = setTimeout(() => {
+      if (!validating.get()) void runValidation();
+    }, 1200);
+  });
+
+  onMount(() => {
+    return () => {
+      if (saveTimer) clearTimeout(saveTimer);
+      if (validateTimer) clearTimeout(validateTimer);
+      document.title = 'MusicPack Author';
+    };
+  });
 
   function handleIdentify(result: IdentifyResult): void {
     if (result.kind === 'applied') {
@@ -79,7 +105,9 @@ SPDX-License-Identifier: BSD-3-Clause
 </script>
 
 {#if $draft}
-  <header class="author-header">
+  <div class="page">
+    <div class="content">
+      <header class="author-header">
     <div class="cover">
       {#if coverUrl}
         <img src={coverUrl} alt="Front artwork" />
@@ -113,38 +141,71 @@ SPDX-License-Identifier: BSD-3-Clause
     </div>
   </header>
 
-  <ReleaseForm />
-
-  <section class="section">
-    <h2>Tracks</h2>
-    <TrackList />
-  </section>
-
-  <EncodePanel />
-
-  <section class="section">
-    <h2>Artwork &amp; assets</h2>
-    <ArtworkManager onChange={handleArtworkChange} />
-  </section>
-
-  <section class="section">
+  <section class="section" id="sec-identity">
     <h2>Identity</h2>
     <IdentityPanel onIdentified={handleIdentify} candidates={candidates} />
   </section>
 
-  <SonicPanel />
+  <div id="sec-release">
+    <ReleaseForm />
+  </div>
 
-  <WaveformPanel />
+  <section class="section" id="sec-tracks">
+    <h2>Tracks</h2>
+    <TrackList />
+  </section>
 
-  <section class="section">
+  <section class="section" id="sec-artwork">
+    <h2>Artwork &amp; assets</h2>
+    <ArtworkManager onChange={handleArtworkChange} />
+  </section>
+
+  <div id="sec-encode">
+    <EncodePanel />
+  </div>
+
+  <div id="sec-sonic">
+    <SonicPanel />
+  </div>
+
+  <div id="sec-waveform">
+    <WaveformPanel />
+  </div>
+
+  <section class="section" id="sec-validation">
     <h2>Validation</h2>
+    <p class="muted smallcaps">Runs automatically after edits; the button forces a fresh check.</p>
     <button class="btn ghost" onclick={runValidation} disabled={$validating}>
-      {$validating ? 'Validating…' : 'Validate'}
+      {$validating ? 'Validating…' : 'Validate now'}
     </button>
     {#if $validation}
       <ValidationPanel result={$validation} />
+    {:else}
+      <p class="muted">Not validated yet.</p>
     {/if}
   </section>
+</div>
+
+<nav class="rail-slot" aria-label="Album sections">
+  <SectionRail />
+</nav>
+  </div>
 
   <CreateDialog />
 {/if}
+
+<style>
+  .page {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+  }
+  .content {
+    flex: 1;
+    min-width: 0;
+  }
+  .rail-slot {
+    position: sticky;
+    top: 76px;
+  }
+</style>

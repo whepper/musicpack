@@ -12,7 +12,8 @@ SPDX-License-Identifier: BSD-3-Clause
   let info: BackendInfo | null = $state(null);
   let message = $state('');
 
-  onMount(async () => {
+  async function check(): Promise<void> {
+    status = 'checking';
     try {
       info = await api.backendInfo();
       status = 'ok';
@@ -20,6 +21,18 @@ SPDX-License-Identifier: BSD-3-Clause
       message = e instanceof Error ? e.message : 'Authoring backend is unavailable.';
       status = 'error';
     }
+  }
+
+  onMount(() => {
+    void check();
+    // The backend can appear later (CLI built while the app was open) or a
+    // previous check may have raced startup; re-check when the window gets
+    // focus so recovery is one click away at most.
+    const onFocus = (): void => {
+      if (status === 'error') void check();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   });
 </script>
 
@@ -28,6 +41,7 @@ SPDX-License-Identifier: BSD-3-Clause
 {:else if status === 'error'}
   <div class="banner error" role="alert">
     <strong>Backend unavailable</strong> — {message}
+    <button class="btn ghost" onclick={check}>Retry</button>
   </div>
 {:else if info}
   <div class="banner ok">
@@ -42,6 +56,9 @@ SPDX-License-Identifier: BSD-3-Clause
     line-height: 1.4;
     padding: 6px 16px;
     border-bottom: 1px solid var(--hairline, rgba(0, 0, 0, 0.12));
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .banner.checking {
     color: var(--muted, #6b6b6b);
@@ -52,9 +69,9 @@ SPDX-License-Identifier: BSD-3-Clause
   }
   .banner.ok {
     color: var(--muted, #6b6b6b);
-    display: flex;
-    align-items: center;
-    gap: 6px;
+  }
+  .banner.error .btn {
+    margin-left: auto;
   }
   .dot {
     width: 7px;

@@ -10,6 +10,12 @@ import type { CreateResult, ValidationResult } from './types';
 
 export const validation = writable<ValidationResult | null>(null);
 export const validating = writable<boolean>(false);
+/** True when the draft changed after the last successful validation, so the
+ * UI can mark a previous green result as outdated instead of silently stale. */
+export const validationDirty = writable<boolean>(false);
+/** The long task currently running (encode | sonic | waveform | null), for
+ * the global busy indicator in the status bar. */
+export const activeTask = writable<string | null>(null);
 export const createOpen = writable<boolean>(false);
 export const createResult = writable<CreateResult | null>(null);
 
@@ -23,4 +29,5 @@ export function setEncodeStaging(dir: string | null): void {
 
 export function invalidateValidation(): void {
   validation.set(null);
+  validationDirty.set(false);
 }
