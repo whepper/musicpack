@@ -14,6 +14,28 @@ SPDX-License-Identifier: BSD-3-Clause
   let addRole = $state('front');
   let note = $state<string | null>(null);
 
+  // Row thumbnails, keyed by the artwork entry's relative path. Read failures
+  // are recorded so a bad file never triggers a fetch loop; those rows fall
+  // back to showing the filename text.
+  let thumbs = $state<Record<string, string>>({});
+  let failed = $state<Record<string, true>>({});
+
+  $effect(() => {
+    const d = $draft;
+    if (!d) return;
+    for (const art of d.artwork) {
+      const rel = art.path;
+      if (!rel || thumbs[rel] || failed[rel]) continue;
+      void api.readImage(`${d.sourceRoot}/${rel}`)
+        .then((img) => {
+          thumbs[rel] = `data:${img.mime};base64,${img.dataBase64}`;
+        })
+        .catch(() => {
+          failed[rel] = true;
+        });
+    }
+  });
+
   function relUnderRoot(abs: string): string | null {
     const root = (draft.get()?.sourceRoot ?? '').replace(/\/+$/, '');
     if (abs.startsWith(root + '/')) return abs.slice(root.length + 1);
@@ -82,8 +104,9 @@ SPDX-License-Identifier: BSD-3-Clause
 {#each $draft.artwork as art, i}
   <div class="artwork-row">
     <span class="thumb">
-      {#if art.path}
-        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="" style="display:none" />
+      {#if art.path && thumbs[art.path]}
+        <img src={thumbs[art.path]} alt={`${art.role} artwork`} />
+      {:else if art.path}
         {art.path.split('/').pop()}
       {:else}
         embedded

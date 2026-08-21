@@ -1006,6 +1006,15 @@ input[type="range"]::-webkit-slider-thumb {
   justify-content: center;
   font-size: var(--fs-xxs);
   color: var(--ink-faint);
+  overflow: hidden;
+  text-align: center;
+}
+
+.artwork-row .thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .artwork-row .role {
