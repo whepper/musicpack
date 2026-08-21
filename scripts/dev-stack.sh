@@ -13,6 +13,10 @@ case "${1:-up}" in
     echo "Web UI:    http://localhost:8080"
     echo "Health:    http://localhost:8080/api/v1/health"
     echo "Library:   $(pwd)/docker/library (drop .mpack packages here, then restart)"
+    for i in $(seq 1 30); do
+      curl -fsS http://localhost:8080/api/v1/health >/dev/null 2>&1 && break
+      sleep 1
+    done
     docker compose -f docker/compose.yaml exec server musicpack-server scan --library /data/library || true
     ;;
   down)  docker compose -f docker/compose.yaml down ;;

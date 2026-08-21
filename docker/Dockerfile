@@ -32,7 +32,9 @@ ARG BUILD_TESTS=OFF
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DMPC_BUILD_TESTS=${BUILD_TESTS} \
       -DMPC_BUILD_MPCGAIN=OFF -DMPC_BUILD_MPCCHAP=OFF \
- && cmake --build build -j"$(nproc)"
+ && cmake --build build -j"$(nproc)" \
+ && find build \( -name 'libmusicpack.so*' -o -name 'libmusepack.so*' \) \
+      -exec cp {} /usr/local/lib/ \; && ldconfig
 
 # ---- 4. Runtime image ----------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -45,6 +47,8 @@ COPY --from=build /src/build/musicpack/musicpack       /usr/local/bin/
 COPY --from=build /src/build/mpcenc/mpcenc             /usr/local/bin/
 COPY --from=build /src/build/mpcdec/mpcdec             /usr/local/bin/
 COPY --from=web /src/web/app/dist /srv/web
+COPY --from=build /usr/local/lib/ /usr/local/lib/
+RUN ldconfig
 USER musicpack
 ENV MUSICPACK_LISTEN=0.0.0.0 MUSICPACK_PORT=8080
 EXPOSE 8080

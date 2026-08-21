@@ -34,7 +34,7 @@ set_target_properties(musicpack_server PROPERTIES
 
 target_include_directories(musicpack_server
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sqlite)
+           ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sqlite)
 
 if(WIN32)
   target_include_directories(musicpack_server PRIVATE
