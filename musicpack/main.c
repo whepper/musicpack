@@ -5611,6 +5611,9 @@ cmd_waveform_draft(const char *draft_path, const char *out_dir, int json)
        promoted to ready at the end on success). */
     wa = cJSON_GetObjectItemCaseSensitive(draft, "waveformAnalysis");
     if (cJSON_IsObject(wa)) {
+        /* detach before delete: deleting a still-linked child corrupts the
+           parent's sibling list (heap corruption at serialization time) */
+        cJSON_DetachItemViaPointer(draft, wa);
         cJSON_Delete(wa);
     }
     wa = cJSON_AddObjectToObject(draft, "waveformAnalysis");
