@@ -6,7 +6,14 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, draft, draftStore } from '../bootstrap';
-  import { validating, validation, encodeStaging } from '../authoring-state';
+  import {
+    validating,
+    validation,
+    encodeStaging,
+    activeStage,
+    STAGES,
+    type StageId,
+  } from '../authoring-state';
   import { runValidation } from '../validate';
   import type { IdentifyCandidate, IdentifyResult } from '../types';
   import { artistLine, formatDate } from '../format';
@@ -16,7 +23,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import EncodePanel from './EncodePanel.svelte';
   import ArtworkManager from './ArtworkManager.svelte';
   import IdentityPanel from './IdentityPanel.svelte';
-  import SectionRail from './SectionRail.svelte';
+  import WorkflowNav from './WorkflowNav.svelte';
   import ValidationPanel from './ValidationPanel.svelte';
   import SonicPanel from './SonicPanel.svelte';
   import WaveformPanel from './WaveformPanel.svelte';
@@ -102,6 +109,26 @@ SPDX-License-Identifier: BSD-3-Clause
   onMount(() => {
     void loadCover();
   });
+
+  // ---- stage switching -----------------------------------------------------
+  // Stage panels stay mounted (hidden) so running tasks keep their progress
+  // and panel-local edits survive a switch; only visibility changes. Focus
+  // follows the stage change so keyboard users land in the new panel.
+
+  let lastStage: StageId | null = null;
+
+  $effect(() => {
+    const stage = $activeStage;
+    if (lastStage === null) {
+      lastStage = stage;
+      return;
+    }
+    if (stage === lastStage) return;
+    lastStage = stage;
+    document
+      .getElementById(`stage-heading-${stage}`)
+      ?.focus({ preventScroll: false });
+  });
 </script>
 
 {#if $draft}
@@ -124,82 +151,92 @@ SPDX-License-Identifier: BSD-3-Clause
     <div>
       <h1>{$draft.album.title || 'Untitled album'}</h1>
       <div class="artist">{artistLine($draft.album.artists)}</div>
-      {#if $draft.release?.edition}
-        <div class="edition">{$draft.release.edition}</div>
-      {/if}
       <div class="edition">
-        {#if $draft.album.originalReleaseDate}original {formatDate($draft.album.originalReleaseDate)}{/if}
+        {#if $draft.release?.edition}{$draft.release.edition}{/if}
+        {#if $draft.album.originalReleaseDate}{#if $draft.release?.edition} · {/if}original {formatDate($draft.album.originalReleaseDate)}{/if}
         {#if $draft.release?.releaseDate} · released {formatDate($draft.release.releaseDate)}{/if}
         {#if $draft.release?.country} · {$draft.release.country}{/if}
         {#if $draft.album.releaseType} · {$draft.album.releaseType}{/if}
       </div>
-      <div class="edition">
+      <div class="edition meta-line">
         <ConfidenceBadge confidence={$draft.identity?.confidence} />
+        <span class="source-root">{$draft.openedFrom ? 'package · ' : ''}{$draft.sourceRoot}</span>
       </div>
-      <div class="source-root">{$draft.openedFrom ? 'package · ' : ''}{$draft.sourceRoot}</div>
+    </div>
+    <div class="header-actions">
       <button class="btn ghost" onclick={onReset}>← Choose a different album</button>
     </div>
   </header>
 
-  <section class="section" id="sec-identity">
-    <h2>Identity</h2>
-    <IdentityPanel onIdentified={handleIdentify} candidates={candidates} />
-  </section>
+  <WorkflowNav />
 
-  <div id="sec-release">
-    <ReleaseForm />
-  </div>
-
-  <section class="section" id="sec-tracks">
-    <h2>Tracks</h2>
-    <TrackList />
-  </section>
-
-  <section class="section" id="sec-artwork">
-    <h2>Artwork &amp; assets</h2>
-    <ArtworkManager onChange={handleArtworkChange} />
-  </section>
-
-  <div id="sec-encode">
-    {#if $draft.openedFrom}
-      <section class="section">
-        <h2>Audio</h2>
-        <p class="muted">
-          Tracks are already encoded (Musepack SV8) inside the opened package —
-          no encode step is needed. Saving writes your edits back into the
-          package without re-encoding.
-        </p>
-      </section>
-    {:else}
-      <EncodePanel />
-    {/if}
-  </div>
-
-  <div id="sec-sonic">
-    <SonicPanel />
-  </div>
-
-  <div id="sec-waveform">
-    <WaveformPanel />
-  </div>
-
-  <section class="section" id="sec-validation">
-    <h2>Validation</h2>
-    <p class="muted smallcaps">Runs automatically after edits; the button forces a fresh check.</p>
-    <button class="btn ghost" onclick={runValidation} disabled={$validating}>
-      {$validating ? 'Validating…' : 'Validate now'}
-    </button>
-    {#if $validation}
-      <ValidationPanel result={$validation} />
-    {:else}
-      <p class="muted">Not validated yet.</p>
-    {/if}
-  </section>
-</div>
-
-<nav class="rail-slot" aria-label="Album sections">
-  <SectionRail />
-</nav>
+  {#each STAGES as s (s.id)}
+    <div
+      class="stage-panel"
+      id={`stage-panel-${s.id}`}
+      role="tabpanel"
+      aria-labelledby={`stage-tab-${s.id}`}
+      hidden={$activeStage !== s.id}
+    >
+      {#if s.id === 'identity'}
+        <section class="section">
+          <h2 tabindex="-1" id="stage-heading-identity">Identity</h2>
+          <IdentityPanel onIdentified={handleIdentify} candidates={candidates} />
+        </section>
+      {:else if s.id === 'release'}
+        <div class="stage-body" id="stage-heading-release" tabindex="-1">
+          <ReleaseForm />
+        </div>
+      {:else if s.id === 'tracks'}
+        <section class="section">
+          <h2 tabindex="-1" id="stage-heading-tracks">Tracks</h2>
+          <TrackList />
+        </section>
+      {:else if s.id === 'artwork'}
+        <section class="section">
+          <h2 tabindex="-1" id="stage-heading-artwork">Artwork &amp; assets</h2>
+          <ArtworkManager onChange={handleArtworkChange} />
+        </section>
+      {:else if s.id === 'encode'}
+        <div class="stage-body" id="stage-heading-encode" tabindex="-1">
+          {#if $draft.openedFrom}
+            <section class="section">
+              <h2>Audio</h2>
+              <p class="muted">
+                Tracks are already encoded (Musepack SV8) inside the opened package —
+                no encode step is needed. Saving writes your edits back into the
+                package without re-encoding.
+              </p>
+            </section>
+          {:else}
+            <EncodePanel />
+          {/if}
+        </div>
+      {:else if s.id === 'sonic'}
+        <div class="stage-body" id="stage-heading-sonic" tabindex="-1">
+          <SonicPanel />
+        </div>
+      {:else if s.id === 'waveform'}
+        <div class="stage-body" id="stage-heading-waveform" tabindex="-1">
+          <WaveformPanel />
+        </div>
+      {:else if s.id === 'validate'}
+        <section class="section">
+          <h2 tabindex="-1" id="stage-heading-validate">Validation</h2>
+          <p class="muted smallcaps">Runs automatically after edits; the button forces a fresh check.</p>
+          <button class="btn ghost" onclick={runValidation} disabled={$validating}>
+            {$validating ? 'Validating…' : 'Validate now'}
+          </button>
+          {#if $validation}
+            <ValidationPanel result={$validation} />
+          {:else}
+            <p class="muted">Not validated yet.</p>
+          {/if}
+        </section>
+      {/if}
+    </div>
+  {/each}
+    </div>
   </div>
 
   <CreateDialog />
@@ -207,16 +244,6 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <style>
   .page {
-    display: flex;
-    gap: 24px;
-    align-items: flex-start;
-  }
-  .content {
-    flex: 1;
-    min-width: 0;
-  }
-  .rail-slot {
-    position: sticky;
-    top: 76px;
+    display: block;
   }
 </style>

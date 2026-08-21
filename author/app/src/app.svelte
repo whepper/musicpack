@@ -68,8 +68,7 @@ SPDX-License-Identifier: BSD-3-Clause
 </svelte:head>
 
 <div class="topnav">
-  <span class="brand">MusicPack <em>Author</em></span>
-  <span class="smallcaps">an album being authored</span>
+  <span class="brand">MusicPack Author</span>
 </div>
 
 <BackendBanner />

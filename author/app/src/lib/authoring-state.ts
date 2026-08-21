@@ -8,6 +8,33 @@
 import { writable } from './store';
 import type { CreateResult, ValidationResult } from './types';
 
+// ---- workflow stages ------------------------------------------------------
+// The album is authored one stage at a time; the stepper in WorkflowNav and
+// the stage containers in AlbumAuthoring both key off this single value.
+
+export type StageId =
+  | 'identity'
+  | 'release'
+  | 'tracks'
+  | 'artwork'
+  | 'encode'
+  | 'sonic'
+  | 'waveform'
+  | 'validate';
+
+export const STAGES: readonly { id: StageId; label: string }[] = [
+  { id: 'identity', label: 'Identity' },
+  { id: 'release', label: 'Release' },
+  { id: 'tracks', label: 'Tracks' },
+  { id: 'artwork', label: 'Artwork' },
+  { id: 'encode', label: 'Encode' },
+  { id: 'sonic', label: 'Sonic' },
+  { id: 'waveform', label: 'Waveform' },
+  { id: 'validate', label: 'Validate' },
+];
+
+export const activeStage = writable<StageId>('identity');
+
 export const validation = writable<ValidationResult | null>(null);
 export const validating = writable<boolean>(false);
 /** True when the draft changed after the last successful validation, so the
