@@ -121,11 +121,16 @@ static drflac_bool32
 flac_seek(void *pUserData, int offset, drflac_seek_origin origin)
 {
     flac_mem *m = (flac_mem *) pUserData;
-    size_t base = origin == DRFLAC_SEEK_SET ? 0 : m->pos;
-    size_t np = base + (size_t) offset;
-    if (np > m->size)
+    long np;
+    switch (origin) {
+    case DRFLAC_SEEK_SET: np = (long) offset; break;
+    case DRFLAC_SEEK_CUR: np = (long) m->pos + (long) offset; break;
+    case DRFLAC_SEEK_END: np = (long) m->size + (long) offset; break;
+    default: return DRFLAC_FALSE;
+    }
+    if (np < 0 || (unsigned long) np > m->size)
         return DRFLAC_FALSE;
-    m->pos = np;
+    m->pos = (size_t) np;
     return DRFLAC_TRUE;
 }
 
