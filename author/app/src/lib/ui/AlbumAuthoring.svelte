@@ -4,6 +4,7 @@ SPDX-License-Identifier: BSD-3-Clause
 -->
 
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { api, draft, draftStore } from '../bootstrap';
   import { chipState } from '../draft-store';
   import { validating, validation } from '../authoring-state';
@@ -71,6 +72,10 @@ SPDX-License-Identifier: BSD-3-Clause
   function handleArtworkChange(): Promise<void> {
     return loadCover();
   }
+
+  onMount(() => {
+    void loadCover();
+  });
 </script>
 
 {#if $draft}
