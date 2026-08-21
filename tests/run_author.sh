@@ -220,6 +220,84 @@ else
     fail "built package passes verify"
 fi
 
+# 3d. an existing .mpack re-opens as an editable draft (Author's open path)
+PKG="$TMP/edit.mpack"
+cp -R "$TMP/out.mpack" "$PKG"
+if "$MUSICPACK" inspect "$PKG" --json 2>/dev/null > "$TMP/reopened.json" \
+   && $PY - "$TMP/reopened.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("openedFrom", "").endswith("edit.mpack"), "openedFrom records the package"
+t0 = d["media"][0]["tracks"][0]
+assert t0["audioPath"].startswith("audio/"), "in-package audio path: " + t0["audioPath"]
+assert d["artwork"] and d["artwork"][0].get("path", "").startswith("artwork/"), \
+    "artwork carried from the manifest"
+assert d["album"]["title"], "album metadata from manifest"
+print("ok")
+EOF
+then
+    pass "inspect reopens a built .mpack as an editable draft"
+else
+    fail "inspect reopens a built .mpack as an editable draft"
+fi
+
+# 3e. --replace refuses to create; it only overwrites an existing package
+if "$MUSICPACK" build-draft --draft "$TMP/ready.json" -o "$TMP/absent.mpack" \
+     --replace --json 2>/dev/null | grep -q 'destination_missing'; then
+    pass "--replace refuses a missing target"
+else
+    fail "--replace refuses a missing target"
+fi
+
+# 3f. edit a title and save back in place (--replace --sync-tags)
+$PY - "$TMP/reopened.json" "$TMP/edit.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["media"][0]["tracks"][0]["title"] = "Edited Title"
+d["waveformAnalysis"] = {"status": "disabled", "intervalMs": 100,
+                         "encoding": "peak-rms-u8", "floorDb": -60, "tracks": []}
+json.dump(d, open(sys.argv[2], "w"))
+EOF
+if OUT="$("$MUSICPACK" build-draft --draft "$TMP/edit.json" -o "$PKG" \
+           --replace --sync-tags --json 2>/dev/null)" \
+   && echo "$OUT" | grep -q '"ok":[[:space:]]*true' \
+   && echo "$OUT" | grep -q '"replaced":[[:space:]]*true'; then
+    pass "build-draft --replace saves a package in place"
+else
+    fail "build-draft --replace saves a package in place"
+fi
+if $PY - "$PKG/manifest.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert m["media"][0]["tracks"][0]["title"] == "Edited Title", "title updated"
+assert m["media"][0]["tracks"][0]["loudness"], "measured loudness preserved"
+print("ok")
+EOF
+then
+    pass "in-place save updates the manifest and keeps loudness"
+else
+    fail "in-place save updates the manifest and keeps loudness"
+fi
+if [ ! -d "$PKG.old-"* ] 2>/dev/null && "$MUSICPACK" verify "$PKG" --json 2>/dev/null \
+     | grep -q '"ok":[[:space:]]*true'; then
+    pass "no backup leftovers and the saved package verifies"
+else
+    fail "no backup leftovers and the saved package verifies"
+fi
+
+# 3g. a second identical save must not churn any audio bytes (sync is
+# idempotent; untouched tracks keep their bytes)
+AUDIO_MID="$(find "$PKG/audio" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256)"
+"$MUSICPACK" inspect "$PKG" --json 2>/dev/null > "$TMP/reopened2.json"
+"$MUSICPACK" build-draft --draft "$TMP/reopened2.json" -o "$PKG" \
+    --replace --sync-tags --json >/dev/null 2>&1
+AUDIO_AFTER="$(find "$PKG/audio" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256)"
+if [ "$AUDIO_MID" = "$AUDIO_AFTER" ]; then
+    pass "second save leaves every audio file byte-identical"
+else
+    fail "second save leaves every audio file byte-identical"
+fi
+
 # 4. validation errors propagate as errors, warnings separately
 $PY - "$TMP/ready.json" "$TMP/bad.json" <<'EOF'
 import json, sys
@@ -411,7 +489,7 @@ if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
    && $PY - "$TMP/api.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["authorApi"] == 5, "author API version"
+assert d["authorApi"] == 6, "author API version"
 assert d["musicpackVersion"], "musicpack version present"
 print("ok")
 EOF

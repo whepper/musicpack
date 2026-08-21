@@ -261,12 +261,14 @@ fn create_package(
     state: State<AppState>,
     draft_json: String,
     output_dir: String,
+    replace: Option<bool>,
+    sync_tags: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     state
         .service
         .lock()
         .unwrap()
-        .create_package(&draft_json, &output_dir)
+        .create_package(&draft_json, &output_dir, replace.unwrap_or(false), sync_tags.unwrap_or(false))
         .map_err(cli_err)
 }
 

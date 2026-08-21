@@ -81,7 +81,7 @@
    version 4 moves MusicBrainz transport into the Rust Author backend;
    version 5 adds the `waveform-draft` stage (per-track `peak-rms-u8`
    envelope generation from source PCM). */
-#define MUSICPACK_AUTHOR_API 5
+#define MUSICPACK_AUTHOR_API 6
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);
@@ -3019,7 +3019,201 @@ free_vec(char **items, size_t n)
 static void
 usage_inspect(void)
 {
-    fprintf(stderr, "usage: musicpack inspect <dir> [--json]\n");
+    fprintf(stderr, "usage: musicpack inspect <package-or-dir> [--json]\n");
+}
+
+/* Builds an authoring draft from an existing package's manifest — the
+   inverse of build-draft for already-built .mpack directories, so Author
+   can open and re-save them. Audio paths stay in-package ("audio/..."),
+   artwork/assets reference the packaged files relative to the package
+   root, and sonic/waveform documents are carried as ready stage output
+   pointing at the in-package files so a rebuild re-attaches them
+   unchanged. `openedFrom` records the package path; Author offers an
+   in-place save for such drafts. */
+static int
+open_package_draft(const char *dir, int json)
+{
+    char mfpath[MUSICPACK_PATH_MAX + 2];
+    char apath[MUSICPACK_PATH_MAX + 2];
+    char pkg[MUSICPACK_PATH_MAX + 2];
+    char *mftext;
+    musicpack_status st;
+    musicpack_manifest *m;
+    mpc_stream_info *streams = 0;
+    cJSON *draft = 0;
+    size_t d, t, total = 0, i;
+    int bad = 0;
+
+    /* all emitted references are absolute so a later build-draft run is
+       independent of the current working directory */
+    if (!canonical_path(dir, pkg, sizeof pkg)) {
+        if (json)
+            json_error_out("inspect_failed", "cannot resolve package path");
+        else
+            fprintf(stderr, "inspect: cannot resolve '%s'\n", dir);
+        return 1;
+    }
+    snprintf(mfpath, sizeof mfpath, "%s/manifest.json", pkg);
+    mftext = read_file_bounded(mfpath, 16u * 1024u * 1024u, &st);
+    if (mftext == 0) {
+        if (json)
+            json_error_out("inspect_failed", "cannot read manifest.json");
+        else
+            fprintf(stderr, "inspect: cannot read '%s'\n", mfpath);
+        return 1;
+    }
+    m = musicpack_manifest_parse(mftext, &st);
+    free(mftext);
+    if (m == 0) {
+        if (json)
+            json_error_out("inspect_failed", "manifest.json is not a valid manifest");
+        else
+            fprintf(stderr, "inspect: invalid manifest.json\n");
+        return 1;
+    }
+
+    for (d = 0; d < m->disc_count; d++)
+        total += m->discs[d].track_count;
+    if (total > 0)
+        streams = (mpc_stream_info *) calloc(total, sizeof *streams);
+    if (streams == 0 && total > 0)
+        bad = 1;
+    i = 0;
+    for (d = 0; d < m->disc_count && !bad; d++) {
+        for (t = 0; t < m->discs[d].track_count && !bad; t++, i++) {
+            snprintf(apath, sizeof apath, "%s/%s", pkg,
+                     m->discs[d].tracks[t].audio.path != 0
+                         ? m->discs[d].tracks[t].audio.path : "");
+            probe_stream(apath, &streams[i]);
+        }
+    }
+
+    if (!bad) {
+        draft = draft_from_manifest(m, pkg, streams);
+        bad = draft == 0;
+    }
+    if (!bad) {
+        cJSON *arr;
+
+        /* file-based artwork and assets, relative to the package root */
+        arr = cJSON_GetObjectItemCaseSensitive(draft, "artwork");
+        for (i = 0; cJSON_IsArray(arr) && i < m->artwork_count; i++) {
+            cJSON *a = cJSON_CreateObject();
+            cJSON_AddStringToObject(a, "role", m->artwork[i].role);
+            cJSON_AddStringToObject(a, "path", m->artwork[i].asset.path);
+            cJSON_AddItemToArray(arr, a);
+        }
+        arr = cJSON_GetObjectItemCaseSensitive(draft, "booklet");
+        for (i = 0; cJSON_IsArray(arr) && i < m->booklet_count; i++)
+            cJSON_AddItemToArray(arr, cJSON_CreateString(m->booklet[i].path));
+        arr = cJSON_GetObjectItemCaseSensitive(draft, "lyrics");
+        for (i = 0; cJSON_IsArray(arr) && i < m->lyrics_count; i++)
+            cJSON_AddItemToArray(arr, cJSON_CreateString(m->lyrics[i].path));
+        arr = cJSON_GetObjectItemCaseSensitive(draft, "extras");
+        for (i = 0; cJSON_IsArray(arr) && i < m->extras_count; i++)
+            cJSON_AddItemToArray(arr, cJSON_CreateString(m->extras[i].path));
+
+        /* carried analysis state: ready stage output that points back into
+           this package so build-draft re-attaches it without regenerating */
+        {
+            int have_wf = 0;
+            cJSON *wftracks = 0;
+            for (d = 0; d < m->disc_count; d++) {
+                for (t = 0; t < m->discs[d].track_count; t++) {
+                    const musicpack_track *tr = &m->discs[d].tracks[t];
+                    cJSON *item;
+                    if (!tr->waveform.present || tr->waveform.path == 0)
+                        continue;
+                    if (!have_wf) {
+                        cJSON *wa = cJSON_AddObjectToObject(draft, "waveformAnalysis");
+                        cJSON_AddStringToObject(wa, "status", "ready");
+                        cJSON_AddNumberToObject(wa, "intervalMs",
+                                                tr->waveform.interval_ms);
+                        cJSON_AddStringToObject(wa, "encoding",
+                                                tr->waveform.encoding != 0
+                                                    ? tr->waveform.encoding
+                                                    : MUSICPACK_WAVEFORM_ENCODING);
+                        cJSON_AddNumberToObject(wa, "floorDb", tr->waveform.floor_db);
+                        wftracks = cJSON_AddArrayToObject(wa, "tracks");
+                        have_wf = 1;
+                    }
+                    item = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(item, "disc", m->discs[d].disc);
+                    cJSON_AddNumberToObject(item, "track", tr->number);
+                    cJSON_AddNumberToObject(item, "points", tr->waveform.points);
+                    if (tr->waveform.sha256 != 0)
+                        cJSON_AddStringToObject(item, "sha256", tr->waveform.sha256);
+                    snprintf(apath, sizeof apath, "%s/%s", pkg, tr->waveform.path);
+                    cJSON_AddStringToObject(item, "path", apath);
+                    cJSON_AddItemToArray(wftracks, item);
+                }
+            }
+        }
+        for (i = 0; i < m->analysis_count; i++) {
+            char *text;
+            if (strcmp(m->analysis[i].type, "sonic") != 0)
+                continue;
+            snprintf(apath, sizeof apath, "%s/%s", pkg,
+                     m->analysis[i].asset.path);
+            text = read_file_bounded(apath, MUSICPACK_SONIC_DOC_MAX, &st);
+            if (text == 0)
+                continue;
+            free(text);
+            {
+                cJSON *sa = cJSON_AddObjectToObject(draft, "sonicAnalysis");
+                cJSON_AddStringToObject(sa, "status", "ready");
+                if (m->analysis[i].profile != 0)
+                    cJSON_AddStringToObject(sa, "profile",
+                                            m->analysis[i].profile);
+                cJSON_AddStringToObject(sa, "path", apath);
+            }
+            break;
+        }
+
+        cJSON_AddStringToObject(draft, "openedFrom", pkg);
+    }
+
+    if (json) {
+        if (draft != 0)
+            draft_print(draft);
+        else
+            json_error_out("inspect_failed", "cannot build authoring draft");
+    } else {
+        size_t si = 0;
+        if (draft == 0) {
+            fprintf(stderr, "inspect: cannot build authoring draft\n");
+        } else {
+            printf("Album: %s\n",
+                   m->album_title != 0 ? m->album_title : "");
+            for (i = 0; i < m->album_artist_count; i++)
+                printf("Artist: %s%s%s\n", m->album_artists[i].name,
+                       m->album_artists[i].role != 0 ? " (" : "",
+                       m->album_artists[i].role != 0 ? m->album_artists[i].role : "");
+            printf("Discs: %zu\n", m->disc_count);
+            for (d = 0; d < m->disc_count; d++) {
+                printf("Disc %d: %zu tracks\n", m->discs[d].disc,
+                       m->discs[d].track_count);
+                for (t = 0; t < m->discs[d].track_count; t++) {
+                    const musicpack_track *tr = &m->discs[d].tracks[t];
+                    const mpc_stream_info *p =
+                        streams != 0 && si < total ? &streams[si] : 0;
+                    printf("  Track %d: %s (%s", tr->number,
+                           tr->title != 0 ? tr->title : "",
+                           p != 0 ? p->codec : "?");
+                    if (p != 0 && p->duration > 0)
+                        printf(", %.1fs", p->duration);
+                    printf(")\n");
+                    si++;
+                }
+            }
+            printf("Total tracks: %zu\n", total);
+        }
+    }
+
+    cJSON_Delete(draft);
+    free(streams);
+    musicpack_manifest_free(m);
+    return bad ? 1 : 0;
 }
 
 static void
@@ -3109,8 +3303,14 @@ cmd_inspect(const char *dir, int json)
     mpc_stream_info *streams = 0;
     cJSON *draft = 0;
     char srcpath[MUSICPACK_PATH_MAX + 2];
+    char mfpath[MUSICPACK_PATH_MAX + 2];
     size_t i, total = 0;
     int ndiscs = 0, bad = 0;
+
+    /* an existing package opens from its manifest, not from a tag scan */
+    snprintf(mfpath, sizeof mfpath, "%s/manifest.json", dir);
+    if (is_regular_path(mfpath))
+        return open_package_draft(dir, json);
 
     memset(&scan, 0, sizeof scan);
     if (!scan_source_dir(dir, &scan)) {
@@ -3283,7 +3483,138 @@ static void
 usage_build_draft(void)
 {
     fprintf(stderr,
-        "usage: musicpack build-draft --draft FILE -o DIR [--no-loudness] [--json]\n");
+        "usage: musicpack build-draft --draft FILE -o DIR [--no-loudness] [--json]\n"
+        "       [--replace] [--sync-tags]\n"
+        "       --replace: rebuild an existing .mpack directory in place\n"
+        "       --sync-tags: project the final manifest onto embedded APEv2\n"
+        "       tags of .mpc tracks and refresh their checksums\n");
+}
+
+/* Order-sensitive equality of two tag bags: keys and payloads must match
+   item for item. Deliberately conservative — semantically equal sets that
+   differ only in order simply cost one redundant rewrite. */
+static int
+ape_tags_equal(const musicpack_tag_set *a, const musicpack_tag_set *b)
+{
+    size_t i;
+
+    if (a->count != b->count)
+        return 0;
+    for (i = 0; i < a->count; i++) {
+        const musicpack_tag *x = &a->items[i];
+        const musicpack_tag *y = &b->items[i];
+        if (x->is_binary != y->is_binary)
+            return 0;
+        if (x->key == 0 || y->key == 0 || strcmp(x->key, y->key) != 0)
+            return 0;
+        if (x->is_binary) {
+            if (x->binary_len != y->binary_len ||
+                (x->binary_len > 0 &&
+                 memcmp(x->binary, y->binary, x->binary_len) != 0))
+                return 0;
+        } else {
+            if ((x->value == 0) != (y->value == 0))
+                return 0;
+            if (x->value != 0 && strcmp(x->value, y->value) != 0)
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* Projects manifest metadata onto the embedded APEv2 tags of every .mpc
+   track and refreshes their checksums (--sync-tags). Used after a
+   --replace rebuild so edited metadata stays consistent with the packaged
+   audio; tracks whose embedded tags already match are left untouched so an
+   edit to one title does not rewrite every audio file. FLAC tracks are
+   skipped: Vorbis-comment rewriting is not supported here.
+   Returns 1 when any file changed, 0 when none did, -1 on error. */
+static int
+sync_package_ape_tags(musicpack_manifest *m, const char *out_dir,
+                      char *err, size_t err_cap)
+{
+    size_t d, t;
+    int changed = 0;
+
+    for (d = 0; d < m->disc_count; d++) {
+        for (t = 0; t < m->discs[d].track_count; t++) {
+            musicpack_track *tr = &m->discs[d].tracks[t];
+            const char *dot;
+            char apath[MUSICPACK_PATH_MAX + 2];
+            musicpack_tag_set ape;
+            char hex[MUSICPACK_SHA256_HEX_SIZE];
+
+            if (tr->audio.path == 0)
+                continue;
+            dot = strrchr(tr->audio.path, '.');
+            if (dot == 0 || strcmp(dot, ".mpc") != 0) {
+                if (dot != 0 && strcmp(dot, ".flac") == 0)
+                    fprintf(stderr,
+                            "build-draft: --sync-tags skips '%s' "
+                            "(APEv2 only)\n",
+                            tr->audio.path);
+                continue;
+            }
+            snprintf(apath, sizeof apath, "%s/%s", out_dir, tr->audio.path);
+            if (musicpack_manifest_to_ape_tags(m, tr, m->discs[d].disc,
+                                               (int) m->disc_count,
+                                               (int) m->discs[d].track_count,
+                                               &ape) != MUSICPACK_OK) {
+                snprintf(err, err_cap, "cannot build tags for '%s'",
+                         tr->audio.path);
+                return -1;
+            }
+            /* already in sync? leave the file byte-for-byte alone */
+            {
+                musicpack_tag_set cur;
+                memset(&cur, 0, sizeof cur);
+                if (musicpack_ape_read(apath, &cur) == MUSICPACK_OK &&
+                    ape_tags_equal(&cur, &ape)) {
+                    musicpack_tag_set_free(&cur);
+                    musicpack_tag_set_free(&ape);
+                    continue;
+                }
+                musicpack_tag_set_free(&cur);
+            }
+            if (musicpack_ape_write(apath, &ape) != MUSICPACK_OK ||
+                musicpack_sha256_file(apath, hex, sizeof hex)
+                    != MUSICPACK_OK) {
+                musicpack_tag_set_free(&ape);
+                snprintf(err, err_cap, "cannot re-tag '%s'", tr->audio.path);
+                return -1;
+            }
+            musicpack_tag_set_free(&ape);
+            free(tr->audio.sha256);
+            tr->audio.sha256 = strdup(hex);
+            if (tr->audio.sha256 == 0) {
+                snprintf(err, err_cap, "out of memory recording checksum");
+                return -1;
+            }
+            changed = 1;
+        }
+    }
+    return changed;
+}
+
+/* Serializes the manifest and writes it as <out_dir>/manifest.json. */
+static int
+write_manifest_file(const musicpack_manifest *m, const char *out_dir,
+                    char *err, size_t err_cap)
+{
+    char mpath[MUSICPACK_PATH_MAX + 2];
+    char *manifest_json = 0;
+    int bad = 1;
+
+    if (musicpack_manifest_write(m, &manifest_json) == MUSICPACK_OK) {
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", out_dir);
+        bad = write_all(mpath, manifest_json) != 0;
+        free(manifest_json);
+        if (bad)
+            snprintf(err, err_cap, "cannot write manifest.json");
+    } else {
+        snprintf(err, err_cap, "cannot serialize manifest");
+    }
+    return bad;
 }
 
 /* Extracts the first embedded picture matching `role` from a source audio
@@ -3740,7 +4071,8 @@ waveform_status_for_draft(cJSON *draft, char *err, size_t err_cap)
 }
 
 static int
-cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, int json)
+cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness,
+                int replace, int sync_tags, int json)
 {
     cJSON *draft;
     char err[512];
@@ -3816,15 +4148,28 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         cJSON_Delete(draft);
         return 1;
     }
-    if (is_dir_path(final_out) || is_regular_path(final_out)) {
-        if (json)
-            json_error_out("destination_exists", "output destination already exists");
-        else
+    if (replace ? !is_dir_path(final_out)
+                : (is_dir_path(final_out) || is_regular_path(final_out))) {
+        if (json) {
+            if (replace)
+                json_error_out("destination_missing",
+                               "--replace target must be an existing package directory");
+            else
+                json_error_out("destination_exists",
+                               "output destination already exists");
+        } else if (replace) {
+            fprintf(stderr,
+                    "build-draft: --replace target '%s' is not an existing "
+                    "package directory\n",
+                    final_out);
+        } else {
             fprintf(stderr, "build-draft: output destination already exists\n");
+        }
         cJSON_Delete(draft);
         return 1;
     }
-    if (reject_path_overlap(source_root, final_out, "build-draft")) {
+    /* a --replace build reads from the package it overwrites by design */
+    if (!replace && reject_path_overlap(source_root, final_out, "build-draft")) {
         cJSON_Delete(draft);
         return 1;
     }
@@ -4061,20 +4406,18 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         }
     }
 
-    if (!bad) {
-        char *manifest_json = 0;
-        char mpath[MUSICPACK_PATH_MAX + 2];
-        if (musicpack_manifest_write(&m, &manifest_json) == MUSICPACK_OK) {
-            snprintf(mpath, sizeof mpath, "%s/manifest.json", out_dir);
-            if (write_all(mpath, manifest_json) != 0) {
-                snprintf(err, sizeof err, "cannot write manifest.json");
-                bad = 1;
-            }
-            free(manifest_json);
-        } else {
-            snprintf(err, sizeof err, "cannot serialize manifest");
+    if (!bad)
+        bad = write_manifest_file(&m, out_dir, err, sizeof err);
+
+    /* --sync-tags projects the final manifest onto the embedded APEv2 tags
+       and refreshes their checksums; the manifest is rewritten because the
+       audio hashes moved */
+    if (!bad && sync_tags) {
+        int synced = sync_package_ape_tags(&m, out_dir, err, sizeof err);
+        if (synced < 0)
             bad = 1;
-        }
+        else if (synced > 0)
+            bad = write_manifest_file(&m, out_dir, err, sizeof err);
     }
 
     if (!bad) {
@@ -4098,9 +4441,32 @@ cmd_build_draft(const char *draft_path, const char *out_dir, int no_loudness, in
         }
     }
 
-    if (!bad && rename(out_dir, final_out) != 0) {
+    if (!bad && !replace && rename(out_dir, final_out) != 0) {
         snprintf(err, sizeof err, "cannot finalize package directory '%s'", final_out);
         bad = 1;
+    }
+    if (!bad && replace) {
+        /* in-place save: the verified staging directory swaps with the old
+           package, which is removed only after the swap fully succeeds */
+        char backup[MUSICPACK_PATH_MAX + 2];
+        snprintf(backup, sizeof backup, "%s.old-%ld", final_out,
+                 (long) getpid());
+        if (is_dir_path(backup) || is_regular_path(backup)) {
+            snprintf(err, sizeof err, "backup path '%s' already exists", backup);
+            bad = 1;
+        } else if (rename(final_out, backup) != 0) {
+            snprintf(err, sizeof err,
+                     "cannot move the current package aside ('%s')", final_out);
+            bad = 1;
+        } else if (rename(out_dir, final_out) != 0) {
+            int rollback = rename(backup, final_out) == 0;
+            snprintf(err, sizeof err,
+                     "cannot install the rebuilt package '%s'%s", final_out,
+                     rollback ? "" : " (the previous package is still at the backup path)");
+            bad = 1;
+        } else {
+            rm_rf(backup);
+        }
     }
 
 done:
@@ -4119,6 +4485,7 @@ done:
         } else {
             cJSON *v = cJSON_AddObjectToObject(root, "verify");
             cJSON_AddBoolToObject(root, "ok", 1);
+            cJSON_AddBoolToObject(root, "replaced", replace ? 1 : 0);
             cJSON_AddStringToObject(root, "outputPath", final_out);
             cJSON_AddNumberToObject(v, "errors", (double) verr);
             cJSON_AddNumberToObject(v, "warnings", (double) vwarn);
@@ -4136,8 +4503,8 @@ done:
                 printf("sonic analysis: included\n");
             if (sonic_hint != 0)
                 fprintf(stderr, "build-draft: warning: %s\n", sonic_hint);
-            printf("created package '%s' (%zu error(s), %zu warning(s))\n",
-                   final_out, verr, vwarn);
+            printf("%s package '%s' (%zu error(s), %zu warning(s))\n",
+                   replace ? "updated" : "created", final_out, verr, vwarn);
         }
     }
     free(sonic_hint);
@@ -6015,7 +6382,7 @@ main(int argc, char **argv)
     }
     if (strcmp(cmd, "build-draft") == 0) {
         const char *draft_path = 0, *out_dir = 0;
-        int no_loudness = 0, json = 0, i;
+        int no_loudness = 0, replace = 0, sync_tags = 0, json = 0, i;
         for (i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--draft") == 0 && i + 1 < argc) {
                 draft_path = argv[++i];
@@ -6023,6 +6390,10 @@ main(int argc, char **argv)
                 out_dir = argv[++i];
             } else if (strcmp(argv[i], "--no-loudness") == 0) {
                 no_loudness = 1;
+            } else if (strcmp(argv[i], "--replace") == 0) {
+                replace = 1;
+            } else if (strcmp(argv[i], "--sync-tags") == 0) {
+                sync_tags = 1;
             } else if (strcmp(argv[i], "--json") == 0) {
                 json = 1;
             } else {
@@ -6033,7 +6404,8 @@ main(int argc, char **argv)
             usage_build_draft();
             return 2;
         }
-        return cmd_build_draft(draft_path, out_dir, no_loudness, json);
+        return cmd_build_draft(draft_path, out_dir, no_loudness, replace,
+                               sync_tags, json);
     }
     if (strcmp(cmd, "identify-draft") == 0) {
         const char *draft_path = 0, *mbid = 0, *mbjson = 0, *mbsearchjson = 0;

@@ -155,6 +155,10 @@ export interface Draft {
   extras: AssetEntry[];
   sonicAnalysis?: SonicAnalysis;
   waveformAnalysis?: WaveformAnalysis;
+  /** Set when the draft was opened from an existing .mpack package:
+   * the package path. Audio is already encoded; saving writes back to
+   * this package in place instead of creating a new one. */
+  openedFrom?: string;
 }
 
 export const RELEASE_TYPES = [
@@ -223,6 +227,8 @@ export type IdentifyResult =
 export interface CreateResult {
   ok: boolean;
   outputPath?: string;
+  /** True when an existing .mpack was rebuilt in place (--replace). */
+  replaced?: boolean;
   verify?: { errors: number; warnings: number };
   error?: { code?: string; message?: string };
 }

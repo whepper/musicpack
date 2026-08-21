@@ -72,7 +72,9 @@ and a `--json` mode on `verify`. `import`/`create`/`info` behaviour is
 unchanged (the scan logic was extracted into a shared helper).
 `author-api-version` is the machine-readable capability handshake the GUI
 uses to verify backend compatibility (see [Backend compatibility](#backend-compatibility));
-it is at version **5**, including native waveform-envelope generation.
+it is at version **6**, which adds opening existing `.mpack` packages
+(`inspect` on a package builds the draft from its manifest) and in-place
+saves (`build-draft --replace --sync-tags`).
 
 ## The authoring draft
 
@@ -222,7 +224,7 @@ machine-readable capability handshake:
 
 ```sh
 musicpack author-api-version --json
-# {"musicpackVersion":"0.1.0","authorApi":4}
+# {"musicpackVersion":"0.1.0","authorApi":6}
 ```
 
 On the first backend operation the `AuthorService` runs this and rejects a
@@ -255,6 +257,9 @@ native Rust backend (via `ureq`), so the webview is never granted internet
 1. **Add album** — choose or drag/drop an album directory; `inspect` scans it
    into a draft (tags, disc grouping, track durations/codec via cheap header
    probes, artwork: file-based or embedded). No package is created.
+   Dropping an existing `.mpack` package instead builds the draft from its
+   manifest — the GUI then offers **Save changes** (write back in place,
+   audio untouched) alongside *Save as copy*.
 2. **Release metadata** — editable form covering the `.mpack` v1 model:
    release-group (title, artists, type, original date, genres), specific
    release (date, edition, country, label, catalogue number, notes),
@@ -290,6 +295,13 @@ native Rust backend (via `ureq`), so the webview is never granted internet
     as canonical manifest order and rejects packages with more than 4096
     manifest-referenced assets. A package is never reported as successful if
     verification fails. On macOS, “Reveal in Finder” opens the result.
+    For a draft opened from an existing package, the dialog offers
+    **Save changes** instead: `build-draft --replace` rebuilds into a
+    verified staging directory and swaps it with the old package (rolled
+    back on any failure), and `--sync-tags` re-projects the final manifest
+    onto embedded APEv2 tags — only where they actually differ, so untouched
+    tracks keep their bytes. Measured loudness and sonic/waveform documents
+    are carried through unchanged; audio is never re-encoded.
 
 ## MusicBrainz identity
 

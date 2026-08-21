@@ -26,8 +26,10 @@ use std::time::{Duration, Instant};
 /// Authoring JSON surface version the GUI expects from the backend.
 /// Bump together with the CLI's `MUSICPACK_AUTHOR_API`.
 /// Version 2 adds `encode-draft`; version 3 removes its `--ffmpeg` argument
-/// (FLAC/WAV decode is native); version 4 moves MusicBrainz transport here.
-const EXPECTED_AUTHOR_API: u32 = 5;
+/// (FLAC/WAV decode is native); version 4 moves MusicBrainz transport here;
+/// version 6 adds package open (`inspect` on an .mpack) and in-place save
+/// (`build-draft --replace --sync-tags`).
+const EXPECTED_AUTHOR_API: u32 = 6;
 
 #[derive(Debug, Clone)]
 pub enum AuthorError {
@@ -467,17 +469,27 @@ impl AuthorService {
         &mut self,
         draft_json: &str,
         output_dir: &str,
+        replace: bool,
+        sync_tags: bool,
     ) -> Result<Value, AuthorError> {
         self.ensure_handshake()?;
         let tmp = self.temp_file("draft.json", draft_json)?;
-        let result = self.run_json(&[
-            "build-draft",
-            "--draft",
-            tmp.to_str().unwrap_or(""),
-            "-o",
-            output_dir,
-            "--json",
-        ]);
+        let mut args: Vec<String> = vec![
+            "build-draft".to_string(),
+            "--draft".to_string(),
+            tmp.to_string_lossy().into_owned(),
+            "-o".to_string(),
+            output_dir.to_string(),
+        ];
+        if replace {
+            args.push("--replace".to_string());
+        }
+        if sync_tags {
+            args.push("--sync-tags".to_string());
+        }
+        args.push("--json".to_string());
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let result = self.run_json(&refs);
         let _ = std::fs::remove_file(&tmp);
         result
     }
@@ -871,9 +883,9 @@ mod tests {
     #[test]
     fn handshake_accepts_matching_api() {
         let info =
-            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":5}\n")
+            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\n")
                 .unwrap();
-        assert_eq!(info.author_api, 5);
+        assert_eq!(info.author_api, 6);
         assert_eq!(info.musicpack_version, "0.1.0");
     }
 
@@ -884,7 +896,7 @@ mod tests {
                 .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("author API 3"), "{msg}");
-        assert!(msg.contains("requires 5"), "{msg}");
+        assert!(msg.contains("requires 6"), "{msg}");
     }
 
     #[test]
@@ -900,11 +912,11 @@ mod tests {
         let bin = make_cli(
             tmp.path(),
             "MacOS",
-            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":5}\\n'\n",
+            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\\n'\n",
         );
         let mut service = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let info = service.ensure_handshake().unwrap();
-        assert_eq!(info.author_api, 5);
+        assert_eq!(info.author_api, 6);
         // Cached: a second call still succeeds.
         assert!(service.ensure_handshake().is_ok());
     }
@@ -1172,6 +1184,43 @@ mod tests {
         fs::write(dir.join("x.mpc"), "data").unwrap();
         svc.cleanup_staging(dir.to_str().unwrap()).unwrap();
         assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_package_passes_replace_and_sync_tags() {
+        // A fake backend that answers the handshake and records its arguments
+        // (all run_json needs afterwards is an empty JSON object).
+        let tmp = TempDir::new().unwrap();
+        let argv_file = tmp.path().join("argv.txt");
+        std::env::set_var("MUSICPACK_TEST_ARGV", &argv_file);
+        let bin = make_cli(
+            tmp.path(),
+            "MacOS",
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"author-api-version\" ]; then\n\
+             printf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\\n'\n\
+             exit 0\n\
+             fi\n\
+             printf '%s\\n' \"$@\" > \"$MUSICPACK_TEST_ARGV\"\nprintf '{}'\n",
+        );
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+
+        svc.create_package("{\"schema\":\"musicpack-draft\"}", "/pkg/out.mpack", true, true)
+            .unwrap();
+        let argv = fs::read_to_string(&argv_file).unwrap();
+        assert!(argv.contains("build-draft"), "command dispatched: {argv}");
+        assert!(argv.contains("--replace"), "in-place save requested: {argv}");
+        assert!(argv.contains("--sync-tags"), "tag projection requested: {argv}");
+
+        svc.create_package("{}", "/pkg/plain.mpack", false, false)
+            .unwrap();
+        let argv = fs::read_to_string(&argv_file).unwrap();
+        assert!(
+            !argv.contains("--replace") && !argv.contains("--sync-tags"),
+            "flags absent by default: {argv}"
+        );
+        std::env::remove_var("MUSICPACK_TEST_ARGV");
     }
 
     #[cfg(unix)]

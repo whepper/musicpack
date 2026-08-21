@@ -101,10 +101,16 @@ export class AuthorApi {
     })) as IdentifyResult;
   }
 
-  async createPackage(draft: Draft, outputDir: string): Promise<CreateResult> {
+  async createPackage(
+    draft: Draft,
+    outputDir: string,
+    opts?: { replace?: boolean; syncTags?: boolean },
+  ): Promise<CreateResult> {
     return (await this.invokeFn('create_package', {
       draftJson: JSON.stringify(draft),
       outputDir,
+      replace: opts?.replace ?? false,
+      syncTags: opts?.syncTags ?? false,
     })) as CreateResult;
   }
 

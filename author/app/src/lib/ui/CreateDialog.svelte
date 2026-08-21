@@ -8,14 +8,19 @@ SPDX-License-Identifier: BSD-3-Clause
   import { api, draft, draftStore } from '../bootstrap';
   import { createOpen, createResult, encodeStaging } from '../authoring-state';
   import { defaultPackageName } from '../format';
-  import type { ValidationResult } from '../types';
+  import type { CreateResult, ValidationResult } from '../types';
 
 
   let outputParent = $state<string | null>(null);
   let packageName = $state('');
   let creating = $state(false);
   let reVerifying = $state(false);
+  /** Save-as-copy switches an opened .mpack to the classic new-package
+   * form; by default an opened package saves back into itself. */
+  let copyFlow = $state(false);
   let panel: HTMLDivElement | null = $state(null);
+
+  const editingPackage = $derived($draft?.openedFrom ?? null);
 
   onMount(() => {
     const fn = (e: KeyboardEvent): void => {
@@ -64,22 +69,27 @@ SPDX-License-Identifier: BSD-3-Clause
 
   async function runCreate(): Promise<void> {
     const d = draft.get();
-    const out = outputPath();
-    if (!d || !out) return;
+    if (!d) return;
+    const inPlace = editingPackage !== null && !copyFlow;
+    const out = inPlace ? editingPackage : outputPath();
+    if (!out) return;
     creating = true;
+    let result: CreateResult;
     try {
-      createResult.set(await api.createPackage(d, out));
+      result = await api.createPackage(d, out, {
+        replace: inPlace,
+        syncTags: inPlace,
+      });
     } catch (e) {
-      createResult.set({
+      result = {
         ok: false,
         error: { code: 'create_failed', message: e instanceof Error ? e.message : 'Create failed.' },
-      });
-    } finally {
-      creating = false;
+      };
     }
-    // a successfully built package no longer needs its encode staging area,
-    // and the authoring session is complete — drop the autosaved draft too
-    if (createResult.get()?.ok) {
+    creating = false;
+    if (result.ok) {
+      // the built package no longer needs its encode staging area, and the
+      // authoring session is complete — drop the autosaved draft too
       void api.draftClear().catch(() => {});
       const staging = encodeStaging.get();
       if (staging) {
@@ -90,7 +100,21 @@ SPDX-License-Identifier: BSD-3-Clause
           /* the temp directory is eventually reclaimed; not a user error */
         }
       }
+      if (inPlace) {
+        // the saved package is the new truth (audio files may even have been
+        // renamed after a retitle): reopen it so the editor shows that state.
+        // Must happen before the result is shown — setDraft() resets the
+        // shared session state, including the result itself.
+        try {
+          const fresh = await api.inspectAlbum(d.openedFrom!);
+          draftStore.setDraft(fresh);
+          void api.recentsAdd(d.openedFrom!, fresh.album?.title).catch(() => {});
+        } catch {
+          /* keep the edited draft in memory; reopening can happen later */
+        }
+      }
     }
+    createResult.set(result);
   }
 
   async function reVerify(): Promise<void> {
@@ -108,15 +132,15 @@ SPDX-License-Identifier: BSD-3-Clause
   }
 
   function close(): void {
-    // Reset both the result and the form so reopening the dialog for a
-    // second package always starts fresh (no stale success/error state, no
-    // stale output path).
+    // Reset the result and both flows so reopening the dialog always starts
+    // fresh (no stale success/error state, no stale output path).
     createOpen.set(false);
     createResult.set(null);
     outputParent = null;
     packageName = '';
     creating = false;
     reVerifying = false;
+    copyFlow = false;
   }
 
   function reveal(): void {
@@ -142,7 +166,7 @@ SPDX-License-Identifier: BSD-3-Clause
     >
       {#if $createResult}
         {@const r = $createResult}
-        <h2>{r.ok ? 'Package created' : 'Package creation failed'}</h2>
+        <h2>{r.ok ? (r.replaced ? 'Package updated' : 'Package created') : 'Package creation failed'}</h2>
         {#if r.ok}
           <p class="path">{r.outputPath}</p>
           <p class="smallcaps">
@@ -160,6 +184,23 @@ SPDX-License-Identifier: BSD-3-Clause
           <p class="smallcaps">The package was not reported as successful.</p>
           <button class="btn ghost" onclick={close}>Close</button>
         {/if}
+      {:else if editingPackage && !copyFlow}
+        <h2>Save changes</h2>
+        <p class="muted">
+          Your edits are written back into the opened package. The audio is
+          already encoded and stays untouched; embedded tags are re-projected
+          from the manifest where they differ.
+        </p>
+        <p class="path">{editingPackage}</p>
+        <div class="artwork-row">
+          <button class="btn" onclick={runCreate} disabled={creating}>
+            {creating ? 'Saving…' : 'Save changes'}
+          </button>
+          <button class="btn ghost" onclick={() => (copyFlow = true)} disabled={creating}>
+            Save as copy…
+          </button>
+          <button class="btn ghost" onclick={close}>Cancel</button>
+        </div>
       {:else}
         <h2>Create MusicPack</h2>
         {#if outputParent}

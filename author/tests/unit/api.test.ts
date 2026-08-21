@@ -76,6 +76,16 @@ describe('AuthorApi command surface', () => {
     });
   });
 
+  it('passes replace and sync-tags for an in-place package save', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    await api.createPackage(draft(), '/existing.mpack', { replace: true, syncTags: true });
+    expect(calls[0]).toMatchObject({
+      cmd: 'create_package',
+      args: { outputDir: '/existing.mpack', replace: true, syncTags: true },
+    });
+  });
+
   it('verifies a package and reads an image', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);

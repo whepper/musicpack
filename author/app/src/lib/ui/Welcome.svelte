@@ -83,7 +83,8 @@ SPDX-License-Identifier: BSD-3-Clause
   <h1>Author an album</h1>
   <p class="muted">
     Turn a tagged Musepack album — the output of <em>flac2mpc</em> — into a curated
-    <span class="smallcaps">.mpack</span> release.
+    <span class="smallcaps">.mpack</span> release. Existing
+    <span class="smallcaps">.mpack</span> packages can be opened and edited too.
   </p>
 
   {#if savedDraft && !dismissedResume}
@@ -119,8 +120,8 @@ SPDX-License-Identifier: BSD-3-Clause
       }
     }}
   >
-    <p>Drop an album directory here, or</p>
-    <button class="btn" onclick={choose}>Choose album…</button>
+    <p>Drop an album directory or a <span class="smallcaps">.mpack</span> package here, or</p>
+    <button class="btn" onclick={choose}>Choose album or package…</button>
   </div>
 
   {#if recents.length > 0}

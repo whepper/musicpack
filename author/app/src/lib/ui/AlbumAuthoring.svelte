@@ -136,7 +136,7 @@ SPDX-License-Identifier: BSD-3-Clause
       <div class="edition">
         <ConfidenceBadge confidence={$draft.identity?.confidence} />
       </div>
-      <div class="source-root">{$draft.sourceRoot}</div>
+      <div class="source-root">{$draft.openedFrom ? 'package · ' : ''}{$draft.sourceRoot}</div>
       <button class="btn ghost" onclick={onReset}>← Choose a different album</button>
     </div>
   </header>
@@ -161,7 +161,18 @@ SPDX-License-Identifier: BSD-3-Clause
   </section>
 
   <div id="sec-encode">
-    <EncodePanel />
+    {#if $draft.openedFrom}
+      <section class="section">
+        <h2>Audio</h2>
+        <p class="muted">
+          Tracks are already encoded (Musepack SV8) inside the opened package —
+          no encode step is needed. Saving writes your edits back into the
+          package without re-encoding.
+        </p>
+      </section>
+    {:else}
+      <EncodePanel />
+    {/if}
   </div>
 
   <div id="sec-sonic">
