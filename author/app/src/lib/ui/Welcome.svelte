@@ -66,7 +66,10 @@ SPDX-License-Identifier: BSD-3-Clause
   }
 
   function resume(): void {
-    if (savedDraft) onResume(savedDraft);
+    if (!savedDraft) return;
+    // savedDraft is a $state deep proxy; unwrap it before handing it to the
+    // draft store — setDraft() uses structuredClone(), which throws on proxies.
+    onResume($state.snapshot(savedDraft));
   }
 
   function discardSaved(): void {

@@ -35,7 +35,14 @@ SPDX-License-Identifier: BSD-3-Clause
   }
 
   function resumeDraft(d: Draft): void {
-    draftStore.setDraft(d);
+    draftStore.setError(null);
+    try {
+      draftStore.setDraft(d);
+    } catch (e) {
+      // a resume failure must never fail silently — the Welcome screen
+      // renders this message below itself
+      draftStore.setError(e instanceof Error ? e.message : 'Could not resume draft.');
+    }
   }
 
   function reset(): void {
