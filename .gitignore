@@ -77,3 +77,4 @@ research/sonic/reports/cross-codec-*.md
 research/sonic/reports/float-repr-*.md
 research/sonic/reports/efficiency.md
 research/sonic/reports/human-results.md
+docker/library/
