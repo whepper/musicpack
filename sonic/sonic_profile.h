@@ -23,7 +23,7 @@
    research/sonic/convert_openl3.py). Pinned and verified before use. */
 #define SONIC_PROFILE_ONNX_FILE "openl3_post.onnx"
 #define SONIC_PROFILE_ONNX_SHA256 \
-    "3b4b7dac370d8f3dc6c3b22613269301ce7d4540d857f8d434f67bfb1a9ca986"
+    "fc51d01d1c33f9d1d783ceda7727f5f495c6c5639f1340b224396f2396750331"
 /* Expected artifact size in bytes (the immutable release asset). */
 #define SONIC_PROFILE_ONNX_SIZE 18742941
 

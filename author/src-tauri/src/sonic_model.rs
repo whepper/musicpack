@@ -15,7 +15,7 @@
 //   source   : https://github.com/whepper/musicpack/releases/download/
 //              sonic-model-openl3-v1/openl3_post.onnx   (published by
 //              scripts/publish-sonic-model.sh)
-//   sha256   : 3b4b7dac370d8f3dc6c3b22613269301ce7d4540d857f8d434f67bfb1a9ca986
+//   sha256   : fc51d01d1c33f9d1d783ceda7727f5f495c6c5639f1340b224396f2396750331
 //   size     : 18,742,941 bytes
 //   license  : derived from OpenL3 0.4.0 weights (CC BY 4.0), code MIT;
 //              attribution to the marl/openl3 project.
@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const SONIC_PROFILE_OPENL3_V1: &str = "musicpack-sonic-openl3-v1";
 pub const SONIC_MODEL_FILENAME: &str = "openl3_post.onnx";
 pub const SONIC_MODEL_SHA256: &str =
-    "3b4b7dac370d8f3dc6c3b22613269301ce7d4540d857f8d434f67bfb1a9ca986";
+    "fc51d01d1c33f9d1d783ceda7727f5f495c6c5639f1340b224396f2396750331";
 pub const SONIC_MODEL_SIZE: u64 = 18_742_941;
 /// Immutable release asset; a `latest`/mutable URL is never used.
 pub const SONIC_MODEL_URL: &str =

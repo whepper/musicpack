@@ -405,7 +405,7 @@ Sonic semantics; the analyzer never reimplements them.
 
 The model is **not bundled** in the `.app`. The ONNX Runtime runtime is
 bundled, but the ~18 MB post-frontend ONNX artifact is downloaded once on
-first use and verified against a pinned SHA-256 (`3b4b7dac…`, 18,742,941
+first use and verified against a pinned SHA-256 (`fc51d01d…`, 18,742,941
 bytes) before activation. Acquisition is trusted Author application logic
 (`src-tauri/src/sonic_model.rs`) — a package-provided profile id can never
 trigger a download or model execution. The model cache lives at:

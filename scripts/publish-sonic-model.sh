@@ -24,7 +24,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PIN="3b4b7dac370d8f3dc6c3b22613269301ce7d4540d857f8d434f67bfb1a9ca986"
+PIN="fc51d01d1c33f9d1d783ceda7727f5f495c6c5639f1340b224396f2396750331"
 RELEASE="sonic-model-openl3-v1"
 ASSET="openl3_post.onnx"
 

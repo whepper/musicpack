@@ -218,7 +218,7 @@ Author has a Sonic Analysis panel). The OpenL3 analyzer runs as
 - **Model**: only the learned network after the frontend is converted to
   ONNX (`convert_openl3.py`, weights SHA-256 pinned, in-process
   verification cosine 1.0). The ONNX artifact is itself SHA-256-pinned
-  (`3b4b7dac…`).
+  (`fc51d01d…`).
 - **Resampler**: a faithful polyphase port of resampy 0.4.3 `kaiser_best`
   (float32 per-tap accumulation, matching resampy bit-for-bit to ~1e-9).
 
@@ -250,7 +250,7 @@ The post-frontend ONNX is not committed and not bundled. **Production**
 immutable release asset (`scripts/publish-sonic-model.sh` →
 `https://github.com/whepper/musicpack/releases/download/sonic-model-openl3-v1/openl3_post.onnx`)
 into the application-data model cache, verifies it against its pinned
-SHA-256 (`3b4b7dac…`, 18,742,941 bytes) before the atomic rename, and reuses
+SHA-256 (`fc51d01d…`, 18,742,941 bytes) before the atomic rename, and reuses
 a valid cached copy offline. It is generated **reproducibly** from the
 SHA-256-pinned OpenL3 H5 (`624ee7b1…`) by `convert_openl3.py` — developers
 build it that way; end users never run Python or a conversion. The analyzer
