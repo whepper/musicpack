@@ -79,9 +79,10 @@ export class RingBuffer {
 
   /**
    * Reads `frames` frames directly into planar channel outputs (the
-   * AudioWorklet layout). Requires `frames <= availableFrames`.
+   * AudioWorklet layout). Requires `frames <= availableFrames`. When
+   * `dstOffset` is set, writes start there instead of at 0.
    */
-  readPlanar(outputs: Float32Array[], frames: number): number {
+  readPlanar(outputs: Float32Array[], frames: number, dstOffset = 0): number {
     const n = Math.min(frames, this.availableFrames);
     if (n <= 0) return 0;
     const ch = this.channels;
@@ -90,7 +91,7 @@ export class RingBuffer {
       const src = r * ch;
       for (let c = 0; c < ch; c++) {
         const o = outputs[c];
-        if (o) o[i] = this.data[src + c] ?? 0;
+        if (o) o[dstOffset + i] = this.data[src + c] ?? 0;
       }
     }
     this.readAbs += n;

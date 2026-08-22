@@ -430,3 +430,205 @@ describe('MusepackEngine backpressure reports', () => {
     expect((harness.standby!.worker as unknown as AsyncWorker)).toBe(workers[1]);
   });
 });
+
+
+describe('MusepackEngine crossfade (M8 Phase B)', () => {
+  interface XHarness {
+    generation: number;
+    current: EngineHarness['current'] & { syntheticEosPending?: boolean };
+    standby: (EngineHarness['current'] & { syntheticEosPending?: boolean }) | null;
+    node: { port: { postMessage: (m: Record<string, unknown>) => void } } | null;
+    onWorkletMessage(message: WorkletReport): void;
+    onWorkerMessage(handle: EngineHarness['current'], message: Record<string, unknown>): void;
+    xlaneReadyResolve: ((ok: boolean) => void) | null;
+    xfadeSwapResolve: (() => void) | null;
+  }
+
+  /** Worker stub that answers the close handshake so closeWorker resolves
+   *  promptly (the real worker acks `closed` after teardown). */
+  class ClosingWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    postMessage = vi.fn((message: Record<string, unknown>) => {
+      if (message.type === 'close') {
+        queueMicrotask(() => {
+          this.onmessage?.({ data: { type: 'closed' } } as MessageEvent);
+        });
+      }
+    });
+    terminate = vi.fn();
+  }
+
+  function makeEngine(opts: { withStandby?: boolean } = {}): {
+    engine: MusepackEngine;
+    h: XHarness;
+    eosSpy: ReturnType<typeof vi.fn>;
+    workletMessages: Record<string, unknown>[];
+  } {
+    const eosSpy = vi.fn();
+    const engine = new MusepackEngine({
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: eosSpy,
+      error: vi.fn(),
+      tick: vi.fn(),
+    });
+    const h = engine as unknown as XHarness;
+    const workletMessages: Record<string, unknown>[] = [];
+    const info = { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 };
+    h.current = {
+      worker: new ClosingWorker() as unknown as EngineHarness['current']['worker'],
+      info,
+      sourceInfo: info,
+      eos: false,
+      nextUrl: null,
+      cancelOpen: null,
+    };
+    h.standby =
+      opts.withStandby === false
+        ? null
+        : {
+            worker: new ClosingWorker() as unknown as EngineHarness['current']['worker'],
+            info,
+            sourceInfo: info,
+            eos: false,
+            nextUrl: null,
+            cancelOpen: null,
+          };
+    h.node = {
+      port: { postMessage: (m: Record<string, unknown>) => void workletMessages.push(m) },
+    };
+    return { engine, h, eosSpy, workletMessages };
+  }
+
+  /** Poll-until helper without vi.waitFor's timer interactions. */
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !cond(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(cond()).toBe(true);
+  }
+
+  /** Drives one beginCrossfade attempt to the swap point. Returns the
+   *  still-running attempt WITHOUT awaiting it (an async fn returning the
+   *  promise directly would deadlock against the caller's next step). */
+  async function runToSwap(
+    engine: MusepackEngine,
+    h: XHarness,
+  ): Promise<{ promise: Promise<EngineStreamInfo | null> }> {
+    const promise = engine.beginCrossfade(item('/next.mpc'), 8);
+    await until(() => typeof h.xlaneReadyResolve === 'function');
+    h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 999, token: 1, generation: 0 });
+    await until(() => typeof h.xfadeSwapResolve === 'function');
+    return { promise };
+  }
+
+  it(
+    'returns null immediately when there is no standby',
+    { timeout: 15000 },
+    async () => {
+      const { engine } = makeEngine({ withStandby: false });
+      await expect(engine.beginCrossfade(item('/next.mpc'), 8)).resolves.toBeNull();
+    },
+  );
+
+  it(
+    'arms the lane, pumps the standby into it, and swaps on xfaded',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, workletMessages, eosSpy } = makeEngine();
+      const incoming = h.standby!;
+      const { promise: pending } = await runToSwap(engine, h);
+
+      // The lane was armed and the standby worker told to play.
+      expect(workletMessages[0]).toMatchObject({ type: 'xfade', token: 1 });
+      expect(
+        (incoming.worker.postMessage as ReturnType<typeof vi.fn>).mock.calls.some(
+          ([m]) => (m as Record<string, unknown>).type === 'play',
+        ),
+      ).toBe(true);
+
+      // Standby PCM routes to xsamples; the lane decode-eos stays silent.
+      h.onWorkerMessage(incoming, { type: 'pcm', samples: Float32Array.of(0.5), generation: 0 });
+      expect(workletMessages.some((m) => m.type === 'xsamples')).toBe(true);
+      h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
+      expect(eosSpy).not.toHaveBeenCalled();
+
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 352800,
+        incomingFrames: 352796,
+        token: 1,
+        generation: 0,
+      });
+
+      await expect(pending).resolves.toMatchObject({ rate: 44100 });
+      // Promotion happened exactly like advance(): the standby handle is
+      // now current and the standby slot is empty.
+      expect(h.current).toBe(incoming);
+      expect(h.standby).toBeNull();
+    },
+  );
+
+  it(
+    'suppresses a stale outgoing-lane eos during the fade',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy } = makeEngine();
+      const { promise: pending } = await runToSwap(engine, h);
+
+      // The OUTGOING track's decode-eos lands mid-fade: swallowed...
+      h.onWorkerMessage(h.current, { type: 'eos', generation: 0 });
+      expect(eosSpy).not.toHaveBeenCalled();
+
+      h.onWorkletMessage({ type: 'xfaded', frames: 3, outgoingFrames: 4, incomingFrames: 4, token: 1, generation: 0 });
+      await expect(pending).resolves.toBeTruthy();
+      expect(eosSpy).not.toHaveBeenCalled(); // still nothing: new track just started
+    },
+  );
+
+  it(
+    're-emits the core eos when the incoming track decoded fully inside the lane',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy } = makeEngine();
+      const incoming = h.standby!;
+      const pendingPromise = engine.beginCrossfade(item('/next.mpc'), 8);
+      await until(() => typeof h.xlaneReadyResolve === 'function');
+
+      // Incoming decode completes in the lane BEFORE promotion...
+      h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
+      h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 9, token: 1, generation: 0 });
+      await until(() => typeof h.xfadeSwapResolve === 'function');
+      h.onWorkletMessage({ type: 'xfaded', frames: 3, outgoingFrames: 4, incomingFrames: 4, token: 1, generation: 0 });
+
+      await expect(pendingPromise).resolves.toBeTruthy();
+      expect(incoming.syntheticEosPending).toBe(true);
+      expect(eosSpy).not.toHaveBeenCalled(); // not yet — only at its audible end
+
+      // The promoted handle's spent worker eos arrives later: re-emitted.
+      h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
+      expect(eosSpy).toHaveBeenCalledOnce();
+    },
+  );
+
+  it(
+    'falls back to null when the lane never becomes ready',
+    { timeout: 15000 },
+    async () => {
+      vi.useFakeTimers();
+      try {
+        const { engine, h, workletMessages } = makeEngine();
+        const pending = engine.beginCrossfade(item('/next.mpc'), 8);
+        const assertion = expect(pending).resolves.toBeNull();
+        await vi.advanceTimersByTimeAsync(31000);
+        await assertion;
+        expect(
+          workletMessages.some((m) => (m as Record<string, unknown>).type === 'xfade-cancel'),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+});

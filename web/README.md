@@ -137,6 +137,29 @@ The queue is one canonical track list; ordering never destroys it.
   (session snapshot v2).
 - The repeat-all wrap preloads the wrap target into the standby decoder, so
   the boundary stays gapless on Musepack tracks.
+- **Queue reorder**: ▲/▼ buttons per queue item move tracks within the
+  canonical list; the cursor follows the moved item and Previous history
+  stays valid.
+
+## Crossfade (opt-in)
+
+The ⤡ button in the player bar cycles Off → 4 s → 8 s → 12 s (persisted in
+the session snapshot; default off, so playback is unchanged when disabled).
+It applies only at natural track boundaries — never repeat-one, never a
+single-track repeat-all loop, never manual skips or seeks.
+
+- **Native lane** (FLAC etc.): the standby element overlaps the current one
+  with equal-power volume ramps (Phase A). Element timing is approximate.
+- **Musepack lane** (Phase B): overlap-add mixing inside the PCM worklet.
+  The next track's decoder is pumped into a dedicated crossfade lane ring;
+  both lanes stream under per-lane credit backpressure while a cosine/sine
+  ramp pair mixes them in the render callback. When the window elapses the
+  incoming ring becomes the output ring and its worker is promoted exactly
+  like the gapless handoff. The trigger fires when the remaining time of the
+  current track enters the fade window; because decode is paced by the ring,
+  short tracks may fall back to the natural gapless seam (the fade only
+  engages while the standby is still open — by construction for 8–12 s fades
+  on normal-length music).
 
 ## BS.1770 loudness normalization
 

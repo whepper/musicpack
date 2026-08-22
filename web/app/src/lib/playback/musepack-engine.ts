@@ -10,7 +10,7 @@
 const WORKLET_URL = import.meta.env.PROD
   ? '/assets/worklet.js'
   : '/src/lib/playback/audio-worklet.ts';
-import type { WorkletReport } from './worklet-protocol';
+import { RING_SECONDS, type WorkletReport } from './worklet-protocol';
 import type {
   Engine,
   EngineCapabilities,
@@ -37,9 +37,8 @@ const MUSEPACK_CAPABILITIES: EngineCapabilities = {
   preloadNext: true,
   sampleAccurateGapless: true,
   decodeGate: true,
-  // Phase B: overlap-add mixing in the worklet. Until then the musepack
-  // engine reports no crossfade and the core falls back to normal EOS.
-  crossfade: false,
+  // M8 Phase B: overlap-add mixing in the worklet's crossfade lane.
+  crossfade: true,
 };
 
 interface WorkerHandle {
@@ -49,7 +48,12 @@ interface WorkerHandle {
   eos: boolean;
   nextUrl: string | null;
   cancelOpen: (() => void) | null;
+  /** Crossfade: the lane decode finished before promotion; the engine must
+   *  re-emit the core's eos once this handle becomes current. */
+  syntheticEosPending?: boolean;
 }
+
+const CALLBACK_MARGIN_FRAMES = 2048;
 
 const DECODER_WORKER_URL = '/decoder.worker.js';
 
@@ -74,9 +78,31 @@ export class MusepackEngine implements Engine {
   private generation = 0;
   private seekResolve: (() => void) | null = null;
   private transitioning = false;
+  /** Decoder done + output dry: the current track's audible end (used by
+   *  the core as a drain-complete signal after crossfade clock shifts). */
+  private outputDrained = false;
   private standbyRequest = 0;
   private trackEndResolve: (() => void) | null = null;
   private contextShouldRun = false;
+  // Crossfade state (M8 Phase B).
+  private xfadeToken = 0;
+  private xlaneReadyResolve: ((ok: boolean) => void) | null = null;
+  private xfadeSwapResolve: (() => void) | null = null;
+  /** Outgoing-lane eos arrived while a fade was in flight (suppressed). */
+  private xfadeSuppressEos = false;
+  private pendingFadeSeconds = 0;
+  /** Output-rate frames the lane must hold before mixing may start. */
+  private xlaneNeeded = 0;
+  private xlaneFilled = 0;
+  /** The standby worker currently routed into the crossfade lane. */
+  private xfadeArmedFor: WorkerHandle | null = null;
+  /** Token under which the lane was armed (stamped on xsamples/xend). */
+  private xfadeArmedToken = 0;
+  /** Lane feed queue + credit state (engine-side pacing). */
+  private xq: Float32Array[] = [];
+  private xAwaitingAccepted = false;
+  private xlaneDone = false;
+  private xlaneEndSent = false;
 
   constructor(h: EngineHandlers) {
     this.h = h;
@@ -169,6 +195,11 @@ export class MusepackEngine implements Engine {
             { type: 'samples', buffer: samples.buffer, generation: this.generation },
             [samples.buffer as ArrayBuffer],
           );
+        } else if (h === this.standby && this.xfadeArmedFor === h) {
+          // Crossfade lane: queue the standby's decode and forward it under
+          // one-outstanding-credit pacing so the lane ring never overflows.
+          this.xq.push(msg.samples as Float32Array);
+          this.pumpXlaneQueue();
         }
         break;
       case 'seeked': {
@@ -185,7 +216,30 @@ export class MusepackEngine implements Engine {
         this.pullInFlight = false;
         if (!h.eos) {
           h.eos = true;
-          if (h === this.current) { this.h.eos(); this.emitNamed('eos'); }
+          if (h === this.xfadeArmedFor) {
+            // The lane decode finished: once the final credit returns, tell
+            // the worklet to flush the resampler tail (xend).
+            this.xlaneDone = true;
+            this.sendXlaneEndIfDrained();
+          }
+          if (h === this.current) {
+            if (h.syntheticEosPending) {
+              // The incoming track finished decoding inside the crossfade
+              // lane BEFORE promotion; its one-shot eos is spent. The core
+              // still needs an eos at the audible end so the normal
+              // boundary chain keeps working — re-emit it now.
+              h.syntheticEosPending = false;
+              this.h.eos();
+              this.emitNamed('eos');
+            } else if (this.xfadeSuppressEos) {
+              // The outgoing track is draining under a crossfade; the core
+              // already advanced its cursor. Swallow this stale eos.
+              this.xfadeSuppressEos = false;
+            } else {
+              this.h.eos();
+              this.emitNamed('eos');
+            }
+          }
         }
         break;
       case 'error':
@@ -201,14 +255,29 @@ export class MusepackEngine implements Engine {
     switch (msg.type) {
       case 'rendered':
         this.streamSamples = this.resetBase + msg.frames;
+        // A crossfade-promoted track whose decode finished inside the lane
+        // has a spent one-shot worker eos; re-emit the core's eos once its
+        // audible content has been consumed.
+        const cur = this.current;
+        if (
+          cur?.syntheticEosPending &&
+          cur.info &&
+          this.streamSamples - this.resetBase >= cur.info.lengthSamples
+        ) {
+          cur.syntheticEosPending = false;
+          this.h.eos();
+          this.emitNamed('eos');
+        }
         this.h.tick(this.streamSamples);
         this.emitNamed('tick');
         break;
       case 'primed':
+        this.outputDrained = false;
         this.h.primed();
         this.emitNamed('primed');
         break;
       case 'need':
+        this.outputDrained = false;
         this.backpressured = false;
         this.resumePumpingIfRequested();
         break;
@@ -217,19 +286,45 @@ export class MusepackEngine implements Engine {
         this.current?.worker.postMessage({ type: 'pause', generation: this.generation });
         break;
       case 'underrun':
+        // Decoder exhausted + output dry = the track's audible end. The core
+        // uses this (via isOutputDrained) as an alternative drain-complete
+        // signal, because a crossfade compresses the album clock and the
+        // positional threshold may never be reached.
+        if (this.current?.eos) this.outputDrained = true;
         this.h.buffering();
         this.emitNamed('buffering');
         this.backpressured = false;
         this.resumePumpingIfRequested();
         break;
       case 'accepted':
-        this.pullInFlight = false;
-        this.resumePumpingIfRequested();
+        if (msg.lane === 2) {
+          this.onXlaneAccepted(msg.available);
+        } else {
+          this.pullInFlight = false;
+          this.resumePumpingIfRequested();
+        }
         break;
       case 'trackEnded': {
         const resolve = this.trackEndResolve;
         this.trackEndResolve = null;
         resolve?.();
+        break;
+      }
+      case 'xfadeReady': {
+        // Whole incoming track queued and flushed: readiness is guaranteed.
+        const resolve = this.xlaneReadyResolve;
+        this.xlaneReadyResolve = null;
+        this.xfadeArmedFor?.worker.postMessage({
+          type: 'pause',
+          generation: this.generation,
+        });
+        resolve?.(true);
+        break;
+      }
+      case 'xfaded': {
+        const swapResolve = this.xfadeSwapResolve;
+        this.xfadeSwapResolve = null;
+        swapResolve?.();
         break;
       }
       case 'error':
@@ -267,6 +362,7 @@ export class MusepackEngine implements Engine {
     this.backpressured = false;
     this.resetBase = 0;
     this.streamSamples = 0;
+    this.outputDrained = false;
     try {
       const info = await this.openInWorker(h, url, size, generation);
       if (generation !== this.generation || this.current !== h) {
@@ -414,6 +510,219 @@ export class MusepackEngine implements Engine {
     });
   }
 
+  /**
+   * Crossfade (M8 Phase B): overlap-add the standby track over the current
+   * one inside the worklet. The standby worker is pumped into the worklet's
+   * crossfade lane under its own credit loop; once the lane holds at least
+   * the fade window of audio, mixing starts at the end of the outgoing
+   * track. Resolves with the incoming track's info AFTER the worklet swap,
+   * with the standby promoted exactly like advance() — or null (caller
+   * falls back to normal EOS) when there is no standby/context, the decode
+   * fails, or a competing transport action superseded the attempt.
+   */
+  async beginCrossfade(
+    next: PlaybackItem,
+    fadeSeconds: number,
+  ): Promise<EngineStreamInfo | null> {
+    const generation = this.generation;
+    const outgoing = this.current;
+    const incoming = this.standby;
+    if (!this.node || !outgoing || !incoming || !incoming.info || !incoming.sourceInfo) {
+      return null;
+    }
+    void next; // the standby is already opened on the prepared item
+    this.pendingFadeSeconds = Math.max(0.25, Math.min(15, fadeSeconds));
+    const token = ++this.xfadeToken;
+    this.xfadeArmedToken = token;
+
+    // Arm the worklet lane for the incoming format.
+    this.node.port.postMessage({
+      type: 'xfade',
+      sourceRate: incoming.sourceInfo.rate,
+      sourceChannels: incoming.sourceInfo.channels,
+      fadeFrames: Math.max(1, Math.round(this.pendingFadeSeconds * this.outputRate)),
+      token,
+      generation,
+    });
+
+    // Route the standby's decode into the lane. Its decode-eos must NOT
+    // reach the core: the incoming track is only beginning. The arm stays
+    // set until promotion: between ready and swap the worker keeps
+    // decoding into the lane (post-swap stragglers are absorbed by the
+    // worklet's token gate).
+    this.xfadeArmedFor = incoming;
+    incoming.eos = false;
+    try {
+      const ok = await this.pumpLaneUntilReady(incoming, token, generation);
+      if (!ok || generation !== this.generation || this.standby !== incoming) {
+        this.abortXfadeAttempt();
+        return null;
+      }
+    } catch {
+      this.abortXfadeAttempt();
+      return null;
+    }
+
+    // Start mixing; the render callback owns the transition timing from
+    // here. The outgoing worker may still be decoding — its late eos is
+    // swallowed so the core keeps waiting for the swap.
+    this.node.port.postMessage({ type: 'xfade-go', token, generation });
+    this.xfadeSuppressEos = true;
+
+    // Wait for the swap report (real-time: the fade window elapses in the
+    // audio callback), then finish the bookkeeping like a gapless advance.
+    await new Promise<void>((resolve) => {
+      this.xfadeSwapResolve = resolve;
+      // Never hang the fallback forever (e.g. suspended context).
+      setTimeout(() => {
+        if (this.xfadeSwapResolve === resolve) {
+          this.xfadeSwapResolve = null;
+          resolve();
+        }
+      }, 60000);
+    });
+    if (generation !== this.generation) return null;
+
+    ++this.standbyRequest;
+    this.standby = null;
+    this.current = incoming;
+    this.xfadeArmedFor = null;
+    // Any still-queued lane chunks belong to the now-current track; the
+    // worklet absorbed the lane resampler at the swap, so they continue
+    // seamlessly through the normal path.
+    this.xAwaitingAccepted = false;
+    for (const samples of this.xq) {
+      this.node.port.postMessage(
+        { type: 'samples', buffer: samples.buffer, generation: this.generation },
+        [samples.buffer as ArrayBuffer],
+      );
+    }
+    this.xq = [];
+    this.xlaneDone = false;
+    this.xlaneEndSent = false;
+    // If the incoming decode already completed inside the lane, its one-shot
+    // worker eos is spent: synthesize the core's eos at the audible end so
+    // the normal boundary chain (advance/next preload) keeps working.
+    if (incoming.eos) {
+      incoming.eos = false;
+      incoming.syntheticEosPending = true;
+    }
+    await this.closeWorker(outgoing);
+    return incoming.info;
+  }
+
+  /** Tears down any in-flight crossfade attempt (competing transport won). */
+  private abortXfadeAttempt(): void {
+    this.xfadeArmedFor = null;
+    this.xfadeArmedToken = -1;
+    this.xq = [];
+    this.xAwaitingAccepted = false;
+    this.xlaneDone = false;
+    this.xlaneEndSent = false;
+    this.node?.port.postMessage({ type: 'xfade-cancel', generation: this.generation });
+    const ready = this.xlaneReadyResolve;
+    this.xlaneReadyResolve = null;
+    ready?.(false);
+    const swap = this.xfadeSwapResolve;
+    this.xfadeSwapResolve = null;
+    swap?.();
+    this.xfadeSuppressEos = false;
+  }
+
+  /** Demand-paces the standby worker into the crossfade lane until the lane
+   *  holds enough audio to start the mix (the whole fade window when it
+   *  fits, else most of the ring — decode keeps feeding the lane in real
+   *  time during the fade), or the whole track when it is shorter.
+   *  Resolves false on supersede/error. */
+  private pumpLaneUntilReady(
+    incoming: WorkerHandle,
+    token: number,
+    generation: number,
+  ): Promise<boolean> {
+    const fadeFrames = Math.max(1, Math.round(this.pendingFadeSeconds * this.outputRate));
+    const ringCapacity = Math.round(this.outputRate * RING_SECONDS);
+    this.xlaneNeeded = Math.min(
+      incoming.info?.lengthSamples ?? Number.POSITIVE_INFINITY,
+      fadeFrames + CALLBACK_MARGIN_FRAMES,
+      Math.round(ringCapacity * 0.75),
+    );
+    this.xlaneFilled = 0;
+    this.xlaneDone = false;
+    this.xlaneEndSent = false;
+    this.xAwaitingAccepted = false;
+    this.xq = [];
+    return new Promise<boolean>((resolve) => {
+      this.xlaneReadyResolve = resolve;
+      const timer = setTimeout(() => {
+        if (this.xlaneReadyResolve === resolve) {
+          this.xlaneReadyResolve = null;
+          resolve(false);
+        }
+      }, 30000);
+      void timer;
+      incoming.worker.postMessage({ type: 'play', generation });
+    });
+  }
+
+  /** Forwards one queued lane chunk when the previous credit returned. */
+  private pumpXlaneQueue(): void {
+    if (this.xAwaitingAccepted || this.xq.length === 0 || !this.node) return;
+    const samples = this.xq.shift()!;
+    this.xAwaitingAccepted = true;
+    this.node.port.postMessage(
+      {
+        type: 'xsamples',
+        buffer: samples.buffer,
+        token: this.xfadeArmedToken,
+        generation: this.generation,
+      },
+      [samples.buffer as ArrayBuffer],
+    );
+  }
+
+  /** Lane bookkeeping after each accepted crossfade credit. */
+  private onXlaneAccepted(available: number | undefined): void {
+    this.xAwaitingAccepted = false;
+    if (available !== undefined) this.xlaneFilled = available;
+    this.sendXlaneEndIfDrained();
+    this.pumpXlaneQueue();
+    // The decoder worker is pull-based (one chunk per 'play'): ask for the
+    // next lane chunk until its decode is done.
+    if (!this.xlaneDone && !this.xAwaitingAccepted && this.xq.length === 0) {
+      this.xfadeArmedFor?.worker.postMessage({ type: 'play', generation: this.generation });
+    }
+    this.settleXlaneReadiness();
+  }
+
+  /** Sends xend once the lane decode is complete and every queued chunk
+   *  has been credited; the worklet answers with xfadeReady. */
+  private sendXlaneEndIfDrained(): void {
+    if (!this.xlaneDone || this.xAwaitingAccepted || this.xq.length > 0) return;
+    if (this.xlaneEndSent) return;
+    this.xlaneEndSent = true;
+    this.node?.port.postMessage({
+      type: 'xend',
+      token: this.xfadeArmedToken,
+      generation: this.generation,
+    });
+  }
+
+  /** Readiness = the lane holds the needed prime audio, or the whole track
+   *  is decoded, credited, and flushed (xfadeReady arrives separately). */
+  private settleXlaneReadiness(): void {
+    if (!this.xlaneReadyResolve) return;
+    if (
+      this.xlaneFilled >= this.xlaneNeeded ||
+      (this.xlaneDone && !this.xAwaitingAccepted && this.xq.length === 0)
+    ) {
+      const resolve = this.xlaneReadyResolve;
+      this.xlaneReadyResolve = null;
+      // Pause the standby decode while waiting for the go moment.
+      this.xfadeArmedFor?.worker.postMessage({ type: 'pause', generation: this.generation });
+      resolve(true);
+    }
+  }
+
   startPumping(): void {
     this.pumpingRequested = true;
     this.resumePumpingIfRequested();
@@ -462,6 +771,9 @@ export class MusepackEngine implements Engine {
     this.transitioning = true;
     this.backpressured = false;
     this.pullInFlight = false;
+    // A seek repositions the clock: a pending crossfade synthetic eos must
+    // not fire from stale frame accounting.
+    this.current.syntheticEosPending = false;
     this.seekResolve?.();
     this.seekResolve = null;
     this.trackEndResolve?.();
@@ -470,6 +782,7 @@ export class MusepackEngine implements Engine {
     this.node?.port.postMessage({ type: 'reset', generation });
     this.resetBase = sample;
     this.streamSamples = sample;
+    this.outputDrained = false;
     const sourceSample = this.outputToSourceSample(sample, this.current.sourceInfo);
     await this.postSeek(sourceSample, generation);
     if (generation !== this.generation) return;
@@ -538,6 +851,12 @@ export class MusepackEngine implements Engine {
       sourceInfo.lengthSamples,
       Math.max(0, Math.floor((sample * sourceInfo.rate) / this.outputRate)),
     );
+  }
+
+  /** True when the decoder is exhausted and the output ring has run dry —
+   *  the current track has no more audible content. */
+  isOutputDrained(): boolean {
+    return this.outputDrained;
   }
 
   /** Terminates a decoder worker, but only after its nested demand-reader/

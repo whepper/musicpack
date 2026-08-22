@@ -458,3 +458,46 @@ test('crossfade setting persists across a reload (native FLAC album)', async ({ 
   const restored = await page.evaluate(() => window.__musicpack?.player.model.get().crossfadeSeconds);
   expect(restored).toBe(4);
 });
+
+test('musepack crossfade advances through tracks without error', async ({ page }) => {
+  // Phase B: worklet overlap-add on the musepack lane. "Fade Rider" holds
+  // two 48 s tracks: decode is paced by the ring, so seeking to ~7.5 s
+  // before the boundary makes the crossfade trigger (remaining <= 12 s)
+  // fire while the standby is still open — the fade path engages.
+  await page.getByText('Fade Rider').first().click();
+  await page.evaluate(() => (window.__musicpack?.player as any).setCrossfade(12));
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  const kind = await page.evaluate(() => window.__musicpack?.player.getBackendKind());
+  expect(kind).toBe('musepack');
+
+  // Spy the engine capability once it exists.
+  await page.evaluate(() => {
+    const eng = (window.__musicpack?.player as any).core.engine;
+    const orig = eng.beginCrossfade.bind(eng);
+    window.__xfadeResult = 'none';
+    eng.beginCrossfade = async (...args: unknown[]) => {
+      const r = await orig(...args);
+      window.__xfadeResult = r ? 'taken' : 'declined';
+      return r;
+    };
+  });
+
+  const firstTitle = (await playerState(page)).currentTitle;
+  // Track is 48 s; seek to 40.5 s leaves ~7.5 s — inside the 12 s window,
+  // above the ring's high-water lead, so the trigger wins the race.
+  await page.evaluate(() => (window.__musicpack?.player as any).seek(40.5));
+
+  let fadeResult = 'none';
+  let advanced = false;
+  for (let i = 0; i < 80 && !(fadeResult === 'taken' && advanced); i++) {
+    await page.waitForTimeout(250);
+    const s = await playerState(page);
+    if (s.state === 'error') throw new Error(`player errored: ${s.error}`);
+    if (s.currentTitle && s.currentTitle !== firstTitle) advanced = true;
+    fadeResult = await page.evaluate(() => (window as any).__xfadeResult ?? 'none');
+  }
+  expect(fadeResult).toBe('taken');
+  expect(advanced).toBe(true);
+});
+

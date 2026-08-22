@@ -668,7 +668,15 @@ export class Player {
         void this.beginCrossfadeTransition();
       }
     }
-    const ended = this.pendingEnded && pos >= dur - END_TOLERANCE_SAMPLES;
+    // End of queue: the positional drain is the normal signal, but a
+    // crossfade compresses the album clock (overlap consumes both lanes in
+    // one pass), so the engine's drained signal (decoder done + output dry)
+    // is an equally valid end marker.
+    const drained =
+      typeof (this.engine as unknown as { isOutputDrained?: () => boolean }).isOutputDrained === 'function'
+        ? (this.engine as unknown as { isOutputDrained(): boolean }).isOutputDrained()
+        : false;
+    const ended = this.pendingEnded && (pos >= dur - END_TOLERANCE_SAMPLES || drained);
     this.model.update((m) => ({
       ...m,
       positionSeconds: pos / rate,
@@ -782,6 +790,8 @@ export class Player {
       this.emit({ t: 'track', item: nextItem });
       this.applyGain(nextItem);
       this.setMediaFor(nextItem);
+      // The fade moved us onto a NEW track: allow its own boundary to fade.
+      this.crossfadeArmed = false;
       const next2 = this.peekPreloadTarget(nqi);
       if (next2 && isPreloadEngine(engine)) {
         const ni = await (engine as PreloadEngine).prepareNext(next2.item);

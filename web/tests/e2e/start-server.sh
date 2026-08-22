@@ -50,6 +50,40 @@ m["media"][0]["tracks"][0]["duration"] = 48
 json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
 PY
 
+# A two-long-track musepack album ("Fade Rider") for the crossfade e2e:
+# 48 s tracks pace their decode, so the audible-boundary crossfade trigger
+# (remaining <= fade window) reliably beats the decode-eos handoff.
+"$PY" - "$ROOT/tests/reference/test-musicpack-album.mpack" "$LIB/Fade Rider.mpack" \
+    "$ROOT/tests/fixtures/sine44-q5-48s.mpc" <<'PY'
+import hashlib, json, os, shutil, sys
+ref, dst, sine = sys.argv[1], sys.argv[2], sys.argv[3]
+shutil.copytree(ref, dst)
+sha = hashlib.sha256(open(sine, "rb").read()).hexdigest()
+for name in ("01 - Fade Rider - Horizon.mpc", "02 - Fade Rider - Sunrise.mpc"):
+    shutil.copy(sine, os.path.join(dst, "audio", name))
+mpath = os.path.join(dst, "manifest.json")
+m = json.load(open(mpath, encoding="utf-8"))
+m["album"]["title"] = "Fade Rider"
+m["album"]["originalReleaseDate"] = "2026-01-01"
+m["release"]["edition"] = "2026 Digital"
+t0 = m["media"][0]["tracks"][0]
+t1 = dict(t0)
+# NOTE: dict(t0) shallow-copies — t1["audio"] would alias t0["audio"].
+# Assign fresh objects so each track gets its own asset entry.
+t0["title"] = "Fade Rider - Horizon"
+t0["audio"] = {"path": "audio/01 - Fade Rider - Horizon.mpc", "sha256": sha}
+t0["duration"] = 48
+t1["title"] = "Fade Rider - Sunrise"
+t1["track"] = 2
+t1["audio"] = {"path": "audio/02 - Fade Rider - Sunrise.mpc", "sha256": sha}
+t1["duration"] = 48
+# The cloned waveform reference would collide with track 1's asset path;
+# waveform is optional per-track data, so drop it here.
+del t1["waveform"]
+m["media"][0]["tracks"] = [t0, t1]
+json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
+PY
+
 # A third, valid edition of the Compilation album. The fixture's "Escape
 # Edition" package deliberately contains a symlinked audio object and is
 # correctly hidden by verified-only visibility, so the e2e edition-grouping

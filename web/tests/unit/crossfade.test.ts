@@ -117,11 +117,12 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
     expect(player.model.get().current?.id).toBe('t2');
     expect(player.model.get().state).not.toBe('error');
 
-    // further ticks must NOT re-trigger for this track
-    h.rendered = 27 * RATE;
+    // Phase B: each track can fade once. The next tick lands in track 2's
+    // own fade window (cursor advanced to t2), so a chained fade fires.
+    h.rendered = 57 * RATE;
     h.handlers.tick();
     await flush();
-    expect(h.beginCrossfade).toHaveBeenCalledOnce();
+    expect(h.beginCrossfade).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing when disabled (default)', async () => {

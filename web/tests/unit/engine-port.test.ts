@@ -27,7 +27,7 @@ describe('engine port conformance', () => {
       preloadNext: true,
       sampleAccurateGapless: true,
       decodeGate: true,
-      crossfade: false,
+      crossfade: true, // Phase B: worklet overlap-add mixing
     });
   });
 

@@ -13,6 +13,12 @@ export class StreamingResampler {
   private outputFramesWritten = 0;
   private done = false;
 
+  /** True once finish() has flushed the final frame; further process()
+   *  calls are ignored until a fresh resampler replaces this instance. */
+  get isFinished(): boolean {
+    return this.done;
+  }
+
   constructor(
     readonly sourceRate: number,
     readonly sourceChannels: number,

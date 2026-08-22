@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 
 test('the shelf shows the collection with collector lines', async ({ page }) => {
   const cards = page.locator('.album-card');
-  await expect(cards).toHaveCount(4);
+  await expect(cards).toHaveCount(5); // Compilation (3 editions) + Classical + Fade Rider
   await expect(page.getByText('Synthetic Test Compilation')).toBeVisible();
   await expect(page.getByText('3 versions')).toBeVisible(); // multi-edition collector line
   await expect(page.getByText('1998', { exact: true })).toBeVisible(); // classical year
