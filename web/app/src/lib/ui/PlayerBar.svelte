@@ -90,6 +90,28 @@ SPDX-License-Identifier: BSD-3-Clause
     <div class="right-zone">
       <button
         class="smallcaps"
+        aria-label={`Repeat: ${$playerModel.repeat === 'off' ? 'off' : $playerModel.repeat === 'one' ? 'one track' : 'all'}. Click to change.`}
+        title={`Repeat: ${$playerModel.repeat}`}
+        style={$playerModel.repeat !== 'off' ? 'color:var(--accent,#b0632f)' : ''}
+        onclick={() =>
+          player.setRepeat(
+            $playerModel.repeat === 'off' ? 'all' : $playerModel.repeat === 'all' ? 'one' : 'off',
+          )
+        }
+      >
+        {$playerModel.repeat === 'one' ? '↻1' : $playerModel.repeat === 'all' ? '↻All' : '↻'}
+      </button>
+      <button
+        class="smallcaps"
+        aria-label={`Shuffle: ${$playerModel.shuffle ? 'on' : 'off'}. Click to toggle.`}
+        title="Shuffle"
+        style={$playerModel.shuffle ? 'color:var(--accent,#b0632f)' : ''}
+        onclick={() => player.setShuffle(!$playerModel.shuffle)}
+      >
+        ⤨
+      </button>
+      <button
+        class="smallcaps"
         aria-label={`Normalization: ${normLabel}. Click to change.`}
         title={`Loudness normalization: ${normLabel}`}
         onclick={() =>

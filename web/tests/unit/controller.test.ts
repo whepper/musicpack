@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  PlayerController,
-  type Backend,
-  type BackendEvents,
-} from '../../app/src/lib/playback/controller';
+import { PlayerController } from '../../app/src/lib/playback/controller';
+import type { Engine } from '../../player-core/src/engine';
+type Backend = Engine;
+type BackendEvents = {
+  primed(): void;
+  buffering(): void;
+  eos(): void;
+  error(message: string): void;
+  tick(): void;
+};
 import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
 import { createQueueStore } from '../../app/src/lib/state/queue';
 import type { ReleaseDetail, Track } from '../../app/src/lib/api/types';
@@ -54,6 +59,8 @@ class FakeBackend implements Backend {
   playGate: Promise<void> | null = null;
   seekGate: Promise<void> | null = null;
   pauseGate: Promise<void> | null = null;
+  /** Holds open() so tests can park a load mid-flight. */
+  openGate: Promise<void> | null = null;
   advanceGate: Promise<{ rate: number; channels: number; version: number; lengthSamples: number } | null> | null = null;
   plays = 0;
   seeks: number[] = [];
@@ -62,16 +69,32 @@ class FakeBackend implements Backend {
     this.events = events;
   }
 
+  readonly capabilities = {
+    preloadNext: true,
+    sampleAccurateGapless: true,
+    decodeGate: true,
+  };
+  private listeners = new Map<string, Set<(sender: Engine) => void>>();
+  on(name: string, cb: (sender: Engine) => void): () => void {
+    let set = this.listeners.get(name);
+    if (!set) this.listeners.set(name, (set = new Set()));
+    set.add(cb);
+    return () => set!.delete(cb);
+  }
+
   async init() {}
   lengthFor(url: string): number {
     return this.lengthsByUrl.get(url) ?? LENGTH;
   }
-  async open(url: string) {
+  async open(item: import('../../player-core/src/types').PlaybackItem) {
+    const url = item.source.url;
     this.opened.push(url);
     this.rendered = 0;
+    if (this.openGate) await this.openGate;
     return { rate: RATE, channels: 2, version: 8, lengthSamples: this.lengthFor(url) };
   }
-  async prepareNext(url: string) {
+  async prepareNext(item: import('../../player-core/src/types').PlaybackItem) {
+    const url = item.source.url;
     this.prepared.push(url);
     const info = { rate: RATE, channels: 2, version: 8, lengthSamples: this.lengthFor(url) };
     this.standbyInfo = info;
@@ -93,6 +116,12 @@ class FakeBackend implements Backend {
   }
   async pause() {
     await this.pauseGate;
+  }
+  seekSample(samples: number): Promise<void> {
+    return this.seek(samples);
+  }
+  renderedSamples(): number {
+    return this.getRenderedSamples();
   }
   async seek(sample: number) {
     this.seeks.push(sample);
@@ -121,19 +150,19 @@ class FakeBackend implements Backend {
     this.rendered = frames;
   }
   emitPrimed() {
-    this.events.onPrimed();
+    this.events.primed();
   }
   emitEos() {
-    this.events.onEos();
+    this.events.eos();
   }
   emitBuffering() {
-    this.events.onBuffering();
+    this.events.buffering();
   }
   emitPosition() {
-    this.events.onPosition();
+    this.events.tick();
   }
   emitError(msg: string) {
-    this.events.onError(msg);
+    this.events.error(msg);
   }
 }
 
@@ -173,6 +202,35 @@ function makeWithStorage(storage: { get: () => string | null; set: (v: string | 
 /** Flushes promise chains (state transitions land on .then microtasks). */
 async function flush(times = 3): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
+/** Like make(), but the open gate can be armed/released by the test even
+ *  before the backend exists (the factory runs inside the first load). */
+function makeWithOpenGate() {
+  const queue = createQueueStore();
+  const lengthsByUrl = new Map<string, number>();
+  let backend: FakeBackend | null = null;
+  const holder: { gate: Promise<void> | null } = { gate: null };
+  const player = new PlayerController(queue, {
+    backendFactory: (kind, events) => {
+      const b = new FakeBackend(kind, events);
+      b.lengthsByUrl = lengthsByUrl;
+      b.openGate = holder.gate;
+      backend = b;
+      return b;
+    },
+  });
+  player.init();
+  return {
+    player,
+    queue,
+    getBackend: () => backend!,
+    lengthsByUrl,
+    setGate(gate: Promise<void> | null): void {
+      holder.gate = gate;
+      if (backend) backend.openGate = gate;
+    },
+  };
 }
 
 describe('PlayerController', () => {
@@ -662,6 +720,74 @@ describe('PlayerController', () => {
     }
   });
 
+  it('persists and restores repeat/shuffle policy across a reload (v2)', async () => {
+    const map = new Map<string, string>();
+    const storage = {
+      get: () => map.get('musicpack.player.v1') ?? null,
+      set: (v: string | null) => {
+        if (v === null) map.delete('musicpack.player.v1');
+        else map.set('musicpack.player.v1', v);
+      },
+    };
+    const a = makeWithStorage(storage);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      await a.player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'Album', 'Artist');
+      const ba = a.getBackend();
+      ba.emitPrimed();
+      a.player.setRepeat('all');
+      a.player.setShuffle(true);
+      vi.advanceTimersByTime(2001);
+      ba.setRendered(2 * RATE);
+      ba.emitPosition();
+      expect(map.size).toBe(1);
+
+      // The persisted payload is v2 with the policy embedded.
+      const raw = JSON.parse(map.get('musicpack.player.v1')!) as { v: number; repeat: string; shuffle: boolean };
+      expect(raw.v).toBe(2);
+      expect(raw.repeat).toBe('all');
+      expect(raw.shuffle).toBe(true);
+
+      // A fresh controller restores the policy.
+      const b = makeWithStorage(storage);
+      const m = b.player.model.get();
+      expect(m.repeat).toBe('all');
+      expect(m.shuffle).toBe(true);
+      expect(b.queue.shuffle).toBe(true);
+      expect(b.queue.repeat).toBe('all');
+      // Shuffle order is current-first around the restored item.
+      expect(b.queue.getPresentationOrder()[0]).toBe(b.queue.get().index);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a legacy v1 snapshot restores with default policy', async () => {
+    const map = new Map<string, string>();
+    map.set(
+      'musicpack.player.v1',
+      JSON.stringify({
+        v: 1,
+        items: [
+          { track: { id: 11, audio: { url: '/api/v1/tracks/11/audio' } }, releaseId: 9, albumId: 1, albumTitle: 'A', artist: 'X' },
+        ],
+        index: 0,
+        positionSeconds: 4,
+        volume: 0.7,
+        normalizeMode: 'album',
+      }),
+    );
+    const player = new PlayerController(createQueueStore(), {
+      storage: { get: () => map.get('musicpack.player.v1') ?? null, set: () => undefined },
+    });
+    player.init();
+    const m = player.model.get();
+    expect(m.state).toBe('paused');
+    expect(m.current?.track.id).toBe(11); // QueueItem fields survive verbatim
+    expect(m.repeat).toBe('off'); // documented v1 defaults
+    expect(m.shuffle).toBe(false);
+  });
+
   it('clears persisted state on teardown', async () => {
     const map = new Map<string, string>();
     const storage = {
@@ -700,5 +826,124 @@ describe('PlayerController', () => {
     expect(player.model.get().current).toBeNull();
     expect(player.model.get().positionSeconds).toBe(0);
     expect(player.model.get().error).toBeUndefined();
+  });
+
+  // ---- M0 characterization: superseded loads & external queue mutation ----
+
+  it('lets the newest command win when next fires during an unresolved load', async () => {
+    const { player, queue, getBackend, setGate } = makeWithOpenGate();
+    let releaseOpen = () => {};
+    setGate(new Promise<void>((resolve) => { releaseOpen = resolve; }));
+
+    const first = player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    await flush();
+    expect(player.model.get().state).toBe('loading');
+
+    void player.next(); // supersedes; its own load parks on the same gate
+    await flush();
+    expect(queue.get().index).toBe(1);
+
+    releaseOpen();
+    await Promise.allSettled([first]);
+    await flush(6);
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(player.model.get().state).toBe('buffering');
+    getBackend().emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('playing');
+  });
+
+  it('lets a late previous() override a pending next() during loading', async () => {
+    const { player, queue, getBackend, setGate } = makeWithOpenGate();
+    let releaseOpen = () => {};
+    setGate(new Promise<void>((resolve) => { releaseOpen = resolve; }));
+
+    const first = player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    await flush();
+    void player.next();
+    await flush();
+    void player.previous(); // <3s into the song -> cursor back to index 0
+    await flush();
+    expect(queue.get().index).toBe(0);
+
+    releaseOpen();
+    await Promise.allSettled([first]);
+    await flush(6);
+    expect(queue.get().index).toBe(0);
+    expect(player.model.get().current?.track.title).toBe('T1');
+    expect(player.model.get().state).not.toBe('error');
+  });
+
+  it('discards a superseded album load when another playAlbum replaces it mid-open', async () => {
+    const { player, queue, getBackend, setGate } = makeWithOpenGate();
+    let releaseOpen = () => {};
+    setGate(new Promise<void>((resolve) => { releaseOpen = resolve; }));
+
+    const a = player.playAlbum(release(9, ['A1', 'A2'], 20), 'Album A', 'Artist');
+    await flush();
+    expect(getBackend().opened).toEqual(['/api/v1/tracks/1/audio']);
+
+    const b = player.playAlbum(release(10, ['B1', 'B2'], 10, 100), 'Album B', 'Artist', 1);
+    await flush();
+    expect(getBackend().opened).toContain('/api/v1/tracks/102/audio'); // B start index 1
+
+    releaseOpen();
+    await Promise.allSettled([a, b]);
+    await flush(6);
+    expect(queue.get().items.map((i) => i.track.title)).toEqual(['B1', 'B2']);
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('B2');
+    expect(player.model.get().durationSeconds).toBeCloseTo(20, 1); // B's geometry
+    expect(player.model.get().state).toBe('buffering');
+  });
+
+  it('stops playback when the queue is cleared externally while playing', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('playing');
+
+    queue.clear(); // external mutation (no mutating flag): the panel path
+    await flush();
+    expect(queue.get().items).toHaveLength(0);
+    expect(player.model.get().state).toBe('idle');
+    expect(b.paused).toBe(true); // pump stopped, audio cannot continue
+  });
+
+  it('advances to the following track when the playing item is removed externally', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+
+    queue.removeAt(0); // remove the CURRENT item (cursor clamps onto T2)
+    await flush(6);
+    expect(queue.get().items.map((i) => i.track.title)).toEqual(['T2', 'T3']);
+    expect(queue.get().index).toBe(0);
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(player.model.get().state).toBe('buffering');
+    b.emitPrimed();
+    await flush();
+    expect(player.model.get().state).toBe('playing');
+  });
+
+  it('keeps playing untouched when a future item is removed externally', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    const opens = b.opened.length;
+
+    queue.removeAt(2); // a future item: current track id unchanged
+    await flush(6);
+    expect(queue.get().items).toHaveLength(2);
+    expect(player.model.get().current?.track.title).toBe('T1');
+    expect(player.model.get().state).toBe('playing');
+    expect(b.opened.length).toBe(opens); // no reload was triggered
   });
 });

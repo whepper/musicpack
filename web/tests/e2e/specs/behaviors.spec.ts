@@ -85,9 +85,12 @@ test('nav-bar navigation keeps playback alive (SPA, no full reload)', async ({ p
   expect((await playerState(page)).currentTitle).toBeTruthy();
 
   // The nav underline must follow the route (it used to freeze on Albums).
-  await expect(page.getByRole('link', { name: 'Artists' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('link', { name: 'Albums' })).not.toHaveAttribute('aria-current', 'page');
-  await page.getByRole('link', { name: 'Now Playing' }).click();
+  // Scope to the nav landmark: artist-page links like "Alphaville 3 albums"
+  // substring-match the role name 'Albums'.
+  const nav = page.getByRole('navigation', { name: 'Primary' });
+  await expect(nav.getByRole('link', { name: 'Artists' })).toHaveAttribute('aria-current', 'page');
+  await expect(nav.getByRole('link', { name: 'Albums' })).not.toHaveAttribute('aria-current', 'page');
+  await nav.getByRole('link', { name: 'Now Playing' }).click();
   await waitFor(page, async () => page.url().includes('/queue'), { label: '/queue reached' });
   await expect(page.getByRole('link', { name: 'Now Playing' })).toHaveAttribute('aria-current', 'page');
 });

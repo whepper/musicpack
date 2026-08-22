@@ -11,22 +11,33 @@ const WORKLET_URL = import.meta.env.PROD
   ? '/assets/worklet.js'
   : '/src/lib/playback/audio-worklet.ts';
 import type { WorkletReport } from './worklet-protocol';
+import type {
+  Engine,
+  EngineCapabilities,
+  EngineEvents,
+  EngineEventName,
+} from '../../../../player-core/src/engine';
+import type { PlaybackItem } from '../../../../player-core/src/types';
 
-export interface EngineStreamInfo {
-  rate: number;
-  channels: number;
-  version: number;
-  lengthSamples: number;
+export type EngineStreamInfo = import('../../../../player-core/src/types').StreamInfo & {
+  /** Kept as a type alias for web-internal call sites; structurally the
+   *  player-core StreamInfo. */
+};
+
+/** Constructor handlers (M4): the core EngineEvents naming. */
+export interface EngineHandlers {
+  primed: () => void;
+  buffering: () => void;
+  eos: () => void;
+  error: (message: string) => void;
+  tick: (streamSamples: number) => void;
 }
 
-export interface EngineEvents {
-  onPrimed: () => void;
-  onBuffering: () => void;
-  onEos: () => void; // current track finished decoding
-  onEnded?: () => void; // stream drained and playback reached the end
-  onError: (message: string) => void;
-  onPosition: (streamSamples: number) => void;
-}
+const MUSEPACK_CAPABILITIES: EngineCapabilities = {
+  preloadNext: true,
+  sampleAccurateGapless: true,
+  decodeGate: true,
+};
 
 interface WorkerHandle {
   worker: Worker;
@@ -39,14 +50,15 @@ interface WorkerHandle {
 
 const DECODER_WORKER_URL = '/decoder.worker.js';
 
-export class MusepackEngine {
+export class MusepackEngine implements Engine {
   readonly kind = 'musepack' as const;
+  readonly capabilities = MUSEPACK_CAPABILITIES;
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
   private node: AudioWorkletNode | null = null;
   private current: WorkerHandle | null = null;
   private standby: WorkerHandle | null = null;
-  private events: EngineEvents;
+  private h: EngineHandlers;
   private streamSamples = 0;
   /** Stream position at the last ring reset (seek/open); rendered is added. */
   private resetBase = 0;
@@ -63,8 +75,22 @@ export class MusepackEngine {
   private trackEndResolve: (() => void) | null = null;
   private contextShouldRun = false;
 
-  constructor(events: EngineEvents) {
-    this.events = events;
+  constructor(h: EngineHandlers) {
+    this.h = h;
+  }
+
+  /** Port-facing event registration (M2). Listeners fire IN ADDITION to the
+   *  legacy constructor callbacks (which the web controller still uses until
+   *  M4); either side may be absent. */
+  private listeners = new Map<EngineEventName, Set<(sender: Engine) => void>>();
+  on(name: EngineEventName, cb: (sender: Engine) => void): () => void {
+    let set = this.listeners.get(name);
+    if (!set) this.listeners.set(name, (set = new Set()));
+    set.add(cb);
+    return () => set!.delete(cb);
+  }
+  private emitNamed(name: EngineEventName): void {
+    for (const cb of this.listeners.get(name) ?? []) cb(this);
   }
 
   /** Lazily creates the AudioContext + worklet. Must run after a user gesture. */
@@ -105,7 +131,8 @@ export class MusepackEngine {
       this.onWorkerMessage(h, ev.data);
     };
     worker.onerror = (ev: ErrorEvent) => {
-      this.events.onError('Decoder worker failed.');
+      this.h.error('Decoder worker failed.');
+      this.emitNamed('error');
       void ev;
     };
     return h;
@@ -155,12 +182,13 @@ export class MusepackEngine {
         this.pullInFlight = false;
         if (!h.eos) {
           h.eos = true;
-          if (h === this.current) this.events.onEos();
+          if (h === this.current) { this.h.eos(); this.emitNamed('eos'); }
         }
         break;
       case 'error':
         this.pullInFlight = false;
-        this.events.onError((msg.message as string) ?? 'Decoder error.');
+        this.h.error((msg.message as string) ?? 'Decoder error.');
+        this.emitNamed('error');
         break;
     }
   }
@@ -170,10 +198,12 @@ export class MusepackEngine {
     switch (msg.type) {
       case 'rendered':
         this.streamSamples = this.resetBase + msg.frames;
-        this.events.onPosition(this.streamSamples);
+        this.h.tick(this.streamSamples);
+        this.emitNamed('tick');
         break;
       case 'primed':
-        this.events.onPrimed();
+        this.h.primed();
+        this.emitNamed('primed');
         break;
       case 'need':
         this.backpressured = false;
@@ -184,7 +214,8 @@ export class MusepackEngine {
         this.current?.worker.postMessage({ type: 'pause', generation: this.generation });
         break;
       case 'underrun':
-        this.events.onBuffering();
+        this.h.buffering();
+        this.emitNamed('buffering');
         this.backpressured = false;
         this.resumePumpingIfRequested();
         break;
@@ -200,13 +231,19 @@ export class MusepackEngine {
       }
       case 'error':
         this.pullInFlight = false;
-        this.events.onError(msg.message ?? 'Audio worklet protocol error.');
+        this.h.error(msg.message ?? 'Audio worklet protocol error.');
+        this.emitNamed('error');
         break;
     }
   }
 
+  /** Port signature (M4): open by resolved item. */
+  async open(item: PlaybackItem): Promise<EngineStreamInfo> {
+    return this.openSource(item.source.url, item.source.byteSize ?? -1);
+  }
+
   /** Opens the first track in the current slot (fetches header + seek table). */
-  async open(url: string, size: number): Promise<EngineStreamInfo> {
+  async openSource(url: string, size: number): Promise<EngineStreamInfo> {
     await this.ensureContext();
     const generation = ++this.generation;
     this.pumpingRequested = false;
@@ -246,8 +283,13 @@ export class MusepackEngine {
     }
   }
 
+  /** Port signature (M4): standby-open by resolved item. */
+  async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
+    return this.prepareNextSource(item.source.url, item.source.byteSize ?? -1);
+  }
+
   /** Opens the next track in the standby slot, ahead of the current one. */
-  async prepareNext(url: string, size: number): Promise<EngineStreamInfo | null> {
+  async prepareNextSource(url: string, size: number): Promise<EngineStreamInfo | null> {
     const request = ++this.standbyRequest;
     const previous = this.standby;
     if (previous) this.standby = null;
@@ -406,6 +448,11 @@ export class MusepackEngine {
     if (this.ctx && this.ctx.state !== 'closed') await this.ctx.suspend();
   }
 
+  /** Port signature (M4). */
+  async seekSample(samples: number): Promise<void> {
+    return this.seek(samples);
+  }
+
   async seek(sample: number): Promise<void> {
     if (!this.current) return;
     const generation = ++this.generation;
@@ -443,9 +490,14 @@ export class MusepackEngine {
     return this.streamSamples;
   }
 
-  /** AudioContext-rate timeline frames rendered since the last reset. */
-  getRenderedSamples(): number {
+  /** AudioContext-rate frames rendered since the last reset (port name). */
+  renderedSamples(): number {
     return this.streamSamples - this.resetBase;
+  }
+
+  /** Legacy alias (tests/web call sites until M4 cleanup). */
+  getRenderedSamples(): number {
+    return this.renderedSamples();
   }
 
   getServedBytes(): number {

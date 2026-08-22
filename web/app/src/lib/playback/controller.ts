@@ -1,94 +1,127 @@
 // Copyright (c) 2026, The MusicPack Development Team
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The unified playback controller: a single state machine over two backends
-// (Musepack demand-driven WASM, and browser-native codecs), the queue, BS.1770
-// normalization, and Media Session. The UI talks only to this controller.
-import { writable, type Writable } from '../store';
-import { MusepackEngine, type EngineStreamInfo } from './musepack-engine';
-import { NativeBackend } from './native-backend';
-import { combinedGain, normalizationGainDb, type NormalizationMode } from './loudness';
+// Web composition facade (M4). All transport/queue/position/persistence
+// semantics live in the platform-independent Player (player-core/src/
+// player.ts); this file only wires web adapters:
+//
+//   localStorage            → StoragePort (same key + throttle behavior)
+//   navigator.mediaSession  → MediaControlsPort (metadata + track-relative
+//                             position; incoming seekto converted by the core)
+//   MusepackEngine | NativeBackend → Engine port via resolveKind
+//
+// The public surface is identical to the pre-M4 PlayerController so the
+// Svelte components, bootstrap, e2e debug hooks and unit tests are unchanged.
+
+import { writable } from '../store';
+import { Player } from '../../../../player-core/src/player';
+import type {
+  MediaControlsPort,
+  PlayerPorts,
+  PlayerState as CorePlayerState,
+  StoragePort,
+} from '../../../../player-core/src/player';
+import type { QueueModel } from '../../../../player-core/src/queue';
+import type { Engine } from '../../../../player-core/src/engine';
+import type { PlaybackItem } from '../../../../player-core/src/types';
+import type { NormalizationMode } from './loudness';
 import { bindMediaActions, setMediaMetadata, setMediaPosition } from './media-session';
+import { MusepackEngine } from './musepack-engine';
+import { NativeBackend } from './native-backend';
 import type { QueueItem, QueueStore } from '../state/queue';
-import type { Track } from '../api/types';
-
-export type PlayerState =
-  | 'idle'
-  | 'loading'
-  | 'buffering'
-  | 'playing'
-  | 'paused'
-  | 'ended'
-  | 'error';
-
-/** End-of-album tolerance (samples). The worklet renders 128 frames per
- *  process call, so the final process can underrun with < 128 frames left in
- *  the ring; the rendered counter then stops a few samples short of
- *  totalLength. A `-2`-sample tolerance (as used originally) never fires and
- *  the player would sit in `playing` forever after the last track. */
-const END_TOLERANCE_SAMPLES = 256;
+import type { PlayerEvent } from '../../../../player-core/src/events';
 
 export interface PlayerModel {
-  state: PlayerState;
+  state: CorePlayerState;
   current: QueueItem | null;
   positionSeconds: number;
   durationSeconds: number;
-  /// Album-absolute start sample/time of the current track (0 when no
-  /// current track). Used by the waveform seek control to map within-
-  /// track position <-> album-absolute seconds.
+  /** Album-absolute start time of the current track. */
   currentTrackStartSeconds: number;
-  /// Per-track duration in seconds (lengthOf(idx)/rate), 0 when unknown.
+  /** Per-track duration in seconds, 0 when unknown. */
   currentTrackDurationSeconds: number;
   volume: number;
   normalizeMode: NormalizationMode;
   normDb: number;
+  /** Queue playback policy (mirrored from the core model). */
+  repeat: 'off' | 'one' | 'all';
+  shuffle: boolean;
   error?: string;
 }
+export type { CorePlayerState as PlayerState };
 
-export interface BackendEvents {
-  onPrimed: () => void;
-  onBuffering: () => void;
-  onEos: () => void;
-  onError: (message: string) => void;
-  onPosition: () => void;
+const STORAGE_KEY = 'musicpack.player.v1';
+
+function localStoragePort(): StoragePort {
+  return {
+    get: () => (typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)),
+    set: (value) => {
+      if (typeof localStorage === 'undefined') return;
+      if (value === null) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, value);
+    },
+  };
 }
 
-export interface Backend {
-  readonly kind: 'musepack' | 'native';
-  init(token: string | null): Promise<void>;
-  open(url: string, size: number): Promise<EngineStreamInfo>;
-  prepareNext(url: string, size: number): Promise<EngineStreamInfo | null>;
-  advance(): Promise<EngineStreamInfo | null>;
-  startPumping(): void;
-  pausePumping(): void;
-  play(): Promise<void>;
-  pause(): Promise<void>;
-  seek(sample: number): Promise<void>;
-  setGain(linear: number): void;
-  getRenderedSamples(): number;
-  getInfo(): EngineStreamInfo | null;
-  getServedBytes?(): number;
-  readonly lengthSamples: number;
-  readonly rate: number;
-  close(): Promise<void>;
+const mediaControls: MediaControlsPort = {
+  bind(handlers) {
+    bindMediaActions({
+      play: handlers.play,
+      pause: handlers.pause,
+      next: handlers.next,
+      previous: handlers.previous,
+      seek: handlers.seek,
+      seekBy: handlers.seekBy,
+    });
+  },
+  setMetadata(item) {
+    const qi = item as QueueItem | null;
+    setMediaMetadata(qi, qi?.artworkUrl);
+  },
+  setPosition(durationSeconds, positionSeconds) {
+    setMediaPosition(durationSeconds, positionSeconds);
+  },
+};
+
+/** Backend selection (web policy). Codec string → musepack; else a browser
+ *  capability probe → native; else a friendly failure. */
+function chooseBackend(item: PlaybackItem): 'musepack' | 'native' {
+  const codec = item.codec ?? '';
+  if (codec === 'musepack' || codec === 'musepack-sv7' || codec === 'musepack-sv8') {
+    return 'musepack';
+  }
+  const mime = item.mimeType ?? '';
+  if (mime && typeof document !== 'undefined') {
+    const probe = document.createElement('audio');
+    if (probe.canPlayType(mime)) return 'native';
+  }
+  throw new Error('This format is not supported by this browser.');
 }
 
-function createBackend(kind: 'musepack' | 'native', events: BackendEvents): Backend {
+export interface HandlerSet {
+  primed(): void;
+  buffering(): void;
+  eos(): void;
+  error(message: string): void;
+  tick(): void;
+}
+
+function createWebEngine(kind: 'musepack' | 'native', h: HandlerSet): Engine {
   if (kind === 'musepack') {
     return new MusepackEngine({
-      onPrimed: events.onPrimed,
-      onBuffering: events.onBuffering,
-      onEos: events.onEos,
-      onError: events.onError,
-      onPosition: () => events.onPosition(),
+      primed: h.primed,
+      buffering: h.buffering,
+      eos: h.eos,
+      error: h.error,
+      tick: () => h.tick(),
     });
   }
   const native = new NativeBackend();
-  native.onPrimed = events.onPrimed;
-  native.onBuffering = events.onBuffering;
-  native.onEos = events.onEos;
-  native.onError = events.onError;
-  native.onPosition = events.onPosition;
+  native.onPrimed = h.primed;
+  native.onBuffering = h.buffering;
+  native.onEos = h.eos;
+  native.onError = h.error;
+  native.onPosition = h.tick;
   return native;
 }
 
@@ -96,276 +129,95 @@ export interface ControllerOptions {
   token?: () => string | null;
   initialVolume?: number;
   initialNormalize?: NormalizationMode;
-  /** Test seam: replace backend construction. */
-  backendFactory?: (kind: 'musepack' | 'native', events: BackendEvents) => Backend;
+  /** Test seam: replace engine construction. */
+  backendFactory?: (kind: 'musepack' | 'native', events: HandlerSet) => Engine;
   /** Storage for cross-reload player persistence (defaults to localStorage). */
   storage?: { get: () => string | null; set: (value: string | null) => void };
 }
 
-const STORAGE_KEY = 'musicpack.player.v1';
-const PERSIST_INTERVAL_MS = 2000;
-
-interface PersistedPlayerState {
-  v: 1;
-  items: QueueItem[];
-  index: number;
-  positionSeconds: number;
-  volume: number;
-  normalizeMode: NormalizationMode;
+interface InternalControllerOptions extends ControllerOptions {
+  /** Test seam (unit tests): inject the whole ports object. When present it
+   *  overrides engineFactory/storage below. */
+  portsOverride?: Partial<PlayerPorts>;
 }
 
 export class PlayerController {
-  readonly model: Writable<PlayerModel>;
+  readonly model = writable<PlayerModel>({
+    state: 'idle',
+    current: null,
+    positionSeconds: 0,
+    durationSeconds: 0,
+    currentTrackStartSeconds: 0,
+    currentTrackDurationSeconds: 0,
+    volume: 0.8,
+    normalizeMode: 'album',
+    normDb: 0,
+    repeat: 'off',
+    shuffle: false,
+  });
+  private core: Player;
   private queue: QueueStore;
-  private token: () => string | null;
-  private backend: Backend | null = null;
-  private backendKind: 'musepack' | 'native' | null = null;
-  /** Exact decoded length per track id (samples at output rate). Keyed by
-   *  id, not queue index, so entries survive loads and navigation: album-
-   *  absolute bookkeeping must never fall back to unreliable manifest
-   *  durations for tracks we have already decoded. */
-  private lengths = new Map<number, number>();
-  private resetOffset = 0;
-  private pendingEnded = false;
-  private loadingSeq = 0;
-  private transportSeq = 0;
-  private mutating = false;
-  private pauseIntent = false;
-  private backendFactory: ControllerOptions['backendFactory'];
-  private unsub: (() => void) | null = null;
-  private storage: { get: () => string | null; set: (value: string | null) => void };
-  private lastPersist = 0;
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Within-track resume point from a restored session, consumed by the
-   *  next _load() (valid only while the queue cursor is unchanged). */
-  private restoredWithin: { index: number; withinSamples: number } | null = null;
 
   constructor(queue: QueueStore, opts: ControllerOptions = {}) {
     this.queue = queue;
-    this.token = opts.token ?? (() => null);
-    this.backendFactory = opts.backendFactory;
-    this.storage =
-      opts.storage ?? {
-        get: () => (typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)),
-        set: (value) => {
-          if (typeof localStorage === 'undefined') return;
-          if (value === null) localStorage.removeItem(STORAGE_KEY);
-          else localStorage.setItem(STORAGE_KEY, value);
-        },
-      };
-    this.model = writable<PlayerModel>({
-      state: 'idle',
-      current: null,
-      positionSeconds: 0,
-      durationSeconds: 0,
-      currentTrackStartSeconds: 0,
-      currentTrackDurationSeconds: 0,
-      volume: opts.initialVolume ?? 0.8,
-      normalizeMode: opts.initialNormalize ?? 'album',
-      normDb: 0,
-    });
+    const o = opts as InternalControllerOptions;
+    const ports: PlayerPorts = {
+      engineFactory: (kind, handlers) =>
+        o.portsOverride?.engineFactory
+          ? o.portsOverride.engineFactory(kind, handlers)
+          : opts.backendFactory
+            ? opts.backendFactory(kind, handlers)
+            : createWebEngine(kind, handlers),
+      resolveKind: chooseBackend,
+      token: opts.token ?? (() => null),
+      storage:
+        (opts.storage as StoragePort | undefined) ??
+        o.portsOverride?.storage ??
+        localStoragePort(),
+      mediaControls,
+      // Host-owned clock + timer (core purity law 2). Looked up dynamically
+      // so fake timers in tests intercept these as intended.
+      now: () => Date.now(),
+      schedulePersist: (fn, ms) => setTimeout(fn, ms),
+      clearPersistTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    };
+    this.core = new Player(
+      queue as unknown as QueueModel,
+      o.portsOverride ? { ...ports, ...o.portsOverride } : ports,
+      { initialVolume: opts.initialVolume, initialNormalize: opts.initialNormalize },
+    );    // Mirror the core model into the UI-facing writable with QueueItem-typed
+    // `current` (the web queue only ever holds QueueItems). The model stays
+    // the full state snapshot; M7 events are exposed alongside for event-
+    // driven consumers (media controls, future scrobbling/analytics).
+    this.core.model.subscribe((m) => this.model.set(m as PlayerModel));
+  }
+
+  /** Subscribe to typed player events (M7 integration surface). Returns an
+   *  unsubscribe function. Events: state / track / position / policy /
+   *  gain / error — see player-core/src/events.ts. */
+  on(fn: (event: PlayerEvent) => void): () => void {
+    return this.core.on(fn);
   }
 
   init(): void {
-    bindMediaActions({
-      play: () => void this.togglePlay(),
-      pause: () => void this.pause(),
-      next: () => void this.next(),
-      previous: () => void this.previous(),
-      // Media Session delivers TRACK-relative seek times (see tick());
-      // convert to the album-absolute targets the transport speaks.
-      seek: (trackSeconds) =>
-        void this.seek(this.model.get().currentTrackStartSeconds + trackSeconds),
-      seekBy: (d) => this.seek(this.model.get().positionSeconds + d),
-    });
-    if (typeof window !== 'undefined') {
-      window.addEventListener('pagehide', () => this.persist());
-    }
-    // Restore BEFORE subscribing: a writable store fires its subscriber
-    // immediately on registration, and the trailing persist() in that
-    // callback would otherwise see an empty player and delete the very
-    // state we are about to restore.
-    this.restore();
-    // React to queue changes made OUTSIDE the controller (e.g. the queue
-    // panel removing the current item, or clearing the queue). Mutations the
-    // controller itself performs are flagged `mutating` and skipped here.
-    this.unsub = this.queue.subscribe(() => {
-      if (this.mutating) return;
-      const m = this.model.get();
-      const cur = this.queue.current();
-      if (!cur && m.state !== 'idle' && m.state !== 'error') {
-        void this.stop();
-      } else if (cur && m.current && cur.track.id !== m.current.track.id && m.state !== 'loading') {
-        void this._load();
-      }
-      this.persist();
-    });
-  }
-
-  // ---- cross-reload persistence -------------------------------------------
-
-  private persist(): void {
-    this.lastPersist = Date.now();
-    const m = this.model.get();
-    const q = this.queue.get();
-    if (!m.current || q.items.length === 0) {
-      this.storage.set(null);
-      return;
-    }
-    const payload: PersistedPlayerState = {
-      v: 1,
-      items: q.items,
-      index: q.index,
-      positionSeconds: m.positionSeconds,
-      volume: m.volume,
-      normalizeMode: m.normalizeMode,
-    };
-    try {
-      this.storage.set(JSON.stringify(payload));
-    } catch {
-      /* quota exceeded / storage disabled — persistence is best-effort */
-    }
-  }
-
-  private persistThrottled(): void {
-    if (Date.now() - this.lastPersist >= PERSIST_INTERVAL_MS) {
-      this.persist();
-      return;
-    }
-    // Inside the throttle window: schedule one trailing write so the latest
-    // position is never lost (re-arming is cheap; persist() is tiny).
-    if (this.persistTimer !== null) return;
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.persist();
-    }, PERSIST_INTERVAL_MS);
-  }
-
-  /** Rebuilds a paused session from the last persisted state (if any).
-   *  Audio itself cannot resume without a user gesture; Play then seeks to
-   *  the restored position through the normal load path. */
-  private restore(): void {
-    let raw: string | null = null;
-    try {
-      raw = this.storage.get();
-    } catch {
-      return;
-    }
-    if (!raw) return;
-    let parsed: PersistedPlayerState;
-    try {
-      const candidate = JSON.parse(raw) as PersistedPlayerState;
-      if (candidate?.v !== 1 || !Array.isArray(candidate.items)) return;
-      const items = candidate.items.filter(
-        (it): it is QueueItem => !!it?.track?.audio?.url && typeof it?.track?.id === 'number',
-      );
-      if (items.length === 0) return;
-      parsed = { ...candidate, items, index: Math.min(Math.max(0, Math.floor(candidate.index) || 0), items.length - 1) };
-    } catch {
-      return;
-    }
-
-    this.mutating = true;
-    this.queue.set({ items: parsed.items, index: parsed.index });
-    this.mutating = false;
-    const item = this.queue.current();
-    if (!item) return;
-
-    const rate = this.rate();
-    const offs = this.offsets();
-    const startSamples = offs[parsed.index] ?? 0;
-    const withinSamples = Math.max(
-      0,
-      Math.min(Math.floor(parsed.positionSeconds * rate), Math.max(0, this.lengthOf(parsed.index) - 1)),
-    );
-    this.restoredWithin = { index: parsed.index, withinSamples };
-    this.model.update((m) => ({
-      ...m,
-      current: item,
-      state: 'paused' as PlayerState,
-      positionSeconds: (startSamples + withinSamples) / rate,
-      currentTrackStartSeconds: startSamples / rate,
-      currentTrackDurationSeconds: this.lengthOf(parsed.index) / rate,
-      durationSeconds: this.totalLength() / rate,
-      volume: typeof parsed.volume === 'number' ? Math.min(1, Math.max(0, parsed.volume)) : m.volume,
-      normalizeMode: parsed.normalizeMode ?? m.normalizeMode,
-    }));
-    this.setMediaFor(item);
+    this.core.init();
   }
 
   destroy(): void {
-    this.unsub?.();
-    this.unsub = null;
-    void this.backend?.close();
+    this.core.destroy();
   }
 
-  // ---- state helpers ------------------------------------------------------
-
-  private setState(state: PlayerState): void {
-    this.model.update((m) => ({ ...m, state }));
-  }
-
-  private rate(): number {
-    return this.backend?.rate ?? 44100;
-  }
-
-  private lengthOf(i: number): number {
-    const item = this.queue.at(i);
-    if (!item) return 0;
-    const exact = this.lengths.get(item.track.id);
-    if (exact !== undefined) return exact;
-    return Math.floor((item.track.duration ?? 0) * this.rate());
-  }
-
-  private offsets(): number[] {
-    const items = this.queue.get().items;
-    const offs: number[] = [];
-    let acc = 0;
-    for (let i = 0; i < items.length; i++) {
-      offs[i] = acc;
-      acc += this.lengthOf(i);
-    }
-    return offs;
-  }
-
-  private totalLength(): number {
-    const offs = this.offsets();
-    const n = offs.length;
-    if (n === 0) return 0;
-    return (offs[n - 1] ?? 0) + this.lengthOf(n - 1);
-  }
-
-  private albumPosition(): number {
-    if (!this.backend) return 0;
-    const rendered = this.backend.getRenderedSamples();
-    if (this.backendKind === 'musepack') return this.resetOffset + rendered;
-    const idx = this.queue.get().index;
-    const base = idx >= 0 ? (this.offsets()[idx] ?? 0) : 0;
-    return base + rendered;
-  }
-
-  // ---- queue actions -------------------------------------------------------
+  // ---- queue actions --------------------------------------------------------
 
   async playItem(item: QueueItem): Promise<void> {
-    this.pauseIntent = false;
-    this.setState('loading');
-    this.mutating = true;
-    this.queue.playNow(item);
-    this.mutating = false;
-    await this._load();
+    await this.core.playItem(item);
   }
 
   /** Jumps to an existing queue item without touching the rest of the queue
    *  (the queue-panel click). Deliberately NOT playItem(): replacing the
    *  queue would throw away everything the user had lined up. */
   async playQueueIndex(i: number): Promise<void> {
-    if (!this.queue.at(i) || i === this.queue.get().index) return;
-    this.pauseIntent = false;
-    this.setState('loading');
-    this.mutating = true;
-    this.queue.moveTo(i);
-    this.mutating = false;
-    await this._load();
+    await this.core.playQueueIndex(i);
   }
 
   async playAlbum(
@@ -374,475 +226,91 @@ export class PlayerController {
     artist: string,
     startIndex = 0,
   ): Promise<void> {
-    this.pauseIntent = false;
-    this.setState('loading');
-    this.mutating = true;
-    this.queue.playAlbum(release, title, artist, startIndex);
-    this.mutating = false;
-    await this._load();
+    // Historical flow preserved verbatim: the CONTROLLER performs the queue
+    // mutation (flagged internal), then loads.
+    await this.core.playSequence(this.queueItemsFor(release, title, artist), title, artist, startIndex);
+  }
+
+  /** The core Player mutates the generic QueueModel; playAlbum needs the
+   *  built items BEFORE handing them over, so build + install here through
+   *  the store's builder while still routing the install through the core. */
+  private queueItemsFor(
+    release: Parameters<QueueStore['playAlbum']>[0],
+    title: string,
+    artist: string,
+  ): QueueItem[] {
+    // Build items without installing: reuse the store's public builder by
+    // calling playAlbum on a THROWAWAY probe? No — simpler: the store keeps
+    // its builder; expose it as a pure function instead. See state/queue.ts
+    // `itemsForRelease` export used here.
+    return itemsForRelease(release, title, artist);
   }
 
   async next(): Promise<void> {
-    ++this.loadingSeq;
-    this.mutating = true;
-    const item = this.queue.next();
-    this.mutating = false;
-    if (item) await this._load();
+    await this.core.next();
   }
 
   async previous(): Promise<void> {
-    const m = this.model.get();
-    // "Previous" restarts the CURRENT song; only a second press (or pressing
-    // it right after the song began) moves to the previous queue item.
-    if (m.current && m.positionSeconds - m.currentTrackStartSeconds > 3) {
-      await this.restartCurrentTrack();
-      return;
-    }
-    ++this.loadingSeq;
-    this.mutating = true;
-    const item = this.queue.previous();
-    this.mutating = false;
-    if (item) await this._load();
+    await this.core.previous();
   }
 
-  /** Seeks to sample 0 of the CURRENT track. Deliberately not routed through
-   *  seek(): an album-absolute target of 0 resolves to queue index 0, which
-   *  would restart the whole queue instead of this song. */
-  private async restartCurrentTrack(): Promise<void> {
-    if (!this.backend || !this.model.get().current) return;
-    ++this.transportSeq;
-    const seq = ++this.loadingSeq;
-    const base = this.offsets()[this.queue.get().index] ?? 0;
-    this.resetOffset = base;
-    this.setState(this.pauseIntent ? 'paused' : 'buffering');
-    this.model.update((mm) => ({ ...mm, positionSeconds: base / this.rate() }));
-    await this.backend.seek(0);
-    if (seq !== this.loadingSeq) return;
-    if (!this.pauseIntent) this.backend.startPumping();
-  }
-
-  // ---- load / playback -----------------------------------------------------
-
-  private async _load(resumeWithinSamples?: number): Promise<boolean> {
-    const item = this.queue.current();
-    if (!item) return false;
-    const seq = ++this.loadingSeq;
-    ++this.transportSeq;
-    this.pendingEnded = false;
-    this.restoredWithin = null;
-    // Lengths are keyed by track id, so a replaced queue cannot leak
-    // another album's entries (ids are unique per server track row).
-    this.model.update((m) => ({ ...m, state: 'loading', error: undefined }));
-    try {
-      const kind = this.chooseBackend(item.track);
-      await this.ensureBackend(kind);
-      if (seq !== this.loadingSeq) return false;
-      const info = await this.backend!.open(item.track.audio.url, item.track.audio.size);
-      if (seq !== this.loadingSeq) return false;
-      const qi = this.queue.get().index;
-      this.lengths.set(item.track.id, info.lengthSamples);
-      // Publish track geometry NOW: the seek control reads these fields, and
-      // waiting for the first rendered tick leaves a window where its hidden
-      // input has max=0 (clicks clamp to seek(0) = wrong song).
-      const offs = this.offsets();
-      this.model.update((m) => ({
-        ...m,
-        currentTrackStartSeconds: (offs[qi] ?? 0) / this.rate(),
-        currentTrackDurationSeconds: this.lengthOf(qi) / this.rate(),
-      }));
-      // prepare the next track ahead of time (gapless)
-      const next = this.queue.at(qi + 1);
-      if (next) {
-        const ni = await this.backend!.prepareNext(next.track.audio.url, next.track.audio.size);
-        if (seq !== this.loadingSeq) return false;
-        if (ni) this.lengths.set(next.track.id, ni.lengthSamples);
-      }
-      const resumeAt =
-        resumeWithinSamples && resumeWithinSamples > 0
-          ? Math.min(Math.floor(resumeWithinSamples), Math.max(0, this.lengthOf(qi) - 1))
-          : 0;
-      this.resetOffset = (this.offsets()[qi] ?? 0) + resumeAt;
-      this.applyGain(item);
-      this.setMediaFor(item);
-      this.model.update((m) => ({
-        ...m,
-        current: item,
-        state: this.pauseIntent ? 'paused' : 'buffering',
-        positionSeconds: this.resetOffset / this.rate(),
-        durationSeconds: this.totalLength() / this.rate(),
-      }));
-      await this.backend!.seek(resumeAt);
-      if (seq !== this.loadingSeq) return false;
-      if (!this.pauseIntent) this.backend!.startPumping();
-      this.persist();
-      return true;
-    } catch (e) {
-      if (seq === this.loadingSeq) this.fail(e instanceof Error ? e.message : String(e));
-      return false;
-    }
-  }
-
-  private async onEos(): Promise<void> {
-    if (!this.backend) return;
-    const seq = this.loadingSeq;
-    const info = await this.backend.advance();
-    if (seq !== this.loadingSeq) return;
-    this.mutating = true;
-    const item = this.queue.next();
-    this.mutating = false;
-    if (!info || !item) {
-      // Last track decoded; let the ring drain, then end.
-      this.pendingEnded = true;
-      this.backend.pausePumping();
-      this.tick();
-      return;
-    }
-    const qi = this.queue.get().index;
-    this.lengths.set(item.track.id, info.lengthSamples);
-    // Same as _load(): publish geometry synchronously so the seek control
-    // never sees the previous track's start/duration after a handoff.
-    const handoffOffs = this.offsets();
-    this.model.update((m) => ({
-      ...m,
-      currentTrackStartSeconds: (handoffOffs[qi] ?? 0) / this.rate(),
-      currentTrackDurationSeconds: this.lengthOf(qi) / this.rate(),
-    }));
-    this.applyGain(item);
-    this.setMediaFor(item);
-    const next = this.queue.at(qi + 1);
-    if (next) {
-      const ni = await this.backend.prepareNext(next.track.audio.url, next.track.audio.size);
-      if (seq !== this.loadingSeq) return;
-      if (ni) this.lengths.set(next.track.id, ni.lengthSamples);
-    }
-    this.model.update((m) => ({
-      ...m,
-      current: item,
-      state: this.pauseIntent || m.state === 'paused' ? 'paused' : 'buffering',
-      durationSeconds: this.totalLength() / this.rate(),
-    }));
-    if (!this.pauseIntent) {
-      const backend = this.backend;
-      const transportSeq = this.transportSeq;
-      backend.startPumping();
-      try {
-        await backend.play();
-        if (
-          seq === this.loadingSeq &&
-          transportSeq === this.transportSeq &&
-          !this.pauseIntent &&
-          this.backend === backend
-        ) {
-          this.setState('playing');
-        }
-      } catch {
-        if (
-          seq === this.loadingSeq &&
-          transportSeq === this.transportSeq &&
-          this.backend === backend
-        ) {
-          this.setState('paused');
-        }
-      }
-    }
-  }
-
-  private onPrimed(): void {
-    const m = this.model.get();
-    if (m.state === 'loading' || m.state === 'buffering') {
-      const seq = this.loadingSeq;
-      const transportSeq = this.transportSeq;
-      const backend = this.backend;
-      backend
-        ?.play()
-        .then(() => {
-          const state = this.model.get().state;
-          if (
-            seq === this.loadingSeq &&
-            transportSeq === this.transportSeq &&
-            !this.pauseIntent &&
-            this.backend === backend &&
-            (state === 'loading' || state === 'buffering')
-          ) {
-            this.setState('playing');
-          }
-        })
-        .catch(() => undefined);
-    }
-  }
-
-  private onBuffering(): void {
-    const state = this.model.get().state;
-    if (state === 'loading' || state === 'buffering' || state === 'playing') {
-      this.setState('buffering');
-    }
-  }
-
-  private tick(): void {
-    if (!this.backend) return;
-    const pos = this.albumPosition();
-    const dur = this.totalLength();
-    const qi = this.queue.get().index;
-    const idx = this.currentIndexAt(pos);
-    // onEos() owns forward advancement. Only a LATER index may be adopted
-    // here (never a regression): the worklet ring renders ahead, so at a
-    // gapless handoff the rendered position can still describe the previous
-    // track for a moment while the cursor has already advanced.
-    if (idx > qi && !this.pendingEnded) {
-      this.mutating = true;
-      this.queue.moveTo(idx);
-      this.mutating = false;
-    }
-    const offs = this.offsets();
-    const trackStart = offs[idx] ?? 0;
-    const trackDur = this.lengthOf(idx);
-    const rate = this.rate();
-    const ended = this.pendingEnded && pos >= dur - END_TOLERANCE_SAMPLES;
-    this.model.update((m) => ({
-      ...m,
-      positionSeconds: pos / rate,
-      durationSeconds: dur / rate,
-      currentTrackStartSeconds: trackStart / rate,
-      currentTrackDurationSeconds: trackDur / rate,
-      state: ended ? 'ended' : m.state,
-    }));
-    // Media Session position state is TRACK-relative per spec: the OS
-    // scrubber shows/requests positions inside the current song, not the
-    // album. tick() therefore reports within-track values and converts
-    // incoming seekto times back to album-absolute in init().
-    setMediaPosition(trackDur / rate, Math.max(0, pos - trackStart) / rate);
-    if (ended) {
-      this.pendingEnded = false;
-      this.backend.pause();
-      this.backend.pausePumping();
-    }
-    this.persistThrottled();
-  }
-
-  private currentIndexAt(pos: number): number {
-    const offs = this.offsets();
-    let idx = 0;
-    for (let i = 0; i < offs.length; i++) {
-      if (pos >= (offs[i] ?? 0)) idx = i;
-    }
-    return idx;
-  }
-
-  // ---- transport ------------------------------------------------------------
+  // ---- transport -------------------------------------------------------------
 
   async togglePlay(): Promise<void> {
-    const m = this.model.get();
-    if (m.state === 'playing') {
-      await this.pause();
-    } else if (m.state === 'paused') {
-      if (!this.backend && m.current) {
-        // Restored session: rebuild the backend and seek to the saved spot
-        // in one go (the click satisfies the browser's gesture requirement).
-        const within =
-          this.restoredWithin && this.restoredWithin.index === this.queue.get().index
-            ? this.restoredWithin.withinSamples
-            : undefined;
-        await this._load(within);
-        return;
-      }
-      await this.resume();
-    } else if (m.state === 'ended' || m.state === 'idle' || m.state === 'error') {
-      if (m.current) {
-        this.pauseIntent = false;
-        await this._load();
-      }
-    } else {
-      await this.resume();
-    }
+    await this.core.togglePlay();
   }
 
   async pause(): Promise<void> {
-    ++this.transportSeq;
-    this.pauseIntent = true;
-    this.setState('paused');
-    this.backend?.pausePumping();
-    await this.backend?.pause();
-    this.persist();
+    await this.core.pause();
   }
 
   async resume(): Promise<void> {
-    if (!this.backend) {
-      // Restored (or never-opened) session: togglePlay owns the load path.
-      const m = this.model.get();
-      if (m.state === 'paused' && m.current) await this.togglePlay();
-      return;
-    }
-    const seq = ++this.transportSeq;
-    const backend = this.backend;
-    this.pauseIntent = false;
-    backend.startPumping();
-    await backend.play();
-    if (seq !== this.transportSeq || this.pauseIntent || this.backend !== backend) return;
-    this.setState('playing');
+    await this.core.resume();
   }
 
   async seek(seconds: number): Promise<void> {
-    if (!this.backend || !this.model.get().current) return;
-    ++this.transportSeq;
-    let seq = ++this.loadingSeq;
-    const posSamples = Math.max(0, Math.floor(seconds * this.rate()));
-    const items = this.queue.get().items;
-    if (items.length === 0) return;
-    // Resolve the album-absolute target to a (track, within-track offset) and
-    // seek there directly; a target in another track must switch to it rather
-    // than clamping inside the current track.
-    const offs = this.offsets();
-    let qi = 0;
-    for (let i = 0; i < items.length; i++) {
-      if (posSamples >= (offs[i] ?? 0)) qi = i;
-    }
-    const base = offs[qi] ?? 0;
-    const trackLen = Math.max(0, this.lengthOf(qi) - 1);
-    const within = Math.min(Math.max(0, posSamples - base), trackLen);
-
-    if (qi !== this.queue.get().index) {
-      this.mutating = true;
-      this.queue.moveTo(qi);
-      this.mutating = false;
-      if (!(await this._load())) return;
-      seq = this.loadingSeq;
-      // _load() opened the target track, seeked to 0 and started pumping;
-      // now move inside it (and re-align the offset bookkeeping) so the
-      // reported position matches where the audio actually decodes from.
-      if (qi === this.queue.get().index) {
-        this.resetOffset = base + within;
-        this.setState(this.pauseIntent ? 'paused' : 'buffering');
-        this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
-        await this.backend!.seek(within);
-        if (seq !== this.loadingSeq) return;
-        if (!this.pauseIntent) this.backend!.startPumping();
-      }
-      return;
-    }
-
-    this.resetOffset = base + within;
-    this.setState(this.pauseIntent ? 'paused' : 'buffering');
-    this.model.update((m) => ({ ...m, positionSeconds: this.resetOffset / this.rate() }));
-    await this.backend.seek(within);
-    if (seq !== this.loadingSeq) return;
-    if (!this.pauseIntent) this.backend.startPumping();
+    await this.core.seek(seconds);
   }
 
   async stop(): Promise<void> {
-    const seq = ++this.loadingSeq;
-    ++this.transportSeq;
-    const backend = this.backend;
-    this.pauseIntent = true;
-    backend?.pausePumping();
-    this.pendingEnded = false;
-    this.model.update((m) => ({ ...m, state: 'idle', positionSeconds: 0 }));
-    await backend?.pause();
-    if (seq !== this.loadingSeq || this.backend !== backend) return;
-    await backend?.seek(0);
-    this.persist();
+    await this.core.stop();
   }
 
   /** Stops playback and disposes the backend + Media Session state. Used on
    *  sign-out / session expiry so audio never leaks across auth boundaries.
    *  The controller stays usable: the next play rebuilds its backend. */
   async teardown(): Promise<void> {
-    ++this.loadingSeq;
-    ++this.transportSeq;
-    this.pauseIntent = false;
-    this.backend?.pausePumping();
-    this.pendingEnded = false;
-    this.lengths.clear();
-    this.resetOffset = 0;
-    this.restoredWithin = null;
-    await this.backend?.close();
-    this.backend = null;
-    this.backendKind = null;
-    setMediaMetadata(null);
-    this.storage.set(null);
-    this.model.update((m) => ({
-      ...m,
-      state: 'idle',
-      current: null,
-      positionSeconds: 0,
-      durationSeconds: 0,
-      error: undefined,
-    }));
+    await this.core.teardown();
   }
 
-  // ---- settings --------------------------------------------------------------
+  // ---- settings ---------------------------------------------------------------
 
   setVolume(v: number): void {
-    const vol = Math.max(0, Math.min(1, v));
-    this.model.update((m) => ({ ...m, volume: vol }));
-    this.applyGain(this.model.get().current);
-    this.persistThrottled();
+    this.core.setVolume(v);
   }
 
   setNormalizeMode(mode: NormalizationMode): void {
-    this.model.update((m) => ({ ...m, normalizeMode: mode }));
-    this.applyGain(this.model.get().current);
-    this.persist();
+    this.core.setNormalizeMode(mode);
   }
 
-  private applyGain(item: QueueItem | null): void {
-    const m = this.model.get();
-    const normDb = normalizationGainDb(m.normalizeMode, item?.track.loudness, item?.albumLoudness);
-    const gain = combinedGain(m.volume, normDb);
-    this.backend?.setGain(gain);
-    this.model.update((mm) => ({ ...mm, normDb }));
+  setRepeat(mode: 'off' | 'one' | 'all'): void {
+    this.core.setRepeat(mode);
   }
 
-  // ---- backend selection -----------------------------------------------------
-
-  private chooseBackend(track: Track): 'musepack' | 'native' {
-    const codec = track.codec?.codec ?? '';
-    if (codec === 'musepack' || codec === 'musepack-sv7' || codec === 'musepack-sv8') {
-      return 'musepack';
-    }
-    const mime = track.codec?.mimeType ?? '';
-    if (mime && typeof document !== 'undefined') {
-      const probe = document.createElement('audio');
-      if (probe.canPlayType(mime)) return 'native';
-    }
-    throw new Error('This format is not supported by this browser.');
-  }
-
-  private async ensureBackend(kind: 'musepack' | 'native'): Promise<void> {
-    if (this.backend && this.backendKind === kind) return;
-    await this.backend?.close();
-    this.backend = null;
-    this.backendKind = kind;
-    const events: BackendEvents = {
-      onPrimed: () => this.onPrimed(),
-      onBuffering: () => this.onBuffering(),
-      onEos: () => void this.onEos(),
-      onError: (msg) => this.fail(msg),
-      onPosition: () => this.tick(),
-    };
-    this.backend = this.backendFactory
-      ? this.backendFactory(kind, events)
-      : createBackend(kind, events);
-    await this.backend.init(this.token());
-  }
-
-  private setMediaFor(item: QueueItem): void {
-    setMediaMetadata(item, item.artworkUrl);
-  }
-
-  private fail(msg: string): void {
-    this.backend?.pausePumping();
-    this.model.update((m) => ({ ...m, state: 'error', error: msg }));
+  setShuffle(on: boolean): void {
+    this.core.setShuffle(on);
   }
 
   getBackendKind(): 'musepack' | 'native' | null {
-    return this.backendKind;
+    return this.core.getEngineKind();
   }
 
   /** Compressed bytes fetched by the demand reader (dev/perf instrumentation). */
   getServedBytes(): number {
-    if (this.backend && this.backendKind === 'musepack') {
-      return this.backend.getServedBytes?.() ?? 0;
-    }
-    return 0;
+    return this.core.getServedBytes();
   }
 }
+
+// Imported late to avoid a cycle at module-eval time (state/queue imports
+// nothing from playback).
+import { itemsForRelease } from '../state/queue';

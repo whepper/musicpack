@@ -292,3 +292,149 @@ test('signing out stops playback, disposes the backend and clears player state',
   expect(after.current).toBeNull();
   expect(after.backendKind).toBeNull(); // decoder/AudioContext disposed
 });
+
+test('clearing the queue while paused returns the player to idle', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  // Pause first: the fixture tracks are ~1 s long and would play out.
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+
+  await page.locator('.playerbar').getByRole('button', { name: 'Open the queue' }).click();
+  // Scope to the drawer: the /queue page behind it renders a second
+  // "Clear queue" button (playAlbum routes to /queue).
+  await page.locator('.queue-panel').getByRole('button', { name: 'Clear queue' }).click();
+
+  await waitFor(page, async () => (await playerState(page)).state === 'idle', { label: 'idle after clear' });
+  const after = await page.evaluate(() => {
+    const q = window.__musicpack?.queue.get();
+    const m = window.__musicpack?.player.model.get();
+    return { n: q?.items.length ?? -1, current: m?.current ?? null };
+  });
+  expect(after.n).toBe(0);
+  // Characterization: stop() resets state/position but deliberately keeps
+  // model.current (the PlayerBar keeps showing the last track after a
+  // queue clear). The target Player design should clear it; tracked in the
+  // refactor plan as a behavior change to make consciously.
+  expect(after.current).not.toBeNull();
+});
+
+test('removing the playing queue item advances to the following track', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+
+  // Snapshot the queue AND the actual cursor: ~1 s fixture tracks may have
+  // gaplessly advanced before pause landed, so "the playing item" is
+  // items[idx], not necessarily items[0].
+  const { titles, idx } = await page.evaluate(() => {
+    const q = window.__musicpack?.queue.get();
+    return { titles: q?.items.map((i) => i.track.title) ?? [], idx: q?.index ?? -1 };
+  });
+  expect(titles.length).toBeGreaterThan(1);
+
+  await page.locator('.playerbar').getByRole('button', { name: 'Open the queue' }).click();
+  await page
+    .locator('.queue-panel .queue-item')
+    .nth(idx)
+    .getByRole('button', { name: new RegExp(`Remove ${titles[idx]}`) })
+    .click();
+
+  // The cursor clamps onto a neighbor and the controller loads it; the
+  // pause intent is preserved (no audio starts). Removing the current item
+  // never collapses the queue.
+  await waitFor(
+    page,
+    async () => {
+      const s = await page.evaluate(() => {
+        const q = window.__musicpack?.queue.get();
+        const m = window.__musicpack?.player.model.get();
+        return { n: q?.items.length ?? -1, idx: q?.index ?? -2, title: m?.current?.track.title ?? '' };
+      });
+      return s.n === titles.length - 1 && s.title === (s.idx === idx ? '' : titles[s.idx] ?? '');
+    },
+    { label: 'cursor moved off the removed item' },
+  );
+  const st = await playerState(page);
+  expect(st.state).toBe('paused');
+});
+
+test('shuffle toggle reorders navigation while the queue stays canonical', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+
+  // Toggle shuffle via the player bar.
+  await page.getByRole('button', { name: /Shuffle: off/ }).click();
+
+  // Model reflects the policy; the canonical items list is untouched.
+  const after = await page.evaluate(() => {
+    const q = window.__musicpack?.queue.get();
+    const m = window.__musicpack?.player.model.get();
+    return { n: q.items.length, idx: q.index, shuffle: m.shuffle, repeat: m.repeat };
+  });
+  expect(after.shuffle).toBe(true);
+  expect(after.n).toBe(4); // canonical order intact
+
+  // Next under shuffle moves within the same item set (no reload error).
+  await page.locator('.playerbar').getByRole('button', { name: 'Play' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'resumed' });
+  await page.locator('.playerbar').getByRole('button', { name: 'Next track' }).click();
+  await waitFor(
+    page,
+    async () => {
+      const s = await playerState(page);
+      return s.currentTitle !== '' && s.state === 'playing';
+    },
+    { label: 'shuffled next playing' },
+  );
+});
+
+test('repeat-all wraps from the last track back to the first', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+
+  // Enable repeat-all, jump to the LAST track, then next() wraps to track 1.
+  await page.getByRole('button', { name: /Repeat/ }).first().click(); // off -> all
+  const before = await page.evaluate(() => {
+    const q = window.__musicpack?.queue;
+    if (!q) return null;
+    q.moveTo(q.get().items.length - 1);
+    return {
+      last: q.get().items[q.get().index]?.track.title,
+      repeat: window.__musicpack?.player.model.get().repeat,
+    };
+  });
+  // Resume FIRST and wait until actually playing at the last track —
+  // resuming clears pauseIntent so the wrap loads in playing mode.
+  await page.locator('.playerbar').getByRole('button', { name: 'Play' }).click();
+  await waitFor(
+    page,
+    async () => {
+      const s = await playerState(page);
+      const idx = await page.evaluate(() => window.__musicpack?.queue.get().index);
+      return s.state === 'playing' && idx === 3;
+    },
+    { label: 'playing at last track' },
+  );
+
+  await page.locator('.playerbar').getByRole('button', { name: 'Next track' }).click();
+  await waitFor(
+    page,
+    async () => (await page.evaluate(() => window.__musicpack?.queue.get().index)) === 0,
+    { label: 'wrapped to first track' },
+  );
+  await waitFor(
+    page,
+    async () => (await playerState(page)).state === 'playing',
+    { label: 'first track playing after wrap' },
+  );
+});

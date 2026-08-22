@@ -56,7 +56,18 @@ describe('queue', () => {
   it('playNext inserts after the current item', () => {
     const q = createQueueStore();
     q.playAlbum(release(9, [{ disc: 1, tracks: [track(1, 1, 'T1'), track(3, 3, 'T3')] }]), 'A', 'A');
-    q.playNext({ track: track(2, 2, 'T2'), releaseId: 9, albumId: 1, albumTitle: 'A', artist: 'A' });
+    q.playNext({
+      track: track(2, 2, 'T2'),
+      releaseId: 9,
+      albumId: 1,
+      albumTitle: 'A',
+      artist: 'A',
+      id: 't2',
+      trackId: 2,
+      title: 'T2',
+      source: { kind: 'http-range', url: '/api/v1/tracks/2/audio', byteSize: 100 },
+      codec: 'musepack-sv8',
+    });
     expect(q.get().items.map((i) => i.track.title)).toEqual(['T1', 'T2', 'T3']);
     expect(q.get().index).toBe(0);
   });

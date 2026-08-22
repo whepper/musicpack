@@ -38,15 +38,24 @@ to synthesize an envelope.
 
 ```text
 web/
+  player-core/         platform-independent player domain core (zero deps):
+                       PlaybackItem types, Engine port + capabilities,
+                       generic QueueModel + shuffle/repeat order policy,
+                       Player orchestrator (transport, gapless bookkeeping,
+                       persistence codecs), BS.1770 gain policy, event
+                       surface — see player-core/README.md
   app/                 Vite root (the application)
     public/            classic worker + wasm + demand-reader scripts (synced)
     src/
       lib/
         api/           typed HTTP v1 client + error mapping
         auth/          session store (token → cookie, never stored)
-        state/         library (shelf, editions), queue, player model
-        playback/      controller, MusepackEngine, NativeBackend, RingBuffer,
-                       AudioWorklet, loudness, Media Session
+        state/         library (shelf, editions), queue (core adapter),
+                       player model
+        playback/      web facade + engines: MusepackEngine, NativeBackend,
+                       codec resolution, Media Session, loudness re-export
+                       (transport/queue/persistence semantics live in
+                       ../player-core)
         ui/            Svelte components + theme
         router.ts      history-API SPA router
   tests/
@@ -109,12 +118,25 @@ harness in CI.
 
 - **Musepack (exact):** two decoder workers — the current track's worker and a
   second worker already opened on the next track. At the exact sample boundary
-  the controller promotes the standby worker and keeps feeding the same ring,
+  the player promotes the standby worker and keeps feeding the same ring,
   so adjacent tracks of a release play without inserted silence.
 - **Native codecs (browser `<audio>`, e.g. FLAC):** the next track is
   preloaded into a second element and swapped in on `ended`. Browsers expose
   no sample-perfect gapless API for `<audio>`, so a small boundary gap may
   occur; this is a platform limitation, not a codec defect.
+
+## Playback policy (repeat / shuffle)
+
+The queue is one canonical track list; ordering never destroys it.
+
+- **Repeat** off / all (wraps to the first track) / one (reloads the current
+  track at EOS — sample-exact through the normal load path).
+- **Shuffle** builds a presentation order (current track stays first); the
+  Previous button retraces actual navigation history, and toggling shuffle
+  off restores canonical order. The policy persists across page reloads
+  (session snapshot v2).
+- The repeat-all wrap preloads the wrap target into the standby decoder, so
+  the boundary stays gapless on Musepack tracks.
 
 ## BS.1770 loudness normalization
 

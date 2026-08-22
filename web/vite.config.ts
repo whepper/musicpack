@@ -16,6 +16,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // The player-core package lives outside the Vite root (web/app); allow
+    // the dev server to serve it.
+    fs: {
+      allow: ['..'],
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8080',

@@ -45,10 +45,24 @@ SPDX-License-Identifier: BSD-3-Clause
             <div class="queue-art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</div>
           </button>
         </div>
-        <button
-          aria-label={`Remove ${item.track.title} from the queue`}
-          style="color:var(--ink-faint);font-size:var(--fs-md)"
-          onclick={() => queue.removeAt(i)}>✕</button>
+        <div style="display:flex;gap:2px;align-items:center">
+          <button
+            aria-label={`Move ${item.track.title} up in the queue`}
+            disabled={i === 0}
+            style="color:var(--ink-faint);font-size:var(--fs-xs);padding:2px 4px"
+            onclick={() => queue.move(i, i - 1)}
+          >▲</button>
+          <button
+            aria-label={`Move ${item.track.title} down in the queue`}
+            disabled={i === $queue.items.length - 1}
+            style="color:var(--ink-faint);font-size:var(--fs-xs);padding:2px 4px"
+            onclick={() => queue.move(i, i + 1)}
+          >▼</button>
+          <button
+            aria-label={`Remove ${item.track.title} from the queue`}
+            style="color:var(--ink-faint);font-size:var(--fs-md)"
+            onclick={() => queue.removeAt(i)}>✕</button>
+        </div>
       </div>
     {/each}
   </div>

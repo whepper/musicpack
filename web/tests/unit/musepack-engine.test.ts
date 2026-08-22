@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { MusepackEngine } from '../../app/src/lib/playback/musepack-engine';
 import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
 import type { WorkletReport } from '../../app/src/lib/playback/worklet-protocol';
+import type { PlaybackItem } from '../../player-core/src/types';
+
+function item(url: string): PlaybackItem {
+  return { id: `t${url}`, trackId: 1, source: { kind: 'http-range', url }, title: url, artist: 'a', albumTitle: 'al' };
+}
 
 interface EngineHarness {
   generation: number;
@@ -62,11 +67,11 @@ class AsyncWorker {
 describe('MusepackEngine backpressure reports', () => {
   it('keeps the newest worker when overlapping opens complete out of order', async () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const workers: AsyncWorker[] = [];
@@ -85,12 +90,12 @@ describe('MusepackEngine backpressure reports', () => {
       };
     };
 
-    const first = engine.open('/first.mpc', 100).then(
+    const first = engine.open(item('/first.mpc')).then(
       () => 'resolved',
       () => 'rejected',
     );
     await vi.waitFor(() => expect(workers).toHaveLength(1));
-    const second = engine.open('/second.mpc', 200);
+    const second = engine.open(item('/second.mpc'));
     await vi.waitFor(() => expect(workers).toHaveLength(2));
     workers[1]?.emitInfo(2);
 
@@ -106,11 +111,11 @@ describe('MusepackEngine backpressure reports', () => {
   it('pauses at high water, resumes below low water, and reports underruns', () => {
     const onBuffering = vi.fn();
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering,
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: onBuffering,
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const postMessage = vi.fn();
@@ -139,11 +144,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('ignores stale worklet reports and stale worker PCM', () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const workerPost = vi.fn();
@@ -178,11 +183,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('does not pull PCM from reset reports while a generation transition is pending', () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const postMessage = vi.fn();
@@ -205,11 +210,11 @@ describe('MusepackEngine backpressure reports', () => {
   it('normalizes stream timing to the AudioContext rate and converts seeks to source frames', async () => {
     const onPosition = vi.fn();
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition,
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: onPosition,
     });
     const harness = engine as unknown as EngineHarness;
     const workers: AsyncWorker[] = [];
@@ -228,7 +233,7 @@ describe('MusepackEngine backpressure reports', () => {
       };
     };
 
-    const opening = engine.open('/441.mpc', 100);
+    const opening = engine.open(item('/441.mpc'));
     await vi.waitFor(() => expect(workers).toHaveLength(1));
     workers[0]?.emitInfo(1, 44100, 2, 441000);
     await expect(opening).resolves.toMatchObject({ rate: 48000, channels: 2, lengthSamples: 480000 });
@@ -249,11 +254,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('does not resume decoder pumping after a paused seek', async () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const postMessage = vi.fn();
@@ -277,11 +282,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('does not restore pumping when pause arrives during an in-flight seek', async () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const postMessage = vi.fn();
@@ -306,11 +311,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('re-suspends the AudioContext when pause wins an in-flight resume race', async () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     let finishResume = () => {};
@@ -338,11 +343,11 @@ describe('MusepackEngine backpressure reports', () => {
 
   it('finishes the prior track before switching a gapless stream to a new source format', async () => {
     const engine = new MusepackEngine({
-      onPrimed: vi.fn(),
-      onBuffering: vi.fn(),
-      onEos: vi.fn(),
-      onError: vi.fn(),
-      onPosition: vi.fn(),
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
     });
     const harness = engine as unknown as EngineHarness;
     const portPost = vi.fn();
@@ -380,5 +385,48 @@ describe('MusepackEngine backpressure reports', () => {
       generation: 7,
     });
     expect(portPost.mock.calls.some(([message]) => message.type === 'reset')).toBe(false);
+  });
+
+  it('keeps only the newest standby when prepareNext calls overlap', async () => {
+    const engine = new MusepackEngine({
+      primed: vi.fn(),
+      buffering: vi.fn(),
+      eos: vi.fn(),
+      error: vi.fn(),
+      tick: vi.fn(),
+    });
+    const harness = engine as unknown as EngineHarness;
+    const workers: AsyncWorker[] = [];
+    harness.ctx = {} as AudioContext;
+    harness.node = { port: { postMessage: vi.fn() } };
+    harness.makeWorker = () => {
+      const worker = new AsyncWorker();
+      workers.push(worker);
+      return {
+        worker: worker as unknown as { postMessage: ReturnType<typeof vi.fn> },
+        info: null,
+        sourceInfo: null,
+        eos: false,
+        nextUrl: null,
+        cancelOpen: null,
+      };
+    };
+
+    const first = engine.prepareNext(item('/a.mpc'));
+    await vi.waitFor(() => expect(workers).toHaveLength(1));
+    const second = engine.prepareNext(item('/b.mpc')); // supersedes the first
+    await vi.waitFor(() => expect(workers).toHaveLength(2));
+
+    workers[1]?.emitInfo(0);
+    await expect(second).resolves.toMatchObject({ rate: 44100, lengthSamples: 441000 });
+    await expect(first).resolves.toBeNull(); // superseded standby never resolves with info
+
+    // the loser's worker is closed and terminated; only the newest survives
+    expect(workers[0]?.terminated).toBe(true);
+    expect((harness.standby!.worker as unknown as AsyncWorker)).toBe(workers[1]);
+
+    // a late info from the discarded standby must not promote it
+    workers[0]?.emitInfo(0);
+    expect((harness.standby!.worker as unknown as AsyncWorker)).toBe(workers[1]);
   });
 });

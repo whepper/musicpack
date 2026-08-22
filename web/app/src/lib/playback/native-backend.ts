@@ -9,6 +9,20 @@
 // API for <audio>, so the boundary may carry a small gap — unlike the
 // Musepack backend, which is exact. This is documented in web/README.md.
 import type { EngineStreamInfo } from './musepack-engine';
+import type {
+  Engine,
+  EngineCapabilities,
+  EngineEventName,
+} from '../../../../player-core/src/engine';
+import type { PlaybackItem } from '../../../../player-core/src/types';
+
+const NATIVE_CAPABILITIES: EngineCapabilities = {
+  preloadNext: true,
+  // Browsers expose no sample-perfect gapless API for <audio>: the standby
+  // element swap may carry a small boundary gap. Declared, not hidden.
+  sampleAccurateGapless: false,
+  decodeGate: false,
+};
 
 interface ElementSlot {
   el: HTMLAudioElement;
@@ -18,6 +32,7 @@ interface ElementSlot {
 
 export class NativeBackend {
   readonly kind = 'native' as const;
+  readonly capabilities = NATIVE_CAPABILITIES;
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
   private current: ElementSlot | null = null;
@@ -35,6 +50,27 @@ export class NativeBackend {
   onPrimed: (() => void) | null = null;
   onBuffering: (() => void) | null = null;
 
+  /** Port-facing event registration (M2). Listeners fire IN ADDITION to the
+   *  legacy assignable fields (which the web controller still uses until
+   *  M4); either side may be absent. */
+  private listeners = new Map<EngineEventName, Set<(sender: Engine) => void>>();
+  on(name: EngineEventName, cb: (sender: Engine) => void): () => void {
+    let set = this.listeners.get(name);
+    if (!set) this.listeners.set(name, (set = new Set()));
+    set.add(cb);
+    return () => set!.delete(cb);
+  }
+  private emitNamed(name: EngineEventName): void {
+    for (const cb of this.listeners.get(name) ?? []) cb(this);
+  }
+  private emitLegacyAndPort(
+    field: 'onEos' | 'onPosition' | 'onPrimed' | 'onBuffering',
+    portName: EngineEventName,
+  ): void {
+    this[field]?.();
+    this.emitNamed(portName);
+  }
+
   async init(token: string | null): Promise<void> {
     this.token = token;
     this.ctx = new AudioContext();
@@ -49,12 +85,13 @@ export class NativeBackend {
     el.preload = 'auto';
     const src = this.ctx.createMediaElementSource(el);
     src.connect(this.gain);
-    el.addEventListener('ended', () => this.onEos?.());
-    el.addEventListener('waiting', () => this.onBuffering?.());
+    el.addEventListener('ended', () => this.emitLegacyAndPort('onEos', 'eos'));
+    el.addEventListener('waiting', () => this.emitLegacyAndPort('onBuffering', 'buffering'));
     el.addEventListener('error', () => {
       this.onError?.('This format cannot be played in your browser.');
+      this.emitNamed('error');
     });
-    el.addEventListener('timeupdate', () => this.onPosition?.());
+    el.addEventListener('timeupdate', () => this.emitLegacyAndPort('onPosition', 'tick'));
     return { el, src, url: '' };
   }
 
@@ -66,7 +103,12 @@ export class NativeBackend {
     slot.el.load();
   }
 
-  async open(url: string, size: number): Promise<EngineStreamInfo> {
+  /** Port signature (M4): open by resolved item. */
+  async open(item: PlaybackItem): Promise<EngineStreamInfo> {
+    return this.openSource(item.source.url);
+  }
+
+  async openSource(url: string, size = 0): Promise<EngineStreamInfo> {
     void size;
     this.playRequest++;
     this.shouldPlay = false;
@@ -79,7 +121,12 @@ export class NativeBackend {
     return info;
   }
 
-  async prepareNext(url: string, size: number): Promise<EngineStreamInfo | null> {
+  /** Port signature (M4). */
+  async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
+    return this.prepareNextSource(item.source.url);
+  }
+
+  async prepareNextSource(url: string, size = 0): Promise<EngineStreamInfo | null> {
     void size;
     this.disposeStandby();
     const slot = this.makeSlot();
@@ -163,12 +210,18 @@ export class NativeBackend {
     if (this.current) this.current.el.pause();
   }
 
+  /** Port signature (M4). */
+  async seekSample(samples: number): Promise<void> {
+    return this.seek(samples);
+  }
+
   async seek(sample: number): Promise<void> {
     if (!this.current) return;
     this.shouldPlay = false;
     this.playRequest++;
     this.current.el.currentTime = sample / this.rate;
     this.onPrimed?.();
+    this.emitNamed('primed');
   }
 
   setGain(linear: number): void {
@@ -181,7 +234,7 @@ export class NativeBackend {
     return Math.max(0, Math.floor(el.currentTime * this.rate));
   }
 
-  getRenderedSamples(): number {
+  renderedSamples(): number {
     return this.getPositionSamples();
   }
 

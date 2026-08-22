@@ -30,6 +30,7 @@
   "include": [
     "app/src/**/*.ts",
     "app/src/**/*.svelte",
+    "player-core/src/**/*.ts",
     "vite.config.ts",
     "tests/unit/**/*.ts"
   ],
