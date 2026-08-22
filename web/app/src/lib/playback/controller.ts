@@ -98,6 +98,20 @@ export interface ControllerOptions {
   initialNormalize?: NormalizationMode;
   /** Test seam: replace backend construction. */
   backendFactory?: (kind: 'musepack' | 'native', events: BackendEvents) => Backend;
+  /** Storage for cross-reload player persistence (defaults to localStorage). */
+  storage?: { get: () => string | null; set: (value: string | null) => void };
+}
+
+const STORAGE_KEY = 'musicpack.player.v1';
+const PERSIST_INTERVAL_MS = 2000;
+
+interface PersistedPlayerState {
+  v: 1;
+  items: QueueItem[];
+  index: number;
+  positionSeconds: number;
+  volume: number;
+  normalizeMode: NormalizationMode;
 }
 
 export class PlayerController {
@@ -119,11 +133,26 @@ export class PlayerController {
   private pauseIntent = false;
   private backendFactory: ControllerOptions['backendFactory'];
   private unsub: (() => void) | null = null;
+  private storage: { get: () => string | null; set: (value: string | null) => void };
+  private lastPersist = 0;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Within-track resume point from a restored session, consumed by the
+   *  next _load() (valid only while the queue cursor is unchanged). */
+  private restoredWithin: { index: number; withinSamples: number } | null = null;
 
   constructor(queue: QueueStore, opts: ControllerOptions = {}) {
     this.queue = queue;
     this.token = opts.token ?? (() => null);
     this.backendFactory = opts.backendFactory;
+    this.storage =
+      opts.storage ?? {
+        get: () => (typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)),
+        set: (value) => {
+          if (typeof localStorage === 'undefined') return;
+          if (value === null) localStorage.removeItem(STORAGE_KEY);
+          else localStorage.setItem(STORAGE_KEY, value);
+        },
+      };
     this.model = writable<PlayerModel>({
       state: 'idle',
       current: null,
@@ -149,6 +178,14 @@ export class PlayerController {
         void this.seek(this.model.get().currentTrackStartSeconds + trackSeconds),
       seekBy: (d) => this.seek(this.model.get().positionSeconds + d),
     });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', () => this.persist());
+    }
+    // Restore BEFORE subscribing: a writable store fires its subscriber
+    // immediately on registration, and the trailing persist() in that
+    // callback would otherwise see an empty player and delete the very
+    // state we are about to restore.
+    this.restore();
     // React to queue changes made OUTSIDE the controller (e.g. the queue
     // panel removing the current item, or clearing the queue). Mutations the
     // controller itself performs are flagged `mutating` and skipped here.
@@ -161,7 +198,99 @@ export class PlayerController {
       } else if (cur && m.current && cur.track.id !== m.current.track.id && m.state !== 'loading') {
         void this._load();
       }
+      this.persist();
     });
+  }
+
+  // ---- cross-reload persistence -------------------------------------------
+
+  private persist(): void {
+    this.lastPersist = Date.now();
+    const m = this.model.get();
+    const q = this.queue.get();
+    if (!m.current || q.items.length === 0) {
+      this.storage.set(null);
+      return;
+    }
+    const payload: PersistedPlayerState = {
+      v: 1,
+      items: q.items,
+      index: q.index,
+      positionSeconds: m.positionSeconds,
+      volume: m.volume,
+      normalizeMode: m.normalizeMode,
+    };
+    try {
+      this.storage.set(JSON.stringify(payload));
+    } catch {
+      /* quota exceeded / storage disabled — persistence is best-effort */
+    }
+  }
+
+  private persistThrottled(): void {
+    if (Date.now() - this.lastPersist >= PERSIST_INTERVAL_MS) {
+      this.persist();
+      return;
+    }
+    // Inside the throttle window: schedule one trailing write so the latest
+    // position is never lost (re-arming is cheap; persist() is tiny).
+    if (this.persistTimer !== null) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.persist();
+    }, PERSIST_INTERVAL_MS);
+  }
+
+  /** Rebuilds a paused session from the last persisted state (if any).
+   *  Audio itself cannot resume without a user gesture; Play then seeks to
+   *  the restored position through the normal load path. */
+  private restore(): void {
+    let raw: string | null = null;
+    try {
+      raw = this.storage.get();
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    let parsed: PersistedPlayerState;
+    try {
+      const candidate = JSON.parse(raw) as PersistedPlayerState;
+      if (candidate?.v !== 1 || !Array.isArray(candidate.items)) return;
+      const items = candidate.items.filter(
+        (it): it is QueueItem => !!it?.track?.audio?.url && typeof it?.track?.id === 'number',
+      );
+      if (items.length === 0) return;
+      parsed = { ...candidate, items, index: Math.min(Math.max(0, Math.floor(candidate.index) || 0), items.length - 1) };
+    } catch {
+      return;
+    }
+
+    this.mutating = true;
+    this.queue.set({ items: parsed.items, index: parsed.index });
+    this.mutating = false;
+    const item = this.queue.current();
+    if (!item) return;
+
+    const rate = this.rate();
+    const offs = this.offsets();
+    const startSamples = offs[parsed.index] ?? 0;
+    const withinSamples = Math.max(
+      0,
+      Math.min(Math.floor(parsed.positionSeconds * rate), Math.max(0, this.lengthOf(parsed.index) - 1)),
+    );
+    this.restoredWithin = { index: parsed.index, withinSamples };
+    this.model.update((m) => ({
+      ...m,
+      current: item,
+      state: 'paused' as PlayerState,
+      positionSeconds: (startSamples + withinSamples) / rate,
+      currentTrackStartSeconds: startSamples / rate,
+      currentTrackDurationSeconds: this.lengthOf(parsed.index) / rate,
+      durationSeconds: this.totalLength() / rate,
+      volume: typeof parsed.volume === 'number' ? Math.min(1, Math.max(0, parsed.volume)) : m.volume,
+      normalizeMode: parsed.normalizeMode ?? m.normalizeMode,
+    }));
+    this.setMediaFor(item);
   }
 
   destroy(): void {
@@ -294,12 +423,13 @@ export class PlayerController {
 
   // ---- load / playback -----------------------------------------------------
 
-  private async _load(): Promise<boolean> {
+  private async _load(resumeWithinSamples?: number): Promise<boolean> {
     const item = this.queue.current();
     if (!item) return false;
     const seq = ++this.loadingSeq;
     ++this.transportSeq;
     this.pendingEnded = false;
+    this.restoredWithin = null;
     // Lengths are keyed by track id, so a replaced queue cannot leak
     // another album's entries (ids are unique per server track row).
     this.model.update((m) => ({ ...m, state: 'loading', error: undefined }));
@@ -327,7 +457,11 @@ export class PlayerController {
         if (seq !== this.loadingSeq) return false;
         if (ni) this.lengths.set(next.track.id, ni.lengthSamples);
       }
-      this.resetOffset = this.offsets()[qi] ?? 0;
+      const resumeAt =
+        resumeWithinSamples && resumeWithinSamples > 0
+          ? Math.min(Math.floor(resumeWithinSamples), Math.max(0, this.lengthOf(qi) - 1))
+          : 0;
+      this.resetOffset = (this.offsets()[qi] ?? 0) + resumeAt;
       this.applyGain(item);
       this.setMediaFor(item);
       this.model.update((m) => ({
@@ -337,9 +471,10 @@ export class PlayerController {
         positionSeconds: this.resetOffset / this.rate(),
         durationSeconds: this.totalLength() / this.rate(),
       }));
-      await this.backend!.seek(0);
+      await this.backend!.seek(resumeAt);
       if (seq !== this.loadingSeq) return false;
       if (!this.pauseIntent) this.backend!.startPumping();
+      this.persist();
       return true;
     } catch (e) {
       if (seq === this.loadingSeq) this.fail(e instanceof Error ? e.message : String(e));
@@ -481,6 +616,7 @@ export class PlayerController {
       this.backend.pause();
       this.backend.pausePumping();
     }
+    this.persistThrottled();
   }
 
   private currentIndexAt(pos: number): number {
@@ -499,6 +635,16 @@ export class PlayerController {
     if (m.state === 'playing') {
       await this.pause();
     } else if (m.state === 'paused') {
+      if (!this.backend && m.current) {
+        // Restored session: rebuild the backend and seek to the saved spot
+        // in one go (the click satisfies the browser's gesture requirement).
+        const within =
+          this.restoredWithin && this.restoredWithin.index === this.queue.get().index
+            ? this.restoredWithin.withinSamples
+            : undefined;
+        await this._load(within);
+        return;
+      }
       await this.resume();
     } else if (m.state === 'ended' || m.state === 'idle' || m.state === 'error') {
       if (m.current) {
@@ -516,10 +662,16 @@ export class PlayerController {
     this.setState('paused');
     this.backend?.pausePumping();
     await this.backend?.pause();
+    this.persist();
   }
 
   async resume(): Promise<void> {
-    if (!this.backend) return;
+    if (!this.backend) {
+      // Restored (or never-opened) session: togglePlay owns the load path.
+      const m = this.model.get();
+      if (m.state === 'paused' && m.current) await this.togglePlay();
+      return;
+    }
     const seq = ++this.transportSeq;
     const backend = this.backend;
     this.pauseIntent = false;
@@ -587,6 +739,7 @@ export class PlayerController {
     await backend?.pause();
     if (seq !== this.loadingSeq || this.backend !== backend) return;
     await backend?.seek(0);
+    this.persist();
   }
 
   /** Stops playback and disposes the backend + Media Session state. Used on
@@ -600,10 +753,12 @@ export class PlayerController {
     this.pendingEnded = false;
     this.lengths.clear();
     this.resetOffset = 0;
+    this.restoredWithin = null;
     await this.backend?.close();
     this.backend = null;
     this.backendKind = null;
     setMediaMetadata(null);
+    this.storage.set(null);
     this.model.update((m) => ({
       ...m,
       state: 'idle',
@@ -620,11 +775,13 @@ export class PlayerController {
     const vol = Math.max(0, Math.min(1, v));
     this.model.update((m) => ({ ...m, volume: vol }));
     this.applyGain(this.model.get().current);
+    this.persistThrottled();
   }
 
   setNormalizeMode(mode: NormalizationMode): void {
     this.model.update((m) => ({ ...m, normalizeMode: mode }));
     this.applyGain(this.model.get().current);
+    this.persist();
   }
 
   private applyGain(item: QueueItem | null): void {

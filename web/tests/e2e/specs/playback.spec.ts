@@ -134,6 +134,38 @@ test('queue holds the album in order and removes items', async ({ page }) => {
   expect(res.markedIdx).toBe(res.idx);
 });
 
+test('player survives a page reload (restored paused at position)', async ({ page }) => {
+  await page.getByText('Long Player').first().click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  await page.waitForTimeout(1200); // let the song play a little
+
+  // Pause persists immediately (the tick path is throttled).
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+  const saved = await playerState(page);
+  expect(saved.positionSeconds).toBeGreaterThan(0.5);
+
+  // Full reload: the in-memory queue/player is gone; persistence must
+  // bring the player back, paused at the saved spot. (We reload on /queue,
+  // so the shelf never appears — wait for the restored session instead.)
+  await page.reload();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'restored paused' });
+
+  const st = await playerState(page);
+  expect(st.state).toBe('paused');
+  expect(st.currentTitle).toBe(saved.currentTitle);
+  expect(Math.abs(st.positionSeconds - saved.positionSeconds)).toBeLessThan(3);
+  const n = await page.evaluate(() => window.__musicpack?.queue.get().items.length ?? 0);
+  expect(n).toBeGreaterThan(0);
+
+  // Press resumes playback at the restored position (gesture requirement).
+  await page.locator('.playerbar').getByRole('button', { name: 'Play' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'resumed' });
+  const resumed = await playerState(page);
+  expect(Math.abs(resumed.positionSeconds - saved.positionSeconds)).toBeLessThan(4);
+});
+
 test('clicking a queue item keeps the queue and moves the highlight', async ({ page }) => {
   await page.getByText('Synthetic Test Compilation').first().click();
   await page.getByRole('button', { name: 'Play album' }).click();

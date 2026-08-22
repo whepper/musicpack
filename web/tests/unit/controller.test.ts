@@ -153,6 +153,23 @@ function make() {
   return { player, queue, getBackend: () => backend!, lengthsByUrl };
 }
 
+function makeWithStorage(storage: { get: () => string | null; set: (v: string | null) => void }) {
+  const queue = createQueueStore();
+  const lengthsByUrl = new Map<string, number>();
+  let backend: FakeBackend | null = null;
+  const player = new PlayerController(queue, {
+    backendFactory: (kind, events) => {
+      const b = new FakeBackend(kind, events);
+      b.lengthsByUrl = lengthsByUrl;
+      backend = b;
+      return b;
+    },
+    storage,
+  });
+  player.init();
+  return { player, queue, getBackend: () => backend!, lengthsByUrl };
+}
+
 /** Flushes promise chains (state transitions land on .then microtasks). */
 async function flush(times = 3): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
@@ -598,6 +615,75 @@ describe('PlayerController', () => {
     await player.playQueueIndex(2);
     await flush();
     expect(b.opened.length).toBe(opens);
+  });
+
+  it('restores a persisted session as paused and resumes at the saved spot', async () => {
+    const map = new Map<string, string>();
+    const storage = {
+      get: () => map.get('musicpack.player.v1') ?? null,
+      set: (v: string | null) => {
+        if (v === null) map.delete('musicpack.player.v1');
+        else map.set('musicpack.player.v1', v);
+      },
+    };
+    const a = makeWithStorage(storage);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      await a.player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'Album', 'Artist');
+      const ba = a.getBackend();
+      ba.emitPrimed();
+      // Advance fake time past the persist throttle, then tick: the position
+      // write must land (a trailing write alone would be async).
+      vi.advanceTimersByTime(2001);
+      ba.setRendered(5 * RATE);
+      ba.emitPosition();
+      expect(map.size).toBe(1);
+
+      // A fresh controller (simulated page reload) restores the session.
+      const b = makeWithStorage(storage);
+      const m = b.player.model.get();
+      expect(m.state).toBe('paused');
+      expect(m.current?.track.title).toBe('T1');
+      expect(m.positionSeconds).toBeCloseTo(5, 2);
+      expect(b.queue.get().items.length).toBe(3);
+
+      // Pressing play rebuilds the backend and seeks to the saved spot.
+      await b.player.togglePlay();
+      await flush();
+      const bb = b.getBackend();
+      expect(bb.opened).toContain('/api/v1/tracks/1/audio');
+      expect(bb.seeks[bb.seeks.length - 1]).toBe(5 * RATE);
+      bb.emitPrimed();
+      await flush();
+      expect(b.player.model.get().state).toBe('playing');
+      expect(b.player.model.get().positionSeconds).toBeCloseTo(5, 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears persisted state on teardown', async () => {
+    const map = new Map<string, string>();
+    const storage = {
+      get: () => map.get('k') ?? null,
+      set: (v: string | null) => {
+        if (v === null) map.delete('k');
+        else map.set('k', v);
+      },
+    };
+    const a = makeWithStorage(storage);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      await a.player.playAlbum(release(9, ['T1']), 'Album', 'Artist');
+      a.getBackend().emitPrimed();
+      vi.advanceTimersByTime(2001); // past the persist throttle
+      a.getBackend().emitPosition(); // persists
+      expect(map.size).toBe(1);
+      await a.player.teardown();
+      expect(map.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('teardown stops playback, disposes the backend and clears player state', async () => {
