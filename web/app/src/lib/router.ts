@@ -61,6 +61,22 @@ export function createRouter() {
     current.set(parseRoute(location.pathname) ?? { name: 'notfound', params: {}, query: new URLSearchParams() });
   });
 
+  // In-app anchors must be SPA navigations: a plain <a href> would reload
+  // the whole document and wipe the in-memory queue/player state.
+  document.addEventListener('click', (ev) => {
+    if (ev.defaultPrevented || ev.button !== 0) return;
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    const target = ev.target instanceof Element ? ev.target : null;
+    const a = target?.closest('a');
+    if (!a) return;
+    if (a.target && a.target !== '_self') return;
+    if (a.hasAttribute('download')) return;
+    const href = a.getAttribute('href');
+    if (!href || !href.startsWith('/')) return; // external, hash, mailto, ...
+    ev.preventDefault();
+    go(href);
+  });
+
   return {
     route: current as Readable<Route>,
     go,

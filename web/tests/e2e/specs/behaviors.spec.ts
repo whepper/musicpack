@@ -33,6 +33,9 @@ test('exposes Media Session metadata and a track-relative position state', async
       },
     });
   });
+  // Init scripts apply to the NEXT document; boot a wrapped one.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'The shelf' })).toBeVisible({ timeout: 20_000 });
   await page.getByText('Synthetic Test Compilation').click();
   await page.getByRole('button', { name: 'Play album' }).click();
   await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
@@ -60,6 +63,28 @@ test('exposes Media Session metadata and a track-relative position state', async
   expect(last!.position).toBeLessThanOrEqual(last!.duration + 0.25);
 });
 
+test('nav-bar navigation keeps playback alive (SPA, no full reload)', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').first().click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+
+  // Marker that a full document reload would wipe.
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__mpAlive = 1;
+  });
+
+  await page.getByRole('link', { name: 'Artists' }).click();
+  await waitFor(page, async () => page.url().includes('/artists'), { label: '/artists reached' });
+
+  await page.getByRole('link', { name: 'Artists' }).click();
+  await waitFor(page, async () => page.url().includes('/artists'), { label: '/artists reached' });
+
+  expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).__mpAlive)).toBe(1);
+  const n = await page.evaluate(() => window.__musicpack?.queue.get().items.length ?? 0);
+  expect(n).toBeGreaterThan(0);
+  expect((await playerState(page)).currentTitle).toBeTruthy();
+});
+
 test('an invalid session returns to the sign-in screen (re-auth)', async ({ page }) => {
   // Poison the HttpOnly cookie and load the app — the boot session probe 401s
   // and the UI falls back to the sign-in screen (no raw error strings).
@@ -76,4 +101,40 @@ test('a missing album shows a friendly error, not an internal string', async ({ 
   await page.goto('/albums/999999');
   await expect(page.getByRole('heading', { name: 'The shelf' })).toBeHidden();
   await expect(page.getByText('no longer in the collection', { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+});
+
+test.describe('mobile player layout (<=680px)', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('transport buttons share one row in the mobile player', async ({ page }) => {
+    // The global beforeEach already signed in at this viewport.
+    await page.getByText('Long Player').first().click();
+    await page.getByRole('button', { name: 'Play album' }).click();
+    await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+
+    // .mobile-player .row children: thumb, title button, prev, play, next.
+    // The Next button must sit on the SAME row as Play (it used to wrap
+    // onto an implicit second grid row).
+    const boxes = await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('.mobile-player .row button')];
+      const pick = (el: Element | undefined) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y + r.height / 2 };
+      };
+      return {
+        prev: pick(btns[1]),
+        play: pick(btns[2]),
+        next: pick(btns[3]),
+        count: btns.length,
+      };
+    });
+    expect(boxes.count).toBe(4);
+    expect(boxes.prev).not.toBeNull();
+    expect(boxes.play).not.toBeNull();
+    expect(boxes.next).not.toBeNull();
+    expect(Math.abs(boxes.next!.y - boxes.play!.y)).toBeLessThanOrEqual(2);
+    expect(boxes.next!.x).toBeGreaterThan(boxes.play!.x);
+    expect(Math.abs(boxes.prev!.y - boxes.play!.y)).toBeLessThanOrEqual(2);
+  });
 });

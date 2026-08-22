@@ -551,7 +551,9 @@ input[type="range"]::-webkit-slider-thumb {
 
 .mobile-player .row {
   display: grid;
-  grid-template-columns: 44px 1fr auto auto;
+  /* Five tracks: thumb, title, previous, play/pause, next. A missing track
+     wraps the last control onto an implicit second row. */
+  grid-template-columns: 44px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);

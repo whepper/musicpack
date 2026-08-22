@@ -13,8 +13,11 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('waveform canvas renders for a track with envelope; click seeks within the track', async ({ page }) => {
-  // The TestComp album carries waveform envelopes on every track.
-  await page.getByText('Synthetic Test Compilation').first().click();
+  // Long Player carries envelopes AND a long first track (~39 s decoded),
+  // leaving decode/EOF headroom that the ~1 s TestComp tracks lack: on
+  // those, an in-flight gapless handoff could move the cursor right after
+  // pausing and break the same-track assertion.
+  await page.getByText('Long Player').first().click();
   await page.getByRole('button', { name: 'Play album' }).click();
 
   await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
