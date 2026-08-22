@@ -37,6 +37,9 @@ const MUSEPACK_CAPABILITIES: EngineCapabilities = {
   preloadNext: true,
   sampleAccurateGapless: true,
   decodeGate: true,
+  // Phase B: overlap-add mixing in the worklet. Until then the musepack
+  // engine reports no crossfade and the core falls back to normal EOS.
+  crossfade: false,
 };
 
 interface WorkerHandle {

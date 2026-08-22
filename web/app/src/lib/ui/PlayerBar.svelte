@@ -112,6 +112,19 @@ SPDX-License-Identifier: BSD-3-Clause
       </button>
       <button
         class="smallcaps"
+        aria-label={`Crossfade: ${$playerModel.crossfadeSeconds === 0 ? 'off' : `${$playerModel.crossfadeSeconds} seconds`}. Click to change.`}
+        title="Crossfade"
+        style={$playerModel.crossfadeSeconds > 0 ? 'color:var(--accent,#b0632f)' : ''}
+        onclick={() =>
+          player.setCrossfade(
+            $playerModel.crossfadeSeconds === 0 ? 4 : $playerModel.crossfadeSeconds === 4 ? 8 : $playerModel.crossfadeSeconds === 8 ? 12 : 0,
+          )
+        }
+      >
+        {$playerModel.crossfadeSeconds > 0 ? `⤡${$playerModel.crossfadeSeconds}` : '⤡'}
+      </button>
+      <button
+        class="smallcaps"
         aria-label={`Normalization: ${normLabel}. Click to change.`}
         title={`Loudness normalization: ${normLabel}`}
         onclick={() =>

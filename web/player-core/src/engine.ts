@@ -28,6 +28,8 @@ export interface EngineCapabilities {
   readonly sampleAccurateGapless: boolean;
   /** DecodeGate control is meaningful (pull-style decode pipelines). */
   readonly decodeGate: boolean;
+  /** beginCrossfade() overlapped transitions are supported (M8). */
+  readonly crossfade: boolean;
 }
 
 /** Events an engine reports back. Delivered asynchronously, in order,
@@ -70,6 +72,17 @@ export interface Engine {
 export interface PreloadEngine extends Engine {
   prepareNext(item: PlaybackItem): Promise<StreamInfo | null>;
   advance(): Promise<StreamInfo | null>;
+}
+
+/** Crossfade capability (M8, opt-in). An engine implementing this can
+ *  transition to `next` with an equal-power overlap instead of the normal
+ *  sequential handoff. Returning null (or not implementing) makes the
+ *  caller fall back to the normal EOS path — crossfade is best-effort by
+ *  design. After a taken fade the engine suppresses the OLD lane's 'eos';
+ *  the new lane's lifecycle (eos/position) is the engine's responsibility,
+ *  exactly as after a normal advance(). */
+export interface CrossfadeEngine {
+  beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<StreamInfo | null>;
 }
 
 /** Pull-decode gate capability (e.g. the WASM musepack pipeline). */

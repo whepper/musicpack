@@ -73,6 +73,7 @@ class FakeBackend implements Backend {
     preloadNext: true,
     sampleAccurateGapless: true,
     decodeGate: true,
+    crossfade: false,
   };
   private listeners = new Map<string, Set<(sender: Engine) => void>>();
   on(name: string, cb: (sender: Engine) => void): () => void {

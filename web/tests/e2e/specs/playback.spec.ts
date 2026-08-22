@@ -438,3 +438,23 @@ test('repeat-all wraps from the last track back to the first', async ({ page }) 
     { label: 'first track playing after wrap' },
   );
 });
+
+test('crossfade setting persists across a reload (native FLAC album)', async ({ page }) => {
+  // Native-codec fixture: the only lane with Phase A crossfade.
+  await page.getByText('Synthetic Classical Compilation').click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+  expect((await playerState(page)).state).toBe('playing');
+  const kind = await page.evaluate(() => window.__musicpack?.player.getBackendKind());
+  expect(kind).toBe('native');
+
+  // Enable crossfade via the player-bar cycler, then reload.
+  await page.getByRole('button', { name: /Crossfade/ }).click();
+  const enabled = await page.evaluate(() => window.__musicpack?.player.model.get().crossfadeSeconds);
+  expect(enabled).toBe(4);
+
+  await page.reload();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'restored paused' });
+  const restored = await page.evaluate(() => window.__musicpack?.player.model.get().crossfadeSeconds);
+  expect(restored).toBe(4);
+});

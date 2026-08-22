@@ -20,6 +20,7 @@ export type PlayerEvent =
   | { t: 'track'; item: PlaybackItem | null }
   | { t: 'position'; positionSeconds: number; trackStartSeconds: number; trackDurationSeconds: number }
   | { t: 'policy'; repeat: 'off' | 'one' | 'all'; shuffle: boolean }
+  | { t: 'crossfade'; seconds: number }
   | { t: 'gain'; normDb: number }
   | { t: 'error'; message: string };
 

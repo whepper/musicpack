@@ -27,6 +27,7 @@ describe('engine port conformance', () => {
       preloadNext: true,
       sampleAccurateGapless: true,
       decodeGate: true,
+      crossfade: false,
     });
   });
 
@@ -36,6 +37,7 @@ describe('engine port conformance', () => {
       preloadNext: true,
       sampleAccurateGapless: false, // honesty rule: element swap is approximate
       decodeGate: false,
+      crossfade: true, // Phase A: element-based overlap implemented
     });
   });
 

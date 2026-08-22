@@ -97,7 +97,7 @@ describe('PlayerEvent surface (M7)', () => {
       engineFactory: (_kind, h) => {
         handlers = h;
         return {
-          capabilities: { preloadNext: true, sampleAccurateGapless: true, decodeGate: true },
+          capabilities: { preloadNext: true, sampleAccurateGapless: true, decodeGate: true, crossfade: false },
           init: async () => undefined,
           open: async () => ({ rate: RATE, channels: 2, version: 8, lengthSamples: LEN }),
           prepareNext: async () => null,
@@ -156,7 +156,7 @@ describe('PlayerEvent surface (M7)', () => {
       engineFactory: (_k, h) => {
         handlers = h;
         return {
-          capabilities: { preloadNext: false, sampleAccurateGapless: false, decodeGate: false },
+          capabilities: { preloadNext: false, sampleAccurateGapless: false, decodeGate: false, crossfade: false },
           init: async () => undefined,
           open: async () => ({ rate: RATE, channels: 2, version: 0, lengthSamples: RATE * 5 }),
           play: async () => undefined,

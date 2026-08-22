@@ -46,6 +46,8 @@ export interface PlayerModel {
   /** Queue playback policy (mirrored from the core model). */
   repeat: 'off' | 'one' | 'all';
   shuffle: boolean;
+  /** Crossfade seconds at natural boundaries; 0 = off. */
+  crossfadeSeconds: number;
   error?: string;
 }
 export type { CorePlayerState as PlayerState };
@@ -154,6 +156,7 @@ export class PlayerController {
     normDb: 0,
     repeat: 'off',
     shuffle: false,
+    crossfadeSeconds: 0,
   });
   private core: Player;
   private queue: QueueStore;
@@ -299,6 +302,10 @@ export class PlayerController {
 
   setShuffle(on: boolean): void {
     this.core.setShuffle(on);
+  }
+
+  setCrossfade(seconds: number): void {
+    this.core.setCrossfade(seconds);
   }
 
   getBackendKind(): 'musepack' | 'native' | null {

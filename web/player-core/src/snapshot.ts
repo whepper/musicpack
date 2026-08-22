@@ -45,6 +45,9 @@ export interface SessionSnapshot {
   /** Playback policy (v2). Always present after decode (v1 → defaults). */
   repeat: RepeatMode;
   shuffle: boolean;
+  /** Crossfade seconds; 0 = off. Optional for forward/backward tolerance:
+   *  absent or invalid → 0. (M8) */
+  crossfadeSeconds?: number;
 }
 
 function isRestorableItem(item: unknown): item is SnapshotItemBase {
@@ -85,6 +88,9 @@ export function decodeSnapshot(raw: string | null | undefined): SessionSnapshot 
   if (items.length === 0) return null;
   // v1 payloads carry no policy: default to repeat off / shuffle off.
   const legacy = candidate as Partial<SessionSnapshot>;
+  // Crossfade: absent/invalid → 0 (off). Only the shipped cycle values are
+  // honored (4/8/12); anything else is treated as off.
+  const rawCf = legacy.crossfadeSeconds;
   const decoded: SessionSnapshot = {
     v: SNAPSHOT_VERSION,
     items,
@@ -94,6 +100,7 @@ export function decodeSnapshot(raw: string | null | undefined): SessionSnapshot 
     normalizeMode: candidate.normalizeMode,
     repeat: parseRepeat(legacy.repeat),
     shuffle: legacy.shuffle === true,
+    crossfadeSeconds: typeof rawCf === 'number' && [4, 8, 12].includes(rawCf) ? rawCf : 0,
   };
   return decoded;
 }

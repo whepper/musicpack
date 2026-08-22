@@ -24,6 +24,7 @@ import type {
   PreloadEngine,
 } from './engine';
 import { isPreloadEngine } from './engine';
+import type { CrossfadeEngine } from './engine';
 import { combinedGain, normalizationGainDb, type NormalizationMode } from './gain';
 import { PlayerEventSink, type PlayerEvent, type PlayerListener } from './events';
 import {
@@ -64,6 +65,8 @@ export interface PlayerModel {
   /** Queue playback policy (mirrored from the queue model for the UI). */
   repeat: 'off' | 'one' | 'all';
   shuffle: boolean;
+  /** Crossfade length at natural boundaries; 0 = off (M8, opt-in). */
+  crossfadeSeconds: number;
   error?: string;
 }
 
@@ -157,6 +160,12 @@ export class Player {
   /** Within-track resume point from a restored session, consumed by the
    *  next load (valid only while the queue cursor is unchanged). */
   private restoredWithin: { index: number; withinSamples: number } | null = null;
+  /** Crossfade setting (seconds); 0 = off. */
+  private crossfadeSeconds = 0;
+  /** Once-guard for the crossfade trigger within one track. */
+  private crossfadeArmed = false;
+  /** True while an overlapped transition is running. */
+  private crossfadeInProgress = false;
   /** Engine-event subscriptions for the current engine. */
   private engineUnsubs: Array<() => void> = [];
   /** Engine identity token for late-event dropping. */
@@ -177,6 +186,7 @@ export class Player {
       normDb: 0,
       repeat: 'off',
       shuffle: false,
+      crossfadeSeconds: 0,
     });
   }
 
@@ -231,6 +241,7 @@ export class Player {
       normalizeMode: m.normalizeMode,
       repeat: this.queue.repeat,
       shuffle: this.queue.shuffle,
+      crossfadeSeconds: this.crossfadeSeconds,
     };
     try {
       this.ports.storage.set(encodeSnapshot(payload));
@@ -273,6 +284,11 @@ export class Player {
     // Policy must be applied BEFORE the cursor install so shuffle builds its
     // presentation order around the restored current item.
     this.queue.setRepeat(parsed.repeat);
+    if (typeof parsed.crossfadeSeconds === 'number' && parsed.crossfadeSeconds > 0) {
+      this.crossfadeSeconds = [4, 8, 12].includes(parsed.crossfadeSeconds)
+        ? parsed.crossfadeSeconds
+        : 0;
+    }
     this.mutating = true;
     this.queue.set({ items: parsed.items as import('./types').PlaybackItem[], index: parsed.index });
     this.mutating = false;
@@ -302,6 +318,7 @@ export class Player {
       normalizeMode: parsed.normalizeMode ?? m.normalizeMode,
       repeat: this.queue.repeat,
       shuffle: this.queue.shuffle,
+      crossfadeSeconds: this.crossfadeSeconds,
     }));
     this.emit({ t: 'track', item });
     this.setMediaFor(item);
@@ -443,6 +460,7 @@ export class Player {
     ++this.transportSeq;
     this.pendingEnded = false;
     this.restoredWithin = null;
+    this.crossfadeArmed = false;
     // Lengths are keyed by track id, so a replaced queue cannot leak
     // another album's entries (ids are unique per server track row).
     this.model.update((m) => ({ ...m, state: 'loading', error: undefined }));
@@ -626,6 +644,30 @@ export class Player {
     const trackStart = offs[idx] ?? 0;
     const trackDur = this.lengthOf(idx);
     const rate = this.rate();
+    // Crossfade trigger (M8, opt-in; once per track): near the end of the
+    // CURRENT item, playing, with a policy next item and a capable engine.
+    // Never for repeat-one (reload) and never on the queue's last track.
+    if (
+      !this.crossfadeArmed &&
+      !this.crossfadeInProgress &&
+      !this.pendingEnded &&
+      this.crossfadeSeconds > 0 &&
+      this.model.get().state === 'playing'
+    ) {
+      const remaining = this.trackRemainingSamples(idx, pos);
+      const fadeFrames = Math.floor(this.crossfadeSeconds * rate);
+      const singleTrackRepeatAll =
+        this.queue.repeat === 'all' && this.queue.get().items.length === 1;
+      if (
+        remaining <= fadeFrames &&
+        remaining > 0 &&
+        !singleTrackRepeatAll &&
+        this.engine.capabilities.crossfade
+      ) {
+        this.crossfadeArmed = true;
+        void this.beginCrossfadeTransition();
+      }
+    }
     const ended = this.pendingEnded && pos >= dur - END_TOLERANCE_SAMPLES;
     this.model.update((m) => ({
       ...m,
@@ -686,6 +728,73 @@ export class Player {
     return null;
   }
 
+  /** Samples remaining in item `idx` at absolute position `pos` (>=0). */
+  private trackRemainingSamples(idx: number, pos: number): number {
+    const offs = this.offsets();
+    const start = offs[idx] ?? 0;
+    return Math.max(0, (start + this.lengthOf(idx)) - pos);
+  }
+
+
+  /** Attempts an overlapped transition to the policy next item. On success
+   *  performs the same bookkeeping as the EOS handoff; on failure leaves
+   *  everything untouched so the normal EOS path runs. */
+  private async beginCrossfadeTransition(): Promise<void> {
+    const engine = this.engine;
+    if (!engine || !engine.capabilities.crossfade) return;
+    const cf = engine as unknown as CrossfadeEngine;
+    if (typeof cf.beginCrossfade !== 'function') return;
+    const qi = this.queue.get().index;
+    const target = this.peekPreloadTarget(qi);
+    // No target: end-of-queue or repeat-one — no fade.
+    if (!target) return;
+    this.crossfadeInProgress = true;
+    try {
+      const info = await cf.beginCrossfade(target.item, this.crossfadeSeconds);
+      if (!info) {
+        this.crossfadeInProgress = false;
+        return; // fall back to normal EOS
+      }
+      // Same handoff bookkeeping as onEos(): lengths, geometry, gain, media,
+      // next standby. Cursor advance WITHOUT queue.next() policy re-entry —
+      // we already resolved the target.
+      const nextItem = target.item;
+      const idxAfter = this.queue
+        .get()
+        .items.findIndex((it) => it.id === nextItem.id && it.trackId === nextItem.trackId);
+      if (idxAfter < 0) {
+        this.crossfadeInProgress = false;
+        return;
+      }
+      this.mutating = true;
+      this.queue.moveTo(idxAfter);
+      this.mutating = false;
+      this.lengths.set(nextItem.trackId, info.lengthSamples);
+      const offs = this.offsets();
+      const nqi = this.queue.get().index;
+      this.model.update((m) => ({
+        ...m,
+        currentTrackStartSeconds: (offs[nqi] ?? 0) / this.rate(),
+        currentTrackDurationSeconds: this.lengthOf(nqi) / this.rate(),
+        durationSeconds: this.totalLength() / this.rate(),
+        current: nextItem,
+      }));
+      this.emit({ t: 'track', item: nextItem });
+      this.applyGain(nextItem);
+      this.setMediaFor(nextItem);
+      const next2 = this.peekPreloadTarget(nqi);
+      if (next2 && isPreloadEngine(engine)) {
+        const ni = await (engine as PreloadEngine).prepareNext(next2.item);
+        if (ni) this.lengths.set(next2.item.trackId, ni.lengthSamples);
+      }
+      this.persist();
+    } catch {
+      this.crossfadeInProgress = false;
+    } finally {
+      this.crossfadeInProgress = false;
+    }
+  }
+
   private currentIndexAt(pos: number): number {
     const offs = this.offsets();
     let idx = 0;
@@ -726,6 +835,7 @@ export class Player {
   async pause(): Promise<void> {
     ++this.transportSeq;
     this.pauseIntent = true;
+    this.crossfadeInProgress = false;
     this.setState('paused');
     this.gate().stop();
     await this.engine?.pause();
@@ -879,6 +989,17 @@ export class Player {
       }));
     }
     this.syncPolicy();
+    this.persist();
+  }
+
+  /** Crossfade length at natural track boundaries. 0 disables (default).
+   *  Only applies where an engine supports it; manual next/previous/seek
+   *  never fade. Persisted in the session snapshot. */
+  setCrossfade(seconds: number): void {
+    const allowed = [0, 4, 8, 12];
+    this.crossfadeSeconds = allowed.includes(seconds) ? seconds : 0;
+    this.model.update((m) => ({ ...m, crossfadeSeconds: this.crossfadeSeconds }));
+    this.emit({ t: 'crossfade', seconds: this.crossfadeSeconds });
     this.persist();
   }
 
