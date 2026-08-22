@@ -8,7 +8,9 @@ SPDX-License-Identifier: BSD-3-Clause
   import { fmtTime } from '../format';
 
   const currentTrackId = $derived($playerModel.current?.track.id);
-  const currentIndex = $derived(queue.get().index);
+  // Reactive: queue.get() is a plain read and would freeze the highlight at
+  // whatever index the list first rendered with (the stuck-highlight bug).
+  const currentIndex = $derived($queue.index);
 </script>
 
 {#if $queue.items.length === 0}
@@ -30,15 +32,14 @@ SPDX-License-Identifier: BSD-3-Clause
             style="text-align:left;width:100%;display:block"
             aria-current={i === currentIndex ? 'true' : undefined}
             onclick={() => {
-              if (i === currentIndex) return;
-              void player.playItem(item);
+              void player.playQueueIndex(i);
             }}
           >
             <div class="queue-tt">
               <span class="num" style="color:var(--ink-faint);font-size:var(--fs-xs)">{i + 1}.</span>
               {' '}{item.track.title}
               {#if i === currentIndex}
-                <span class="muted" style="font-size:var(--fs-xs)"> · {fmtTime($playerModel.positionSeconds)}</span>
+                <span class="muted" style="font-size:var(--fs-xs)"> · {fmtTime(Math.max(0, $playerModel.positionSeconds - $playerModel.currentTrackStartSeconds))}</span>
               {/if}
             </div>
             <div class="queue-art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</div>

@@ -28,7 +28,7 @@ SPDX-License-Identifier: BSD-3-Clause
       <p class="eyebrow">{$playerModel.state}</p>
       <h2 style="font-size:var(--fs-xl)">{item.track.title}</h2>
       <p class="muted">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</p>
-      <p class="muted">{fmtTime($playerModel.positionSeconds)} / {fmtTime($playerModel.durationSeconds)}</p>
+      <p class="muted">{fmtTime(Math.max(0, Math.min($playerModel.currentTrackDurationSeconds, $playerModel.positionSeconds - $playerModel.currentTrackStartSeconds)))} / {fmtTime($playerModel.currentTrackDurationSeconds)}</p>
       <div style="display:flex;gap:var(--space-3);margin-top:var(--space-3)">
         <button class="btn ghost" onclick={() => void player.previous()}>Previous</button>
         <button class="btn" onclick={() => void player.togglePlay()}>

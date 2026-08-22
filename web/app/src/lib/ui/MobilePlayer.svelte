@@ -15,6 +15,8 @@ SPDX-License-Identifier: BSD-3-Clause
   const dur = $derived($playerModel.durationSeconds);
   const trackStart = $derived($playerModel.currentTrackStartSeconds);
   const trackDur = $derived($playerModel.currentTrackDurationSeconds);
+  // Track-relative elapsed, matching the track-scoped seek control.
+  const withinPos = $derived(Math.max(0, Math.min(trackDur, pos - trackStart)));
 
   const wfTrack = $derived<Track | null>(item?.track ?? null);
 </script>
@@ -69,8 +71,8 @@ SPDX-License-Identifier: BSD-3-Clause
       </button>
     </div>
     <div style="display:flex;justify-content:space-between;padding:0 var(--space-4) var(--space-2)">
-      <span class="time smallcaps">{fmtTime(pos)}</span>
-      <span class="time smallcaps">{fmtTime(dur)}</span>
+      <span class="time smallcaps">{fmtTime(withinPos)}</span>
+      <span class="time smallcaps">{fmtTime(trackDur)}</span>
     </div>
   </div>
 {/if}

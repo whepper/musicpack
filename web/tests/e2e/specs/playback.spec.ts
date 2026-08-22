@@ -111,11 +111,70 @@ test('queue holds the album in order and removes items', async ({ page }) => {
   await page.getByRole('button', { name: 'Play album' }).click();
   await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
 
+  // Pause immediately: the fixture tracks are ~1 s long and would play out
+  // (and move the highlight) before the assertions below.
+  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
+
   await page.getByRole('button', { name: 'Open the queue' }).click();
   const items = await page.evaluate(() => window.__musicpack?.queue.get().items.map((i) => i.track.title) ?? []);
   expect(items).toHaveLength(4); // the fixture album has 4 tracks
   expect(items[0]).toContain('Big in Japan');
-  await expect(page.locator('#main').getByRole('button', { name: /Big in Japan/ }).first()).toHaveAttribute('aria-current', 'true');
+  // The highlighted list entry must be the cursor's item (coherence), not a
+  // frozen position.
+  const res = await page.evaluate(() => {
+    const q = window.__musicpack?.queue.get();
+    const containers = [...document.querySelectorAll('#main .queue-item')];
+    return {
+      idx: q?.index ?? -1,
+      markedIdx: containers.findIndex((el) => el.getAttribute('aria-current') === 'true'),
+    };
+  });
+  expect(res.idx).toBeGreaterThanOrEqual(0);
+  expect(res.markedIdx).toBe(res.idx);
+});
+
+test('clicking a queue item keeps the queue and moves the highlight', async ({ page }) => {
+  await page.getByText('Synthetic Test Compilation').first().click();
+  await page.getByRole('button', { name: 'Play album' }).click();
+  await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
+
+  const titles = await page.evaluate(() => window.__musicpack?.queue.get().items.map((i) => i.track.title) ?? []);
+  const n = titles.length;
+  expect(n).toBeGreaterThan(1);
+
+  // Jump to the LAST track via the queue drawer. Do NOT navigate: these
+  // fixture tracks are ~1 s long and the album can play out before a
+  // route change settles.
+  await page.locator('.playerbar').getByRole('button', { name: 'Open the queue' }).click();
+  await expect(page.locator('.queue-panel .queue-item').first()).toBeVisible();
+  await page.locator('.queue-panel .queue-item button', { hasText: titles[n - 1] }).first().click();
+
+  // The queue must survive the click (it used to be replaced by the single
+  // clicked song), the cursor must land on the clicked item...
+  await waitFor(
+    page,
+    async () => {
+      const s = await page.evaluate(() => {
+        const q = window.__musicpack?.queue.get();
+        const m = window.__musicpack?.player.model.get();
+        return { n: q?.items.length ?? 0, idx: q?.index ?? -1, title: m?.current?.track.title ?? null };
+      });
+      return s.n === n && s.idx === n - 1 && s.title === titles[n - 1];
+    },
+    { label: 'clicked queue item plays, queue intact' },
+  );
+
+  // ...and the highlight must follow the cursor exactly (no stuck item 1).
+  const res = await page.evaluate(() => {
+    const q = window.__musicpack?.queue.get();
+    const containers = [...document.querySelectorAll('.queue-panel .queue-item')];
+    const markedIdx = containers.findIndex((el) => el.getAttribute('aria-current') === 'true');
+    return { idx: q?.index ?? -1, count: q?.items.length ?? 0, markedIdx };
+  });
+  expect(res.count).toBe(n);
+  expect(res.idx).toBe(n - 1);
+  expect(res.markedIdx).toBe(n - 1);
 });
 
 test('album seek past the current track switches to a later track', async ({ page }) => {

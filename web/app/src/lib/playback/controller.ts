@@ -226,6 +226,19 @@ export class PlayerController {
     await this._load();
   }
 
+  /** Jumps to an existing queue item without touching the rest of the queue
+   *  (the queue-panel click). Deliberately NOT playItem(): replacing the
+   *  queue would throw away everything the user had lined up. */
+  async playQueueIndex(i: number): Promise<void> {
+    if (!this.queue.at(i) || i === this.queue.get().index) return;
+    this.pauseIntent = false;
+    this.setState('loading');
+    this.mutating = true;
+    this.queue.moveTo(i);
+    this.mutating = false;
+    await this._load();
+  }
+
   async playAlbum(
     release: Parameters<QueueStore['playAlbum']>[0],
     title: string,

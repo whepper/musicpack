@@ -17,6 +17,9 @@ SPDX-License-Identifier: BSD-3-Clause
   const dur = $derived($playerModel.durationSeconds);
   const trackStart = $derived($playerModel.currentTrackStartSeconds);
   const trackDur = $derived($playerModel.currentTrackDurationSeconds);
+  // The seek control (and these labels) describe the CURRENT TRACK, not the
+  // album-spanning timeline the transport position is measured on.
+  const withinPos = $derived(Math.max(0, Math.min(trackDur, pos - trackStart)));
 
   const normLabel = $derived(
     $playerModel.normalizeMode === 'album' ? 'Album' : $playerModel.normalizeMode === 'track' ? 'Track' : 'Off',
@@ -54,7 +57,7 @@ SPDX-License-Identifier: BSD-3-Clause
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5l11 7-11 7z"/></svg>
       </button>
       <div class="progress">
-        <span class="time">{fmtTime(pos)}</span>
+        <span class="time">{fmtTime(withinPos)}</span>
         {#if wfTrack && wfTrack.waveform}
           <WaveformSeek
             track={wfTrack}
@@ -80,7 +83,7 @@ SPDX-License-Identifier: BSD-3-Clause
             disabled={!item}
           >
         {/if}
-        <span class="time">{fmtTime(dur)}</span>
+        <span class="time">{fmtTime(trackDur)}</span>
       </div>
     </div>
 

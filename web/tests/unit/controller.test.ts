@@ -577,6 +577,29 @@ describe('PlayerController', () => {
     expect(b.seeks[b.seeks.length - 1]).toBe(0); // within-track seek to sample 0
   });
 
+  it('playQueueIndex moves within the queue without collapsing it', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'Test Album', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    expect(queue.get().items.length).toBe(3);
+
+    await player.playQueueIndex(2);
+    await flush();
+    // the queue is preserved, the cursor moved, and the target track opened
+    expect(queue.get().items.length).toBe(3);
+    expect(queue.get().index).toBe(2);
+    expect(player.model.get().current?.track.title).toBe('T3');
+    expect(b.opened).toContain('/api/v1/tracks/3/audio');
+
+    // clicking the already-current item does not reload anything
+    const opens = b.opened.length;
+    await player.playQueueIndex(2);
+    await flush();
+    expect(b.opened.length).toBe(opens);
+  });
+
   it('teardown stops playback, disposes the backend and clears player state', async () => {
     const { player, getBackend } = make();
     await player.playAlbum(release(9, ['T1']), 'Test Album', 'Artist');
