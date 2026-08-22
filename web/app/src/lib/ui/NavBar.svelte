@@ -6,7 +6,10 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import { session, router } from '../bootstrap';
 
-  const route = $derived(router.route);
+  // Subscribe to the store; a plain router.get() read would freeze the
+  // underline on whichever page the bar first rendered with.
+  const routeStore = router.route;
+  const name = $derived($routeStore.name);
 </script>
 
 <header class="topnav">
@@ -15,15 +18,15 @@ SPDX-License-Identifier: BSD-3-Clause
     <a
       class="navlink"
       href="/albums"
-      aria-current={route.get().name === 'albums' || route.get().name === 'album' ? 'page' : undefined}>Albums</a>
+      aria-current={name === 'albums' || name === 'album' ? 'page' : undefined}>Albums</a>
     <a
       class="navlink"
       href="/artists"
-      aria-current={route.get().name === 'artists' || route.get().name === 'artist' ? 'page' : undefined}>Artists</a>
+      aria-current={name === 'artists' || name === 'artist' ? 'page' : undefined}>Artists</a>
     <a
       class="navlink"
       href="/queue"
-      aria-current={route.get().name === 'queue' ? 'page' : undefined}>Now Playing</a>
+      aria-current={name === 'queue' ? 'page' : undefined}>Now Playing</a>
   </nav>
   <div style="margin-left:auto;display:flex;align-items:center;gap:var(--space-3)">
     <button class="smallcaps" onclick={() => void session.logout()}>Sign out</button>

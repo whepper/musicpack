@@ -83,6 +83,13 @@ test('nav-bar navigation keeps playback alive (SPA, no full reload)', async ({ p
   const n = await page.evaluate(() => window.__musicpack?.queue.get().items.length ?? 0);
   expect(n).toBeGreaterThan(0);
   expect((await playerState(page)).currentTitle).toBeTruthy();
+
+  // The nav underline must follow the route (it used to freeze on Albums).
+  await expect(page.getByRole('link', { name: 'Artists' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('link', { name: 'Albums' })).not.toHaveAttribute('aria-current', 'page');
+  await page.getByRole('link', { name: 'Now Playing' }).click();
+  await waitFor(page, async () => page.url().includes('/queue'), { label: '/queue reached' });
+  await expect(page.getByRole('link', { name: 'Now Playing' })).toHaveAttribute('aria-current', 'page');
 });
 
 test('an invalid session returns to the sign-in screen (re-auth)', async ({ page }) => {
