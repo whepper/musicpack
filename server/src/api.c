@@ -663,8 +663,9 @@ handle_artist_detail(mp_library *lib, long long id, unsigned int *st)
     mp_json *o = mp_json_obj();
     int found = 0;
 
-    if (sqlite3_prepare_v2(db, "SELECT id, name FROM artists WHERE id = ?1",
-                           -1, &a, 0) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+            "SELECT id, name, sort_name, musicbrainz_id FROM artists"
+            " WHERE id = ?1", -1, &a, 0) != SQLITE_OK) {
         mp_json_free(o);
         *st = 500;
         return error_response(500, "internal", "query failed");
@@ -673,6 +674,8 @@ handle_artist_detail(mp_library *lib, long long id, unsigned int *st)
     if (sqlite3_step(a) == SQLITE_ROW) {
         mp_json_int(o, "id", sqlite3_column_int64(a, 0));
         mp_json_str(o, "name", col_text(a, 1));
+        mp_json_str_opt(o, "sortName", col_text(a, 2));
+        mp_json_str_opt(o, "musicbrainzId", col_text(a, 3));
         found = 1;
     }
     sqlite3_finalize(a);

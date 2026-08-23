@@ -88,6 +88,8 @@ append_artists(musicpack_artist **arr, size_t *count, const musicpack_tag **vals
     for (i = 0; i < n; i++) {
         na[base + i].name = strdup(vals[i]->value);
         na[base + i].role = strdup(role);
+        na[base + i].musicbrainz_id = 0;
+        na[base + i].sort_name = 0;
         if (na[base + i].name == 0 || na[base + i].role == 0) {
             if (na[base + i].name != 0) free(na[base + i].name);
             if (na[base + i].role != 0) free(na[base + i].role);

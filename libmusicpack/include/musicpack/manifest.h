@@ -62,6 +62,8 @@ extern "C" {
 typedef struct musicpack_artist {
     char *name; ///< required
     char *role; ///< optional ("main", "featuring", ...), may be NULL
+    char *musicbrainz_id; ///< optional artist MusicBrainz id (identity hint)
+    char *sort_name;      ///< optional sort name (e.g. "Bowie, David")
 } musicpack_artist;
 
 /// A referenced object in the package (manifest-relative path + required hash).

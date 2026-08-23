@@ -220,7 +220,15 @@ static const char *const mp_migrations[] = {
     tables are scanned by artist_id for artist listing/detail/visibility
     queries, and neither had an index. */
 ("CREATE INDEX group_artists_artist_idx ON group_artists(artist_id);"
- "CREATE INDEX track_artists_artist_idx ON track_artists(artist_id);")
+ "CREATE INDEX track_artists_artist_idx ON track_artists(artist_id);"),
+
+/* 7 -> 8: optional MusicBrainz anchor for artists (Phase 2A). Nullable
+     reference/enrichment column; never participates in package or library
+     identity keys. Partial unique index: at most one artist per MBID. The
+     name UNIQUE NOCASE constraint is deliberately untouched. */
+("ALTER TABLE artists ADD COLUMN musicbrainz_id TEXT;"
+ "CREATE UNIQUE INDEX artists_mbid_idx ON artists(musicbrainz_id)"
+ " WHERE musicbrainz_id IS NOT NULL;")
 };
 
 const char *const *

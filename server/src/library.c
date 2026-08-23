@@ -5,6 +5,7 @@
   (BSD 3-clause, see library.h)
 */
 #include "library.h"
+#include "log.h"
 #include "mime.h"
 #include "random.h"
 
@@ -304,31 +305,168 @@ mp_library_package_sweep(mp_library *lib, const char *last_scan)
 
 /* ---- hierarchy writes --------------------------------------------------- */
 
+/* Phase 2A artist resolution (content-anchored first-write-wins):
+     1. valid credit MBID already anchored  -> reuse that row, no text writes
+     2. exact-case name, then NOCASE name   -> reuse; adopt MBID into an
+        anchor-less row; keep a conflicting anchor + warn; fill NULL sort name
+     3. otherwise insert. Names are never rewritten; anchors are never
+     overwritten. Role never affects resolution. */
 long long
-mp_library_upsert_artist(mp_library *lib, const char *name)
+mp_library_upsert_artist(mp_library *lib, const musicpack_artist *credit)
 {
-    sqlite3_stmt *st = stmt_prepare(lib,
-        "INSERT INTO artists(name) VALUES (?1) ON CONFLICT(name) DO NOTHING");
     sqlite3 *db = mp_db_sqlite(lib->db);
-    long long id = 0;
-    if (st == 0)
-        return -1;
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-    /* ON CONFLICT DO NOTHING returns SQLITE_DONE even on a no-op, so only
-       trust last_insert_rowid() when a row was actually inserted. */
-    if (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(db) > 0)
-        id = sqlite3_last_insert_rowid(db);
-    sqlite3_finalize(st);
-    if (id == 0) {
-        st = stmt_prepare(lib, "SELECT id FROM artists WHERE name = ?1");
+    const char *mbid = credit->musicbrainz_id;
+    sqlite3_stmt *st;
+    long long id = -1;
+
+    if (mbid != 0 && !mp_identity_valid_mbid(mbid)) {
+        MP_LOGD("artist '%s': non-canonical musicbrainz id ignored",
+                credit->name);
+        mbid = 0;
+    }
+
+    /* 1. MBID anchor: id preserved; display name and anchor never touched;
+       sort name is filled if empty (P2A.7: "sort_name filled if empty") */
+    if (mbid != 0) {
+        int fill_sort = 0;
+        st = stmt_prepare(lib,
+            "SELECT id, sort_name FROM artists WHERE musicbrainz_id = ?1");
         if (st == 0)
             return -1;
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(st) == SQLITE_ROW)
+        sqlite3_bind_text(st, 1, mbid, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
             id = sqlite3_column_int64(st, 0);
+            fill_sort = credit->sort_name != 0 &&
+                        sqlite3_column_text(st, 1) == 0;
+        }
         sqlite3_finalize(st);
+        if (id > 0) {
+            if (fill_sort) {
+                st = stmt_prepare(lib,
+                    "UPDATE artists SET sort_name = ?2 WHERE id = ?1");
+                if (st == 0)
+                    return -1;
+                sqlite3_bind_int64(st, 1, id);
+                sqlite3_bind_text(st, 2, credit->sort_name, -1,
+                                  SQLITE_TRANSIENT);
+                if (sqlite3_step(st) != SQLITE_DONE) {
+                    sqlite3_finalize(st);
+                    return -1;
+                }
+                sqlite3_finalize(st);
+            }
+            return id;
+        }
     }
-    return id;
+
+    /* 2. exact-case (binary) name match, then the legacy NOCASE merge.
+       Column text is only read while the matched statement is stepped. */
+    {
+        int found = 0, adopt_mbid = 0, fill_sort = 0, conflict = 0;
+        char stored_mbid[64];
+
+        stored_mbid[0] = '\0';
+        st = stmt_prepare(lib,
+            "SELECT id, musicbrainz_id, sort_name FROM artists"
+            " WHERE name = ?1 COLLATE BINARY");
+        if (st == 0)
+            return -1;
+        sqlite3_bind_text(st, 1, credit->name, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            const char *sm = (const char *) sqlite3_column_text(st, 1);
+            found = 1;
+            id = sqlite3_column_int64(st, 0);
+            snprintf(stored_mbid, sizeof stored_mbid, "%s", sm != 0 ? sm : "");
+            if (mbid != 0) {
+                if (sm == 0)
+                    adopt_mbid = 1;
+                else if (strcmp(sm, mbid) != 0)
+                    conflict = 1;
+            }
+            fill_sort = credit->sort_name != 0 &&
+                        sqlite3_column_text(st, 2) == 0;
+        }
+        sqlite3_finalize(st);
+
+        if (!found) {
+            st = stmt_prepare(lib,
+                "SELECT id, musicbrainz_id, sort_name FROM artists"
+                " WHERE name = ?1 COLLATE NOCASE LIMIT 1");
+            if (st == 0)
+                return -1;
+            sqlite3_bind_text(st, 1, credit->name, -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                const char *sm = (const char *) sqlite3_column_text(st, 1);
+                found = 1;
+                id = sqlite3_column_int64(st, 0);
+                snprintf(stored_mbid, sizeof stored_mbid, "%s",
+                         sm != 0 ? sm : "");
+                if (mbid != 0) {
+                    if (sm == 0)
+                        adopt_mbid = 1;
+                    else if (strcmp(sm, mbid) != 0)
+                        conflict = 1;
+                }
+                fill_sort = credit->sort_name != 0 &&
+                            sqlite3_column_text(st, 2) == 0;
+            }
+            sqlite3_finalize(st);
+        }
+
+        /* 3. adopt / fill / warn on the matched row (never rewrite) */
+        if (found && id > 0) {
+            if (adopt_mbid) {
+                st = stmt_prepare(lib,
+                    "UPDATE artists SET musicbrainz_id = ?2 WHERE id = ?1");
+                if (st == 0)
+                    return -1;
+                sqlite3_bind_int64(st, 1, id);
+                sqlite3_bind_text(st, 2, mbid, -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(st) != SQLITE_DONE) {
+                    sqlite3_finalize(st);
+                    return -1;
+                }
+                sqlite3_finalize(st);
+            }
+            if (fill_sort) {
+                st = stmt_prepare(lib,
+                    "UPDATE artists SET sort_name = ?2 WHERE id = ?1");
+                if (st == 0)
+                    return -1;
+                sqlite3_bind_int64(st, 1, id);
+                sqlite3_bind_text(st, 2, credit->sort_name, -1,
+                                  SQLITE_TRANSIENT);
+                if (sqlite3_step(st) != SQLITE_DONE) {
+                    sqlite3_finalize(st);
+                    return -1;
+                }
+                sqlite3_finalize(st);
+            }
+            if (conflict) {
+                /* the stored anchor wins; the conflicting claim is only
+                   reported, ingest always succeeds */
+                MP_LOGW("artist '%s': conflicting musicbrainz id %s kept %s",
+                        credit->name, stored_mbid, mbid);
+            }
+            return id;
+        }
+    }
+
+    /* 4. insert */
+    st = stmt_prepare(lib,
+        "INSERT INTO artists(name, sort_name, musicbrainz_id)"
+        " VALUES (?1, ?2, ?3)");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_text(st, 1, credit->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, credit->sort_name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, mbid, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return sqlite3_last_insert_rowid(db);
 }
 
 static int
@@ -348,7 +486,7 @@ replace_group_artists(mp_library *lib, long long group_id,
     sqlite3_finalize(st);
     for (i = 0; i < m->album_artist_count; i++) {
         long long artist_id = mp_library_upsert_artist(lib,
-                                                        m->album_artists[i].name);
+                                                        &m->album_artists[i]);
         if (artist_id <= 0)
             return -1;
 
@@ -633,7 +771,7 @@ insert_track_artists(mp_library *lib, long long track_id,
 {
     size_t i;
     for (i = 0; i < t->artist_count; i++) {
-        long long aid = mp_library_upsert_artist(lib, t->artists[i].name);
+        long long aid = mp_library_upsert_artist(lib, &t->artists[i]);
         sqlite3_stmt *st;
         if (aid <= 0)
             return -1;

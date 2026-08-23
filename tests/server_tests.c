@@ -303,10 +303,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 7, "schema version 7");
+    CHECK(db != 0 && mp_db_schema_version(db) == 8, "schema version 8");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 7, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 8, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -650,6 +650,25 @@ scalar_ll(sqlite3 *db, const char *sql, const char *bind_text)
         v = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return v;
+}
+
+/* First text column of the first row ("" when NULL/absent; never NULL). */
+static const char *
+scalar_text(sqlite3 *db, const char *sql, const char *bind_text,
+            char *out, size_t cap)
+{
+    sqlite3_stmt *st;
+    out[0] = '\0';
+    if (sqlite3_prepare_v2(db, sql, -1, &st, 0) != SQLITE_OK)
+        return out;
+    if (bind_text != 0)
+        sqlite3_bind_text(st, 1, bind_text, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *t = sqlite3_column_text(st, 0);
+        snprintf(out, cap, "%s", t != 0 ? (const char *) t : "");
+    }
+    sqlite3_finalize(st);
+    return out;
 }
 
 /* Removes the JSON object block containing \p needle from the file at
@@ -1987,12 +2006,12 @@ test_upgrade_from_v5(void)
     }
     sqlite3_close(raw);
 
-    /* normal writable open must migrate 5 -> 7 automatically */
+    /* normal writable open must migrate 5 -> 8 automatically */
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upgrade: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 7,
-          "upgrade: schema version now 7");
+    CHECK(mp_library_schema_version(lib_h) == 8,
+          "upgrade: schema version now 8");
 
     /* ingesting into the upgraded schema assigns uids; a metadata edit
        re-ingest preserves ids exactly like a fresh database */
@@ -2024,6 +2043,394 @@ test_upgrade_from_v5(void)
 
     mp_library_close(lib_h);
 }
+/* ---------- Phase 2A: artist identity / MusicBrainz anchors ------------- */
+
+/* Credit-anchor identity freeze: adding musicbrainzId/sortName to credits
+   must never change group/release identity keys (frozen tag set), while the
+   package fingerprint (whole-manifest hash) legitimately changes. */
+static void
+test_identity_mbid_freeze(const char *ref)
+{
+    char mpath[4096];
+    char gk1[MP_ID_KEY_MAX], gk2[MP_ID_KEY_MAX];
+    char rk1[MP_ID_KEY_MAX], rk2[MP_ID_KEY_MAX];
+    char fp1[MP_ID_KEY_MAX], fp2[MP_ID_KEY_MAX];
+    musicpack_manifest *m;
+    char *json;
+    size_t i;
+
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", ref);
+    json = read_file(mpath);
+    CHECK(json != 0, "freeze: read manifest");
+    if (json == 0)
+        return;
+    m = musicpack_manifest_parse(json, 0);
+    free(json);
+    CHECK(m != 0, "freeze: parse manifest");
+    if (m == 0)
+        return;
+
+    CHECK(mp_identity_group_key(m, gk1, sizeof gk1) == MUSICPACK_OK &&
+          mp_identity_release_key(m, rk1, sizeof rk1) == MUSICPACK_OK &&
+          mp_identity_package_fingerprint(m, fp1, sizeof fp1)
+              == MUSICPACK_OK,
+          "freeze: baseline identity computed");
+
+    for (i = 0; i < m->album_artist_count; i++) {
+        m->album_artists[i].musicbrainz_id =
+            strdup("5441c29d-3602-4898-b1a1-b77fa23b8e50");
+        m->album_artists[i].sort_name = strdup("Some, Sortname");
+    }
+
+    CHECK(mp_identity_group_key(m, gk2, sizeof gk2) == MUSICPACK_OK &&
+          mp_identity_release_key(m, rk2, sizeof rk2) == MUSICPACK_OK &&
+          strcmp(gk1, gk2) == 0 && strcmp(rk1, rk2) == 0,
+          "freeze: credit mbids never enter identity keys");
+    CHECK(mp_identity_package_fingerprint(m, fp2, sizeof fp2)
+              == MUSICPACK_OK && strcmp(fp1, fp2) != 0,
+          "freeze: fingerprint still tracks manifest content");
+    musicpack_manifest_free(m);
+}
+
+/* The Phase 2A matching matrix: MBID anchor -> exact-case name -> NOCASE
+   name -> insert, with first-write-wins enrichment and conservative
+   conflict handling. */
+static void
+test_artist_identity_mbid(void)
+{
+#define MBID_A "01809552-4f22-4c07-888b-8c1baed05b07"
+#define MBID_B "2c7bd3f1-9a26-4e5f-8a63-39f1a7f04e64"
+#define MBID_C "3d8ce4a2-0b37-4f60-9b74-40a2b8e15f75"
+    char lib[4096], dbpath[4096], pkgA[4096], mpathA[4096];
+    char pkgB[4096], pkgC[4096], pkgD[4096], pkgE[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long a1, b1, track1;
+    char txt[128];
+
+    snprintf(lib, sizeof lib, "%s/mbidlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/mbid.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkgA, sizeof pkgA, "%s/A.mpack", lib);
+    copy_tree(g_ref_mpc, pkgA);
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "mbid: open db");
+    db = mp_library_sqlite(lib_h);
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "mbid: baseline scan");
+
+    /* T1: anchor-less artists resolve by name and stay stable */
+    a1 = scalar_ll(db, "SELECT id FROM artists WHERE name = ?1", "Alphaville");
+    b1 = scalar_ll(db, "SELECT id FROM artists WHERE name = ?1", "Bleachers");
+    track1 = scalar_ll(db,
+        "SELECT id FROM tracks WHERE title = ?1", "Alphaville - Big in Japan");
+    CHECK(a1 > 0 && b1 > 0 && track1 > 0, "mbid: baseline artists captured");
+    scalar_text(db, "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+                "Alphaville", txt, sizeof txt);
+    CHECK(txt[0] == '\0', "mbid: fresh artists carry no anchor");
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 0 && res.updated == 0 &&
+          scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Alphaville") == a1,
+          "mbid: anchor-less rescan is a stable no-op");
+
+    /* T2: an existing artist adopts a manifest-supplied MBID, ids stable */
+    snprintf(mpathA, sizeof mpathA, "%s/manifest.json", pkgA);
+    replace_in_file(mpathA, "\"name\": \"Alphaville\"",
+                    "\"name\": \"Alphaville\","
+                    " \"musicbrainzId\": \"" MBID_A "\"");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.updated == 1, "mbid: anchor edit ingests as update");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Alphaville") == a1,
+          "mbid: adopting artist keeps its id");
+    scalar_text(db, "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+                "Alphaville", txt, sizeof txt);
+    CHECK(strcmp(txt, MBID_A) == 0, "mbid: anchor adopted into existing row");
+    CHECK(scalar_ll(db, "SELECT id FROM tracks WHERE title = ?1",
+                    "Alphaville - Big in Japan") == track1,
+          "mbid: enrichment does not re-key tracks");
+
+    /* T3: same MBID, changed display name -> MBID precedence, name
+       first-wins, sort filled-if-empty; T10: roles round-trip */
+    snprintf(pkgB, sizeof pkgB, "%s/B.mpack", lib);
+    copy_tree(g_ref_mpc, pkgB);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkgB);
+        replace_in_file(mpath, "\"title\": \"Synthetic Test Compilation\"",
+                        "\"title\": \"Anchored Editions Vol 1\"");
+        replace_in_file(mpath, "\"name\": \"Alphaville\"",
+                        "\"name\": \"Alphaville Project\","
+                        " \"musicbrainzId\": \"" MBID_A "\","
+                        " \"sortName\": \"Alphaville, sortkey\"");
+        replace_in_file(mpath, "\"name\": \"Bleachers\"",
+                        "\"name\": \"Bleachers\", \"role\": \"featured\","
+                        " \"musicbrainzId\": \"" MBID_B "\"");
+    }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "mbid: renamed-credit package added");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE musicbrainz_id = ?1",
+                    MBID_A) == a1,
+          "mbid: changed display name resolves via anchor");
+    CHECK(scalar_ll(db, "SELECT COUNT(*) FROM artists WHERE name = ?1",
+                    "Alphaville Project") == 0,
+          "mbid: display name never rewritten (first-write-wins)");
+    CHECK(strcmp(scalar_text(db, "SELECT sort_name FROM artists WHERE name = ?1",
+                             "Alphaville", txt, sizeof txt),
+                 "Alphaville, sortkey") == 0,
+          "mbid: sort name filled when empty");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Bleachers") == b1 &&
+          strcmp(scalar_text(db,
+              "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+              "Bleachers", txt, sizeof txt), MBID_B) == 0,
+          "mbid: name-matched row adopts anchor");
+    CHECK(strcmp(scalar_text(db,
+        "SELECT ga.role FROM group_artists ga"
+        " JOIN release_groups g ON g.id = ga.group_id"
+        " WHERE g.title = ?1 AND ga.position = 1",
+        "Anchored Editions Vol 1", txt, sizeof txt), "featured") == 0,
+        "mbid: credit roles round-trip with anchors present");
+
+    /* T4/T7/TW: same name, conflicting MBID -> conservative keep + exactly
+       one warning per conflict; ingest succeeds */
+    snprintf(pkgC, sizeof pkgC, "%s/C.mpack", lib);
+    copy_tree(g_ref_mpc, pkgC);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkgC);
+        replace_in_file(mpath, "\"title\": \"Synthetic Test Compilation\"",
+                        "\"title\": \"Conflict Editions Vol 1\"");
+        replace_in_file(mpath, "\"name\": \"Bleachers\"",
+                        "\"name\": \"Bleachers\","
+                        " \"musicbrainzId\": \"" MBID_C "\"");
+    }
+#ifdef _WIN32
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "mbid: conflicting-mbid package added");
+#else
+    {
+        char wlog[4096];
+        int saved, wf;
+        int conflicts = 0;
+        fflush(stderr);
+        saved = dup(fileno(stderr));
+        snprintf(wlog, sizeof wlog, "%s/warn.log", lib);
+        wf = open(wlog, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        CHECK(saved >= 0 && wf >= 0, "mbid: stderr capture set up");
+        if (saved >= 0 && wf >= 0) {
+            dup2(wf, fileno(stderr));
+            CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0)
+                      == MUSICPACK_OK && res.added == 1,
+                  "mbid: conflicting-mbid package added");
+            fflush(stderr);
+            dup2(saved, fileno(stderr));
+            close(saved);
+            close(wf);
+        } else {
+            if (saved >= 0)
+                close(saved);
+            if (wf >= 0)
+                close(wf);
+            CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0)
+                      == MUSICPACK_OK && res.added == 1,
+                  "mbid: conflicting-mbid package added");
+        }
+        if (wf >= 0) {
+            char *log = read_file(wlog);
+            char *hit;
+            if (log != 0) {
+                hit = strstr(log, "conflicting musicbrainz id");
+                while (hit != 0) {
+                    conflicts++;
+                    hit = strstr(hit + 1, "conflicting musicbrainz id");
+                }
+                free(log);
+            }
+            CHECK(conflicts == 1,
+                  "mbid: conflicting anchor warns exactly once");
+        }
+    }
+#endif
+    CHECK(scalar_ll(db, "SELECT COUNT(*) FROM artists WHERE name = ?1",
+                    "Bleachers") == 1,
+          "mbid: conflicting mbid never forks a second row");
+    CHECK(strcmp(scalar_text(db,
+        "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+        "Bleachers", txt, sizeof txt), MBID_B) == 0,
+        "mbid: stored anchor survives a conflicting claim");
+    CHECK(scalar_ll(db,
+        "SELECT ga.artist_id FROM group_artists ga"
+        " JOIN release_groups g ON g.id = ga.group_id"
+        " WHERE g.title = ?1 AND ga.position = 1",
+        "Conflict Editions Vol 1") == b1,
+        "mbid: conflicting credit still binds to the existing row");
+
+    /* T5: case-only difference -> exact-case miss, NOCASE reuse */
+    snprintf(pkgD, sizeof pkgD, "%s/D.mpack", lib);
+    copy_tree(g_ref_mpc, pkgD);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkgD);
+        replace_in_file(mpath, "\"title\": \"Synthetic Test Compilation\"",
+                        "\"title\": \"Case Editions Vol 1\"");
+        replace_in_file(mpath, "\"name\": \"Alphaville\"",
+                        "\"name\": \"ALPHAVILLE\"");
+    }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "mbid: case-variant package added");
+    CHECK(scalar_ll(db, "SELECT COUNT(*) FROM artists"
+                        " WHERE name = ?1 COLLATE NOCASE", "alphaville") == 1,
+          "mbid: case-only credit merges to the existing row");
+    CHECK(scalar_ll(db,
+        "SELECT ga.artist_id FROM group_artists ga"
+        " JOIN release_groups g ON g.id = ga.group_id"
+        " WHERE g.title = ?1 AND ga.position = 0",
+        "Case Editions Vol 1") == a1,
+        "mbid: case-only credit binds to the merged artist");
+
+    /* T11: Various Artists / compilation-style credits stay plain
+       name-keyed artists; mixed anchored/unanchored credits in one package */
+    snprintf(pkgE, sizeof pkgE, "%s/E.mpack", lib);
+    copy_tree(g_ref_mpc, pkgE);
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkgE);
+        replace_in_file(mpath, "\"title\": \"Synthetic Test Compilation\"",
+                        "\"title\": \"Various Editions Vol 1\"");
+        replace_in_file(mpath, "\"name\": \"Alphaville\"",
+                        "\"name\": \"Alphaville\","
+                        " \"musicbrainzId\": \"" MBID_A "\"");
+        replace_in_file(mpath, "\"name\": \"Bleachers\"",
+                        "\"name\": \"Various Artists\"");
+    }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "mbid: various-artists package added");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE musicbrainz_id = ?1",
+                    MBID_A) == a1,
+          "mbid: anchor reused across groups");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Various Artists") > 0,
+          "mbid: Various Artists credit is an ordinary artist");
+
+    /* non-canonical MBID strings are treated as absent (never anchored) */
+    {
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkgA);
+        replace_in_file(mpath, MBID_A, "not-a-uuid");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+              res.updated == 1, "mbid: non-canonical anchor edit ingests");
+        CHECK(strcmp(scalar_text(db,
+            "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+            "Alphaville", txt, sizeof txt), MBID_A) == 0,
+            "mbid: non-canonical claim never overwrites the anchor");
+    }
+
+    mp_library_close(lib_h);
+#undef MBID_A
+#undef MBID_B
+#undef MBID_C
+}
+
+/* Migration 8 against a real pre-P2A (v7) database with data: ids must
+   survive, the new column starts NULL, the partial index exists, and
+   anchor resolution works on the upgraded schema. */
+static void
+test_upgrade_from_v7(void)
+{
+    char dbpath[4096], lib[4096], pkg[4096];
+    sqlite3 *raw;
+    const char *const *migrations = mp_schema_migrations();
+    int i;
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    char txt[128];
+
+    snprintf(dbpath, sizeof dbpath, "%s/upg-v7.db", g_tmpdir);
+    CHECK(sqlite3_open(dbpath, &raw) == SQLITE_OK, "upg7: create raw db");
+    CHECK(sqlite3_exec(raw,
+        "CREATE TABLE schema_version ("
+        "  version INTEGER PRIMARY KEY,"
+        "  applied_at TEXT NOT NULL);", 0, 0, 0) == SQLITE_OK,
+        "upg7: schema_version table");
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO schema_version(version, applied_at)"
+        " VALUES (0, datetime('now'));", 0, 0, 0) == SQLITE_OK,
+        "upg7: stamp version 0");
+    for (i = 0; i < 7; i++) {
+        char sql[128];
+        snprintf(sql, sizeof sql,
+                 "UPDATE schema_version SET version=%d, applied_at="
+                 "datetime('now');", i + 1);
+        CHECK(sqlite3_exec(raw, migrations[i], 0, 0, 0) == SQLITE_OK,
+              "upg7: apply migration");
+        CHECK(sqlite3_exec(raw, sql, 0, 0, 0) == SQLITE_OK,
+              "upg7: record new version");
+    }
+    /* real pre-P2A data: an artist credited by a release group */
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO artists(id, name, sort_name)"
+        " VALUES (1, 'Legacy Artist', NULL);"
+        "INSERT INTO release_groups(id, title, group_key)"
+        " VALUES (1, 'Legacy Album', 'legacy-key');"
+        "INSERT INTO group_artists(group_id, artist_id, position, role)"
+        " VALUES (1, 1, 0, 'main');", 0, 0, 0) == SQLITE_OK,
+        "upg7: seed pre-P2A rows");
+    sqlite3_close(raw);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "upg7: migrated open succeeds");
+    db = mp_library_sqlite(lib_h);
+    CHECK(mp_library_schema_version(lib_h) == 8, "upg7: schema version 8");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Legacy Artist") == 1,
+          "upg7: artist row id preserved");
+    CHECK(scalar_text(db, "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+                      "Legacy Artist", txt, sizeof txt)[0] == '\0',
+          "upg7: legacy artist anchor NULL after migration");
+    CHECK(scalar_ll(db,
+        "SELECT COUNT(*) FROM sqlite_master"
+        " WHERE type='index' AND name='artists_mbid_idx'", 0) == 1,
+        "upg7: partial mbid index created");
+    CHECK(scalar_ll(db,
+        "SELECT ga.artist_id FROM group_artists ga"
+        " JOIN release_groups g ON g.id = ga.group_id"
+        " WHERE g.title = ?1", "Legacy Album") == 1,
+        "upg7: join rows resolve after migration");
+
+    /* ingest + anchor adoption work on the upgraded schema */
+    snprintf(lib, sizeof lib, "%s/upg7lib", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/Upg7Pkg.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "upg7: ingest into migrated db");
+    {
+        long long before = scalar_ll(db,
+            "SELECT id FROM artists WHERE name = ?1", "Alphaville");
+        char mpath[4096];
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+        replace_in_file(mpath, "\"name\": \"Alphaville\"",
+                        "\"name\": \"Alphaville\","
+                        " \"musicbrainzId\":"
+                        " \"01809552-4f22-4c07-888b-8c1baed05b07\"");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "upg7: anchor rescan ok");
+        CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                        "Alphaville") == before &&
+              strcmp(scalar_text(db,
+                  "SELECT musicbrainz_id FROM artists WHERE name = ?1",
+                  "Alphaville", txt, sizeof txt),
+                     "01809552-4f22-4c07-888b-8c1baed05b07") == 0,
+              "upg7: anchor adopted in place on upgraded schema");
+    }
+
+    mp_library_close(lib_h);
+}
+
 
 int
 main(int argc, char **argv)
@@ -2050,6 +2457,7 @@ main(int argc, char **argv)
     test_range();
     test_migrations();
     test_identity(g_ref_mpc);
+    test_identity_mbid_freeze(g_ref_mpc);
     test_mime();
     test_tokens();
     test_sessions();
@@ -2057,8 +2465,10 @@ main(int argc, char **argv)
     test_scanner();
     test_reingest_assets();
     test_reingest_preserves_ids();
+    test_artist_identity_mbid();
     test_stable_uid_and_indexes();
     test_upgrade_from_v5();
+    test_upgrade_from_v7();
     test_ingest_busy_rollback();
     test_ownership_conflict();
     test_conflict_survives_verify();

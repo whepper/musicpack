@@ -224,6 +224,10 @@ parse_artists(cJSON *arr, musicpack_artist **out, size_t *count, musicpack_statu
             return 0;
         if (!get_opt_string(item, "role", &a->role, status))
             return 0;
+        if (!get_opt_string(item, "musicbrainzId", &a->musicbrainz_id, status))
+            return 0;
+        if (!get_opt_string(item, "sortName", &a->sort_name, status))
+            return 0;
         i++;
     }
     *count = (size_t) i;
@@ -904,6 +908,8 @@ musicpack_manifest_clear(musicpack_manifest *m)
     for (i = 0; i < m->album_artist_count; i++) {
         free(m->album_artists[i].name);
         free(m->album_artists[i].role);
+        free(m->album_artists[i].musicbrainz_id);
+        free(m->album_artists[i].sort_name);
     }
     free(m->album_artists);
     free(m->release_type);
@@ -939,6 +945,8 @@ musicpack_manifest_clear(musicpack_manifest *m)
             for (a = 0; a < tr->artist_count; a++) {
                 free(tr->artists[a].name);
                 free(tr->artists[a].role);
+                free(tr->artists[a].musicbrainz_id);
+                free(tr->artists[a].sort_name);
             }
             free(tr->artists);
             free(tr->isrc);
@@ -1005,9 +1013,16 @@ artists_to_json(const musicpack_artist *artists, size_t count)
     size_t i;
     for (i = 0; i < count; i++) {
         cJSON *o = cJSON_CreateObject();
+        /* canonical credit key order is alphabetical:
+           musicbrainzId, name, role, sortName */
+        if (artists[i].musicbrainz_id != 0)
+            cJSON_AddStringToObject(o, "musicbrainzId",
+                                    artists[i].musicbrainz_id);
         cJSON_AddStringToObject(o, "name", artists[i].name);
         if (artists[i].role != 0)
             cJSON_AddStringToObject(o, "role", artists[i].role);
+        if (artists[i].sort_name != 0)
+            cJSON_AddStringToObject(o, "sortName", artists[i].sort_name);
         cJSON_AddItemToArray(arr, o);
     }
     return arr;

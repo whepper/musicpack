@@ -24,7 +24,9 @@
             "required": ["name"],
             "properties": {
               "name": { "type": "string", "minLength": 1 },
-              "role": { "type": "string" }
+              "role": { "type": "string" },
+              "musicbrainzId": { "type": "string" },
+              "sortName": { "type": "string" }
             }
           }
         },
@@ -145,7 +147,9 @@
                     "required": ["name"],
                     "properties": {
                       "name": { "type": "string", "minLength": 1 },
-                      "role": { "type": "string" }
+                      "role": { "type": "string" },
+                      "musicbrainzId": { "type": "string" },
+                      "sortName": { "type": "string" }
                     }
                   }
                 },

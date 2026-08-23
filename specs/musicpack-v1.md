@@ -121,6 +121,19 @@ are unique across the whole package.
 specific-release metadata; it does not change the package's single-release
 scope or move release identifiers into another block.
 
+Artist credit objects (`album.artists[]` and `media[].tracks[].artists[]`)
+carry `name` (required), optional `role`, and two optional additive fields:
+
+- `musicbrainzId` — the credited artist's MusicBrainz id. An identity
+  *hint* for entity resolution only: it never participates in package,
+  release-group, or release identity keys, and consumers treat absent,
+  empty, or non-canonical values as absent.
+- `sortName` — the credited artist's sort name (e.g. `"Bowie, David"`).
+
+Both are omitted entirely (never `null`) by the canonical serializer when
+absent; canonical credit key order is `musicbrainzId`, `name`, `role`,
+`sortName`.
+
 Array order is canonical manifest order. Consumers preserve the order of
 `media[]` and of each `media[].tracks[]`; `disc` and `track` identify entries
 and validate uniqueness, but do not reorder them. This order is used wherever

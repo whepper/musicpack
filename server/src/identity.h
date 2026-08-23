@@ -79,6 +79,10 @@ musicpack_status mp_identity_group_key(const musicpack_manifest *m,
 musicpack_status mp_identity_release_key(const musicpack_manifest *m,
                                          char *out, size_t cap);
 
+/// 1 when \p s is a canonical MusicBrainz UUID (8-4-4-4-12 hex with
+/// hyphens). Non-conforming values are never trusted as anchors or keys.
+int mp_identity_valid_mbid(const char *s);
+
 #ifdef __cplusplus
 }
 #endif

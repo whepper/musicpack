@@ -132,8 +132,8 @@ prefixed_key(const char *prefix, const char *value, char *out, size_t cap)
 
 /* Canonical MusicBrainz UUID: 8-4-4-4-12 hex digits with hyphens. A
    non-conforming value is not trusted as a global identity authority. */
-static int
-valid_mbid(const char *s)
+int
+mp_identity_valid_mbid(const char *s)
 {
     size_t i, n;
     if (s == 0)
@@ -185,7 +185,7 @@ mp_identity_group_key(const musicpack_manifest *m, char *out, size_t cap)
 
     if (m->musicbrainz_release_group_id != 0 &&
         *m->musicbrainz_release_group_id != '\0' &&
-        valid_mbid(m->musicbrainz_release_group_id)) {
+        mp_identity_valid_mbid(m->musicbrainz_release_group_id)) {
         return prefixed_key("mb:", m->musicbrainz_release_group_id, out, cap);
     }
     buf = (char *) malloc(bufcap);
@@ -235,7 +235,7 @@ mp_identity_release_key(const musicpack_manifest *m, char *out, size_t cap)
 
     if (m->musicbrainz_release_id != 0 &&
         *m->musicbrainz_release_id != '\0' &&
-        valid_mbid(m->musicbrainz_release_id)) {
+        mp_identity_valid_mbid(m->musicbrainz_release_id)) {
         return prefixed_key("mb:", m->musicbrainz_release_id, out, cap);
     }
     buf = (char *) malloc(bufcap);

@@ -115,32 +115,80 @@ musicpack_mb_apply_release(const char *mb_json, musicpack_manifest *m)
         SET_EMPTY(m->original_release_date, jstr(rg, "first-release-date"));
     }
 
-    if (m->album_artist_count == 0) {
-        item = cJSON_GetObjectItemCaseSensitive(rel, "artist-credit");
-        if (cJSON_IsArray(item)) {
+    item = cJSON_GetObjectItemCaseSensitive(rel, "artist-credit");
+    if (cJSON_IsArray(item) && cJSON_GetArraySize(item) > 0) {
+        if (m->album_artist_count == 0) {
             int n = cJSON_GetArraySize(item);
-            if (n > 0) {
-                int k = 0;
-                cJSON *cr;
-                m->album_artists =
-                    (musicpack_artist *) calloc((size_t) n, sizeof *m->album_artists);
-                if (m->album_artists == 0) {
+            int k = 0;
+            cJSON *cr;
+            m->album_artists =
+                (musicpack_artist *) calloc((size_t) n, sizeof *m->album_artists);
+            if (m->album_artists == 0) {
+                st = MUSICPACK_ERR_NOMEM;
+                goto done;
+            }
+            cJSON_ArrayForEach(cr, item) {
+                const char *nm = jstr(cr, "name");
+                const char *mbid = 0, *sortn = 0;
+                cJSON *ar;
+                if (nm == 0)
+                    continue;
+                ar = cJSON_GetObjectItemCaseSensitive(cr, "artist");
+                if (cJSON_IsObject(ar)) {
+                    /* anchors ride along as enrichment hints */
+                    mbid = jstr(ar, "id");
+                    sortn = jstr(ar, "sort-name");
+                }
+                m->album_artists[k].name = strdup(nm);
+                m->album_artists[k].role = strdup("main");
+                if (mbid != 0)
+                    m->album_artists[k].musicbrainz_id = strdup(mbid);
+                if (sortn != 0)
+                    m->album_artists[k].sort_name = strdup(sortn);
+                if (m->album_artists[k].name == 0 ||
+                    m->album_artists[k].role == 0 ||
+                    (mbid != 0 && m->album_artists[k].musicbrainz_id == 0) ||
+                    (sortn != 0 && m->album_artists[k].sort_name == 0)) {
                     st = MUSICPACK_ERR_NOMEM;
                     goto done;
                 }
-                cJSON_ArrayForEach(cr, item) {
-                    const char *nm = jstr(cr, "name");
-                    if (nm == 0)
-                        continue;
-                    m->album_artists[k].name = strdup(nm);
-                    m->album_artists[k].role = strdup("main");
-                    if (m->album_artists[k].name == 0 || m->album_artists[k].role == 0) {
-                        st = MUSICPACK_ERR_NOMEM;
-                        goto done;
+                k++;
+            }
+            m->album_artist_count = (size_t) k;
+        } else {
+            /* existing credits: fill absent anchors from matched
+               artist-credit entries (first-wins, never overwritten) */
+            size_t i;
+            cJSON *cr;
+            cJSON_ArrayForEach(cr, item) {
+                const char *cn = jstr(cr, "name");
+                cJSON *ar = cJSON_GetObjectItemCaseSensitive(cr, "artist");
+                const char *an = cJSON_IsObject(ar) ? jstr(ar, "name") : 0;
+                if (cn == 0 && an == 0)
+                    continue;
+                for (i = 0; i < m->album_artist_count; i++) {
+                    musicpack_artist *a = &m->album_artists[i];
+                    if ((cn != 0 && strcmp(a->name, cn) == 0) ||
+                        (an != 0 && strcmp(a->name, an) == 0)) {
+                        if (a->musicbrainz_id == 0 && cJSON_IsObject(ar) &&
+                            jstr(ar, "id") != 0) {
+                            a->musicbrainz_id = strdup(jstr(ar, "id"));
+                            if (a->musicbrainz_id == 0) {
+                                st = MUSICPACK_ERR_NOMEM;
+                                goto done;
+                            }
+                        }
+                        if (a->sort_name == 0 && cJSON_IsObject(ar) &&
+                            jstr(ar, "sort-name") != 0) {
+                            a->sort_name = strdup(jstr(ar, "sort-name"));
+                            if (a->sort_name == 0) {
+                                st = MUSICPACK_ERR_NOMEM;
+                                goto done;
+                            }
+                        }
+                        break;
                     }
-                    k++;
                 }
-                m->album_artist_count = (size_t) k;
             }
         }
     }

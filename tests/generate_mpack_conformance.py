@@ -117,6 +117,18 @@ def main():
                                     "sha256": HASH(b"back")}]
     add_case(cases, "valid", "unicode", unicode_manifest, unicode_files)
 
+    # ---- credit anchors (Phase 2A: optional musicbrainzId / sortName) ----
+    anchors = base_manifest()
+    anchors["album"]["artists"] = [
+        {"name": "Alpha", "role": "main", "sortName": "Alpha",
+         "musicbrainzId": "5441c29d-3602-4898-b1a1-b77fa23b8e50"},
+        {"name": "Beta"},
+    ]
+    anchors["media"][0]["tracks"][0]["artists"] = [
+        {"name": "Gamma", "musicbrainzId": "70b2a40e-8f4d-4c6b-b6ce-8f1e0a6dc3ba"},
+    ]
+    add_case(cases, "valid", "credit-anchors", anchors, one)
+
     # ---- waveform envelope (peak-rms-u8, 100 ms, -60 dBFS floor) ---------
     # Valid: a track with a correctly-sized .wfm payload (20 bytes for 10 buckets).
     waveform_files = {
@@ -160,6 +172,13 @@ def main():
         "wrong-media-object": lambda m: m.update(media=[42]),
         "wrong-audio-object": lambda m: m["media"][0]["tracks"][0].update(audio=42),
         "wrong-artists-object": lambda m: m["album"].update(artists={}),
+        "bad-credit-mbid-type": lambda m: m["album"]["artists"][0].update(
+            musicbrainzId=123),
+        "bad-credit-sortname-type": lambda m: m["album"]["artists"][0].update(
+            sortName=5),
+        "bad-track-credit-mbid-type": lambda m:
+            m["media"][0]["tracks"][0].update(
+                artists=[{"name": "X", "musicbrainzId": 7}]),
         "bad-identity-enum": lambda m: m.update(identity={"source": "bogus"}),
         "partial-album-loudness": lambda m: m.update(loudness={"albumLUFS": -12}),
         "fractional-track": lambda m: m["media"][0]["tracks"][0].update(track=1.5),
@@ -229,6 +248,10 @@ def main():
         "duplicate-version": raw.replace(b'"version": 1,', b'"version":1,"version":1,'),
         "duplicate-path": raw.replace(b'"path": "audio/01.bin",', b'"path":"audio/01.bin","path":"audio/01.bin",'),
         "duplicate-sha": raw.replace(b'"sha256":', b'"sha256":"' + b'a' * 64 + b'","sha256":', 1),
+        "duplicate-credit-mbid": raw.replace(
+            b'"artists": [{"name": "Tester"}]',
+            b'"artists": [{"name": "Tester", "musicbrainzId": "one",'
+            b' "musicbrainzId": "two"}]'),
     }.items():
         write_raw_manifest(os.path.join(out, name + ".mpack"), content, one)
         cases["invalid_manifest"].append(name)

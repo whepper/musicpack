@@ -358,6 +358,11 @@ def run(base, libdir, demo_dir, t):
     t.ok(st == 200 and len(qart["artists"]) == 1
          and qart["artists"][0]["name"] == "Alphaville",
          "?q= filters artists")
+    st, _, body = get(base, API + f"/artists/{qart['artists'][0]['id']}")
+    adetail = json.loads(body)
+    t.ok(st == 200 and adetail["name"] == "Alphaville"
+         and "musicbrainzId" not in adetail and "sortName" not in adetail,
+         "artist detail omits absent anchor/sort fields")
     st, _, body = get(base, API + "/albums?sort=recent")
     t.ok(st == 200 and len(json.loads(body)["albums"]) >= 1,
          "?sort=recent lists albums")

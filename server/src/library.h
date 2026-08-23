@@ -121,8 +121,13 @@ int mp_library_package_sweep(mp_library *lib, const char *last_scan);
 
 /* ---- hierarchy writes (inside a transaction) -------------------------- */
 
-/// Resolves an artist name to its id, inserting when absent.
-long long mp_library_upsert_artist(mp_library *lib, const char *name);
+/// Resolves a credit (name + optional role/MBID/sort name) to its artist
+/// id, inserting when absent. Phase 2A precedence: valid MBID anchor,
+/// exact-case name, NOCASE name, insert. Anchor-less rows adopt a newly
+/// supplied MBID; existing anchors are never overwritten (conflicts warn);
+/// names are never rewritten; sort_name is filled only when NULL.
+long long mp_library_upsert_artist(mp_library *lib,
+                                   const musicpack_artist *credit);
 
 /// Looks up a release by identity keys without mutating metadata.
 /// Returns 1 and fills \p group_id/\p release_id/\p owner_id (0 if unowned).

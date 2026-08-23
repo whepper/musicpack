@@ -131,7 +131,9 @@ receive a new public id:
 - **Albums (release groups), releases (editions), artists** keep their ids
   for as long as their identity keys match (`group_key`/`release_key`,
   artist name). Artist ids have always been stable in practice (artists
-  are upserted, never deleted).
+  are upserted, never deleted) and since Phase 2A may carry an optional
+  MusicBrainz anchor; the anchor is an enrichment hint and never changes
+  an artist id, nor any package/release identity.
 
 Limits of the guarantee — a new id is issued exactly when an entity is
 genuinely created or destroyed:
@@ -349,6 +351,10 @@ supply a filesystem path.
 ### `GET /api/v1/artists` / `GET /api/v1/artists/{id}`
 
 Artist list (with `albumCount`) and artist detail (with `albums[]`).
+Artist detail additionally carries the optional enrichment fields
+`sortName` and `musicbrainzId`, each omitted entirely (never `null`) when
+the library has no value for them. `musicbrainzId` is a reference for
+external lookups only; it is not part of any identity key.
 
 ## 3. Direct streaming + HTTP Range
 

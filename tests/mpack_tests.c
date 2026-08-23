@@ -355,6 +355,110 @@ test_multidisc(void)
     musicpack_manifest_free(m);
 }
 
+/* ------------------------------------------------------------------ */
+/* credit anchors (Phase 2A: optional musicbrainzId / sortName)        */
+/* ------------------------------------------------------------------ */
+
+static void
+test_credit_anchors(void)
+{
+#define CREDIT_MBID1 "5441c29d-3602-4898-b1a1-b77fa23b8e50"
+#define CREDIT_MBID2 "70b2a40e-8f4d-4c6b-b6ce-8f1e0a6dc3ba"
+    const char *with_anchors =
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"A\",\"artists\":[{"
+        "\"name\":\"David Bowie\",\"role\":\"main\","
+        "\"musicbrainzId\":\"" CREDIT_MBID1 "\","
+        "\"sortName\":\"Bowie, David\"}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"artists\":[{\"name\":\"Brian Eno\","
+        "\"musicbrainzId\":\"" CREDIT_MBID2 "\"}],"
+        "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"}}]}]}";
+    const char *legacy =
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"A\",\"artists\":[{\"name\":\"David Bowie\"}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"}}]}]}";
+    musicpack_manifest *m, *m2;
+    char *json = 0, *json2 = 0;
+
+    m = musicpack_manifest_parse(with_anchors, 0);
+    CHECK(m != 0, "credit anchors parse");
+    if (m != 0) {
+        CHECK(m->album_artist_count == 1 &&
+              m->album_artists[0].musicbrainz_id != 0 &&
+              strcmp(m->album_artists[0].musicbrainz_id, CREDIT_MBID1) == 0,
+              "album credit mbid in model");
+        CHECK(m->album_artists[0].sort_name != 0 &&
+              strcmp(m->album_artists[0].sort_name, "Bowie, David") == 0,
+              "album credit sort name in model");
+        CHECK(m->discs[0].tracks[0].artist_count == 1 &&
+              m->discs[0].tracks[0].artists[0].musicbrainz_id != 0 &&
+              strcmp(m->discs[0].tracks[0].artists[0].musicbrainz_id, CREDIT_MBID2)
+                  == 0,
+              "track credit mbid in model");
+        CHECK(m->discs[0].tracks[0].artists[0].sort_name == 0,
+              "absent track sort name stays NULL");
+
+        CHECK(musicpack_manifest_write(m, &json) == MUSICPACK_OK,
+              "credit anchors write");
+        if (json != 0) {
+            const char *p1 = strstr(json, "\"musicbrainzId\"");
+            const char *p2 = strstr(json, "\"name\"");
+            const char *p3 = strstr(json, "\"role\"");
+            const char *p4 = strstr(json, "\"sortName\"");
+            CHECK(p1 != 0 && p2 != 0 && p3 != 0 && p4 != 0 &&
+                  p1 < p2 && p2 < p3 && p3 < p4,
+                  "canonical credit key order (musicbrainzId,name,role,"
+                  "sortName)");
+        }
+        m2 = musicpack_manifest_parse(json, 0);
+        CHECK(m2 != 0, "written manifest re-parses");
+        if (m2 != 0) {
+            CHECK(musicpack_manifest_write(m2, &json2) == MUSICPACK_OK &&
+                  json2 != 0 && strcmp(json, json2) == 0,
+                  "credit anchors round-trip is deterministic");
+            musicpack_manifest_free(m2);
+        }
+        free(json);
+        free(json2);
+        musicpack_manifest_free(m);
+    }
+
+    m = musicpack_manifest_parse(legacy, 0);
+    CHECK(m != 0, "legacy credits still parse");
+    if (m != 0) {
+        CHECK(m->album_artists[0].musicbrainz_id == 0 &&
+              m->album_artists[0].sort_name == 0,
+              "legacy credits carry no anchors");
+        json = 0;
+        CHECK(musicpack_manifest_write(m, &json) == MUSICPACK_OK &&
+              json != 0 &&
+              strstr(json, "musicbrainzId") == 0 &&
+              strstr(json, "sortName") == 0,
+              "legacy write emits no anchor keys");
+        free(json);
+        musicpack_manifest_free(m);
+    }
+
+    CHECK(musicpack_manifest_parse(
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"A\",\"artists\":[{\"name\":\"X\","
+        "\"musicbrainzId\":123}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA
+        "\"}}]}]}", 0) == 0,
+        "non-string credit musicbrainzId rejected");
+    CHECK(musicpack_manifest_parse(
+        "{\"format\":\"musicpack\",\"version\":1,"
+        "\"album\":{\"title\":\"A\",\"artists\":[{\"name\":\"X\","
+        "\"sortName\":5}]},"
+        "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+        "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA
+        "\"}}]}]}", 0) == 0,
+        "non-string credit sortName rejected");
+}
+
 static void
 test_loudness_parse(void)
 {
@@ -1931,7 +2035,9 @@ test_mb_apply(void)
         "\"barcode\":\"198704979941\","
         "\"release-group\":{\"id\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\","
         "\"primary-type\":\"Compilation\",\"first-release-date\":\"1984-06-01\"},"
-        "\"artist-credit\":[{\"name\":\"Alphaville\",\"joinphrase\":\"\"}],"
+        "\"artist-credit\":[{\"name\":\"Alphaville\",\"joinphrase\":\"\","
+        "\"artist\":{\"id\":\"01809552-4f22-4c07-888b-8c1baed05b07\","
+        "\"name\":\"Alphaville\",\"sort-name\":\"Alphaville\"}}],"
         "\"labels\":[{\"label\":{\"name\":\"Example Records\"},"
         "\"catalog-number\":\"ERCD 001\"}],"
         "\"media\":[{\"format\":\"Digital\",\"position\":1,\"track-count\":1,"
@@ -1968,6 +2074,38 @@ test_mb_apply(void)
 
     CHECK(musicpack_mb_apply_release(MB, &m) == MUSICPACK_OK, "apply release");
     CHECK(strcmp(m.album_title, "Synthetic Test Album") == 0, "title untouched");
+    CHECK(m.album_artists[0].musicbrainz_id != 0 &&
+          strcmp(m.album_artists[0].musicbrainz_id,
+                 "01809552-4f22-4c07-888b-8c1baed05b07") == 0,
+          "existing credit adopts mb anchor from MB");
+    CHECK(m.album_artists[0].sort_name != 0 &&
+          strcmp(m.album_artists[0].sort_name, "Alphaville") == 0,
+          "existing credit adopts sort name from MB");
+    /* first-wins: a pre-existing anchor is never overwritten */
+    free(m.album_artists[0].musicbrainz_id);
+    m.album_artists[0].musicbrainz_id =
+        strdup("99999999-9999-9999-9999-999999999999");
+    CHECK(musicpack_mb_apply_release(MB, &m) == MUSICPACK_OK, "re-apply");
+    CHECK(m.album_artists[0].musicbrainz_id != 0 &&
+          strcmp(m.album_artists[0].musicbrainz_id,
+                 "99999999-9999-9999-9999-999999999999") == 0,
+          "credit mb anchor is first-wins");
+    /* creation path: credits built from artist-credit carry anchors */
+    {
+        musicpack_manifest fresh;
+        memset(&fresh, 0, sizeof fresh);
+        fresh.album_title = strdup("Synthetic Test Album");
+        CHECK(musicpack_mb_apply_release(MB, &fresh) == MUSICPACK_OK,
+              "apply onto artist-less manifest");
+        CHECK(fresh.album_artist_count == 1 &&
+              fresh.album_artists[0].musicbrainz_id != 0 &&
+              strcmp(fresh.album_artists[0].musicbrainz_id,
+                     "01809552-4f22-4c07-888b-8c1baed05b07") == 0,
+              "created credit carries mb anchor");
+        CHECK(fresh.album_artists[0].sort_name != 0,
+              "created credit carries sort name");
+        musicpack_manifest_clear(&fresh);
+    }
     CHECK(strcmp(m.barcode, "198704979941") == 0, "barcode untouched");
     CHECK(m.release.release_date != 0 && strcmp(m.release.release_date, "2016-09-23") == 0,
           "date untouched");
@@ -2126,6 +2264,7 @@ int main(int argc, char **argv)
     test_unknown_field_roundtrip();
     test_manifest_add_new_fields();
     test_multidisc();
+    test_credit_anchors();
     test_loudness_parse();
     test_manifest_hardening();
     test_release_model();
