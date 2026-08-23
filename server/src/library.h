@@ -62,6 +62,9 @@ mp_library *mp_library_open(const char *path, int writable,
                             char *err, size_t errcap);
 void mp_library_close(mp_library *lib);
 sqlite3 *mp_library_sqlite(mp_library *lib);
+
+/** Last SQLite error message for this library's connection (never NULL). */
+const char *mp_library_sqlite_err(mp_library *lib);
 /// Current schema version (for health reporting).
 int mp_library_schema_version(mp_library *lib);
 

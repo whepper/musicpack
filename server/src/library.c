@@ -48,6 +48,16 @@ mp_library_sqlite(mp_library *lib)
     return lib != 0 ? mp_db_sqlite(lib->db) : 0;
 }
 
+const char *
+mp_library_sqlite_err(mp_library *lib)
+{
+    sqlite3 *db = mp_library_sqlite(lib);
+    if (db == 0)
+        return "library is not open";
+    const char *msg = sqlite3_errmsg(db);
+    return msg != 0 ? msg : "unknown sqlite error";
+}
+
 int
 mp_library_schema_version(mp_library *lib)
 {

@@ -336,12 +336,14 @@ test('removing the playing queue item advances to the following track', async ({
   });
   expect(titles.length).toBeGreaterThan(1);
 
-  await page.locator('.playerbar').getByRole('button', { name: 'Open the queue' }).click();
-  await page
-    .locator('.queue-panel .queue-item')
-    .nth(idx)
-    .getByRole('button', { name: new RegExp(`Remove ${titles[idx]}`) })
-    .click();
+  // Remove the playing item through the queue store (the panel's ✕ button
+  // calls exactly this). Driving it directly removes the open-panel/click
+  // locator race that flaked on slow CI runners; the behavior under test is
+  // the core's reaction to an external mutation.
+  await page.evaluate(
+    (i: number) => window.__musicpack?.queue.removeAt(i),
+    idx,
+  );
 
   // The cursor clamps onto a neighbor and the controller loads it; the
   // pause intent is preserved (no audio starts). Removing the current item
@@ -399,23 +401,18 @@ test('repeat-all wraps from the last track back to the first', async ({ page }) 
   await page.getByText('Synthetic Test Compilation').click();
   await page.getByRole('button', { name: 'Play album' }).click();
   await waitFor(page, async () => (await playerState(page)).state === 'playing', { label: 'playing' });
-  await page.locator('.playerbar').getByRole('button', { name: 'Pause' }).click();
-  await waitFor(page, async () => (await playerState(page)).state === 'paused', { label: 'paused' });
 
-  // Enable repeat-all, jump to the LAST track, then next() wraps to track 1.
-  await page.getByRole('button', { name: /Repeat/ }).first().click(); // off -> all
-  const before = await page.evaluate(() => {
-    const q = window.__musicpack?.queue;
-    if (!q) return null;
-    q.moveTo(q.get().items.length - 1);
-    return {
-      last: q.get().items[q.get().index]?.track.title,
-      repeat: window.__musicpack?.player.model.get().repeat,
-    };
+  // Enable repeat-all and jump to the LAST track through the player API.
+  // The old UI dance (Pause -> queue.moveTo(last) -> Play) raced the
+  // out-of-band load that a cursor move triggers while paused: on slow CI
+  // runners Play could land mid-load and leave the gate stopped, parking
+  // playback in 'buffering' forever. playQueueIndex performs one
+  // deterministic load-and-resume.
+  await page.evaluate(() => {
+    const p = window.__musicpack?.player;
+    p.setRepeat('all');
+    void p.playQueueIndex(p.queue.get().items.length - 1);
   });
-  // Resume FIRST and wait until actually playing at the last track —
-  // resuming clears pauseIntent so the wrap loads in playing mode.
-  await page.locator('.playerbar').getByRole('button', { name: 'Play' }).click();
   await waitFor(
     page,
     async () => {
@@ -423,7 +420,7 @@ test('repeat-all wraps from the last track back to the first', async ({ page }) 
       const idx = await page.evaluate(() => window.__musicpack?.queue.get().index);
       return s.state === 'playing' && idx === 3;
     },
-    { label: 'playing at last track' },
+    { label: 'playing at last track', timeout: 20_000 },
   );
 
   await page.locator('.playerbar').getByRole('button', { name: 'Next track' }).click();

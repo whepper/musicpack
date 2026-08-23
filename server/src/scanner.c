@@ -245,7 +245,7 @@ collect_track_ingest(const musicpack_package *pkg, const musicpack_manifest *m,
 static int
 ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
              const char *manifest_sha, const char *last_scan, int verify,
-             mp_scan_result *res)
+             mp_scan_result *res, const char **reason)
 {
     const musicpack_manifest *m = musicpack_package_manifest(pkg);
     char fingerprint[MP_ID_KEY_MAX];
@@ -266,11 +266,16 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
         != MUSICPACK_OK ||
         mp_identity_group_key(m, group_key, sizeof group_key) != MUSICPACK_OK ||
         mp_identity_release_key(m, release_key, sizeof release_key)
-            != MUSICPACK_OK)
+            != MUSICPACK_OK) {
+        if (reason) *reason = "identity key derivation failed";
         return -1;
+    }
 
-    if (mp_library_begin(lib) != 0)
+    if (mp_library_begin(lib) != 0) {
+        if (reason)
+            *reason = mp_library_sqlite_err(lib);
         return -1;
+    }
 
     /* Ownership decision: a package may take ownership of a release's content
        when there is no release yet, when it already owns it, or when the
@@ -299,6 +304,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
     release_id = mp_library_upsert_release(lib, m, group_id, release_key,
                                            take_ownership);
     if (group_id < 0 || release_id < 0) {
+        if (reason)
+            *reason = mp_library_sqlite_err(lib);
         mp_library_rollback(lib);
         return -1;
     }
@@ -318,6 +325,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
                                       fingerprint, manifest_sha, status,
                                       verify_status, last_scan,
                                       last_error) != 0) {
+            if (reason)
+                *reason = mp_library_sqlite_err(lib);
             mp_library_rollback(lib);
             return -1;
         }
@@ -328,6 +337,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
                                            manifest_sha, status, verify_status,
                                            last_scan, last_error);
         if (pkg_id < 0) {
+            if (reason)
+                *reason = mp_library_sqlite_err(lib);
             mp_library_rollback(lib);
             return -1;
         }
@@ -339,6 +350,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
         if (mp_library_replace_release_content(lib, release_id, m, dir, codecs,
                                                codec_count) != 0 ||
             mp_library_release_set_owner(lib, release_id, pkg_id) != 0) {
+            if (reason)
+                *reason = mp_library_sqlite_err(lib);
             free(codecs);
             mp_library_rollback(lib);
             return -1;
@@ -347,6 +360,8 @@ ingest_valid(mp_library *lib, const char *dir, const musicpack_package *pkg,
     }
 
     if (mp_library_commit(lib) != 0) {
+        if (reason)
+            *reason = mp_library_sqlite_err(lib);
         mp_library_rollback(lib);
         return -1;
     }
@@ -546,8 +561,11 @@ process_package(mp_library *lib, const char *dir, const char *last_scan,
         if (progress) progress(ctx, res);
         return 0;
     }
-    if (ingest_valid(lib, dir, pkg, manifest_sha, last_scan, verify, res) != 0) {
-        MP_LOGE("scan: failed to ingest package %s", dir);
+    const char *ingest_reason = 0;
+    if (ingest_valid(lib, dir, pkg, manifest_sha, last_scan, verify, res,
+                     &ingest_reason) != 0) {
+        MP_LOGE("scan: failed to ingest package %s (%s)", dir,
+                ingest_reason ? ingest_reason : "unknown error");
         musicpack_package_close(pkg);
         free(json);
         res->total++;
