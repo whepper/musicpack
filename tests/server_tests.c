@@ -902,10 +902,22 @@ test_reingest_preserves_ids(void)
     CHECK(ID_AUDIO("Big in Japan (2016 remaster)") == a[0] &&
           ID_AUDIO(T2) == a[1] && ID_AUDIO(T3) == a[2] && ID_AUDIO(T4) == a[3],
           "ids: audio object ids preserved across metadata edit");
-    CHECK(scalar_ll(db, "SELECT id FROM assets WHERE kind='artwork'", 0) == art &&
-          scalar_ll(db, "SELECT id FROM assets WHERE kind='booklet'", 0) == bk &&
-          scalar_ll(db, "SELECT id FROM assets WHERE kind='extras'", 0) == ex &&
-          scalar_ll(db, "SELECT MIN(id) FROM assets WHERE kind='lyrics'", 0) == ly,
+    CHECK(scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='artwork' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0) == art &&
+          scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='booklet' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0) == bk &&
+          scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='extras' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0) == ex &&
+          scalar_ll(db,
+        "SELECT MIN(id) FROM assets WHERE kind='lyrics' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0) == ly,
           "ids: asset ids preserved across metadata edit");
     CHECK(scalar_ll(db,
         "SELECT COUNT(*) FROM assets WHERE release_id = "
