@@ -72,3 +72,19 @@ export function collectorLine(opts: {
   }
   return parts.join(' · ');
 }
+
+/** Short readable codec label for the track row. */
+export function codecLabel(codec?: string): string {
+  if (!codec) return '';
+  const lower = codec.toLowerCase();
+  if (lower === 'musepack-sv8' || lower === 'musepack-sv7' || lower === 'musepack')
+    return 'MPC';
+  if (lower === 'flac') return 'FLAC';
+  if (lower === 'wav') return 'WAV';
+  if (lower === 'aiff' || lower === 'aif') return 'AIFF';
+  if (lower === 'mp3') return 'MP3';
+  if (lower === 'aac' || lower === 'm4a') return 'AAC';
+  if (lower === 'ogg' || lower === 'vorbis') return 'OGG';
+  if (lower === 'opus') return 'Opus';
+  return codec.toUpperCase();
+}

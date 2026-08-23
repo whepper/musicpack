@@ -36,9 +36,17 @@ export function tracksOfRelease(release: ReleaseDetail): Track[] {
   return out;
 }
 
-function itemsFor(release: ReleaseDetail, title: string, artist: string): QueueItem[] {
+/** Builds a single web QueueItem for one track of a release. Shared by the
+ *  album builders and the per-track add-to-queue action so item construction
+ *  (the future representation-selection boundary) lives in exactly one place. */
+export function itemForTrack(
+  release: ReleaseDetail,
+  track: Track,
+  title: string,
+  artist: string,
+): QueueItem {
   const artworkUrl = release.artwork[0]?.url;
-  return tracksOfRelease(release).map((track) => ({
+  return {
     // core PlaybackItem fields (identity, source, policy metadata)
     id: `t${track.id}`,
     trackId: track.id,
@@ -61,7 +69,13 @@ function itemsFor(release: ReleaseDetail, title: string, artist: string): QueueI
     track,
     releaseId: release.id,
     albumId: release.album.id,
-  }));
+  };
+}
+
+function itemsFor(release: ReleaseDetail, title: string, artist: string): QueueItem[] {
+  return tracksOfRelease(release).map((track) =>
+    itemForTrack(release, track, title, artist),
+  );
 }
 
 /** Pure builder (M4): constructs web QueueItems for a release without
@@ -108,6 +122,18 @@ export function createQueueStore() {
       const items = itemsFor(release, title, artist);
       if (items.length === 0) throw new Error('This release has no playable tracks.');
       return model.playSequence(items, startIndex);
+    },
+    /** Append a single item to the end of the current queue. */
+    addItem(item: QueueItem): void {
+      model.enqueue(item);
+    },
+    /** Append all tracks of a release to the end of the current queue. */
+    addAlbum(
+      release: ReleaseDetail,
+      title: string,
+      artist: string,
+    ): void {
+      model.enqueueMany(itemsFor(release, title, artist));
     },
   };
 }

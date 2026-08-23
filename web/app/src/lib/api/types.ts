@@ -22,6 +22,7 @@ export interface AlbumSummary {
   title: string;
   releaseType?: string;
   originalReleaseDate?: string;
+  genres?: string[];
   artists: ArtistRef[];
   releaseCount: number;
   artwork?: ArtworkRef;
@@ -59,6 +60,7 @@ export interface AlbumDetail {
     releaseType?: string;
     originalReleaseDate?: string;
     mbid?: string;
+    genres?: string[];
     artists: ArtistRef[];
   };
   releases: ReleaseSummary[];

@@ -4,13 +4,14 @@ SPDX-License-Identifier: BSD-3-Clause
 -->
 
 <script lang="ts">
-  import { library, player, playerModel, router } from '../bootstrap';
+  import { library, player, playerModel, queue, router } from '../bootstrap';
   import Artwork from './Artwork.svelte';
   import EditionSelector from './EditionSelector.svelte';
   import TrackList from './TrackList.svelte';
   import ReleaseInfo from './ReleaseInfo.svelte';
   import ErrorView from './ErrorView.svelte';
   import { formatDate, mediumLabel, yearOf } from '../format';
+  import { tracksOfRelease } from '../state/queue';
   import { onMount } from 'svelte';
 
   let { albumId, releaseParam }: { albumId: string; releaseParam?: string } = $props();
@@ -62,11 +63,33 @@ SPDX-License-Identifier: BSD-3-Clause
     await loadRelease(id);
   }
 
+  function playAlbum(): void {
+    if (!rel || !detail) return;
+    const artist = detail.album.artists[0]?.name ?? '';
+    void player.playAlbum(rel, detail.album.title, artist, 0);
+  }
+
+  function shuffleAlbum(): void {
+    if (!rel || !detail) return;
+    const artist = detail.album.artists[0]?.name ?? '';
+    player.setShuffle(true);
+    // Host owns randomness (core purity law): pick the shuffled starting
+    // track here; the core shuffles only the continuation order.
+    const count = tracksOfRelease(rel).length;
+    void player.playAlbum(rel, detail.album.title, artist,
+      count > 0 ? Math.floor(Math.random() * count) : 0);
+  }
+
+  function addToQueue(): void {
+    if (!rel || !detail) return;
+    const artist = detail.album.artists[0]?.name ?? '';
+    queue.addAlbum(rel, detail.album.title, artist);
+  }
+
   function playFrom(index: number): void {
     if (!rel || !detail) return;
     const artist = detail.album.artists[0]?.name ?? '';
     void player.playAlbum(rel, detail.album.title, artist, index);
-    router.go('/queue');
   }
 
   const heroArt = $derived(rel?.artwork.find((a) => a.role === 'front') ?? rel?.artwork[0]);
@@ -91,6 +114,13 @@ SPDX-License-Identifier: BSD-3-Clause
         <p class="eyebrow">{detail.album.releaseType ?? 'album'}</p>
         <h1>{title}</h1>
         <p class="artist">{artist}</p>
+        {#if detail.album.genres?.length}
+          <p class="genre-pills">
+            {#each detail.album.genres as genre}
+              <span class="genre-pill">{genre}</span>
+            {/each}
+          </p>
+        {/if}
         <p class="edition-line">
           {#if rel.releaseDate}{yearOf(rel.releaseDate)}{/if}
           {#if rel.media[0]?.format} · {mediumLabel(rel.media[0].format)}{/if}
@@ -99,7 +129,9 @@ SPDX-License-Identifier: BSD-3-Clause
           {#if rel.catalogueNumber} · {rel.catalogueNumber}{/if}
         </p>
         <div style="display:flex;gap:var(--space-3);margin-top:var(--space-4)">
-          <button class="btn" onclick={() => playFrom(0)}>Play album</button>
+          <button class="btn" onclick={playAlbum}>▶ Play album</button>
+          <button class="btn ghost" onclick={shuffleAlbum}>⤨ Shuffle</button>
+          <button class="btn ghost" onclick={addToQueue}>+ Add to Queue</button>
           <button class="btn ghost" onclick={() => (viewerOpen = true)}>View artwork</button>
         </div>
       </div>

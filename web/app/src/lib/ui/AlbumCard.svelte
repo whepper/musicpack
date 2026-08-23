@@ -24,4 +24,14 @@ SPDX-License-Identifier: BSD-3-Clause
       {collectorLine({ year: yearOf(album.originalReleaseDate), releaseCount: album.releaseCount })}
     </div>
   {/if}
+  {#if album.genres?.length}
+    <div class="genre-pills">
+      {#each album.genres.slice(0, 3) as genre}
+        <span class="genre-pill">{genre}</span>
+      {/each}
+      {#if album.genres.length > 3}
+        <span class="genre-pill">+{album.genres.length - 3}</span>
+      {/if}
+    </div>
+  {/if}
 </a>
