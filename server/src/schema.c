@@ -199,7 +199,28 @@ static const char *const mp_migrations[] = {
 "  interval_ms INTEGER NOT NULL,"
 "  encoding TEXT NOT NULL,"
 "  floor_db INTEGER NOT NULL,"
-"  points INTEGER NOT NULL);"
+"  points INTEGER NOT NULL);",
+
+/* 5 -> 6: durable server-generated uids for publicly identified entities.
+    Rowids stay the public ids, but keeping them stable across re-ingestion
+    requires updating logical entities in place; the uid is insurance that
+    survives any future re-parenting or re-keying. Generated once at first
+    insert (or by the backfill below for pre-existing rows) and never
+    regenerated merely because metadata changes. Not exposed on the wire.
+    Format: 32 lowercase hex chars (128-bit random), matching the
+    mp_random_bytes generation used by the library writer. */
+"ALTER TABLE tracks ADD COLUMN uid TEXT;"
+"CREATE UNIQUE INDEX tracks_uid_idx ON tracks(uid);"
+"ALTER TABLE assets ADD COLUMN uid TEXT;"
+"CREATE UNIQUE INDEX assets_uid_idx ON assets(uid);"
+"UPDATE tracks SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL;"
+"UPDATE assets SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL;",
+
+/* 6 -> 7: query-path hardening for artist joins (audit finding E): both
+    tables are scanned by artist_id for artist listing/detail/visibility
+    queries, and neither had an index. */
+("CREATE INDEX group_artists_artist_idx ON group_artists(artist_id);"
+ "CREATE INDEX track_artists_artist_idx ON track_artists(artist_id);")
 };
 
 const char *const *

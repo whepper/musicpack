@@ -49,6 +49,7 @@
 #include "mime.h"
 #include "range.h"
 #include "scanner.h"
+#include "schema.h"
 #include "sessions.h"
 #include "tokens.h"
 
@@ -77,6 +78,7 @@ static char g_ref_flac[4096];
 # define S_IS_DIR(m) ((m) & _S_IFDIR)
 #else
 # include <dirent.h>
+# include <fcntl.h>
 # include <sys/stat.h>
 # include <unistd.h>
 # define mkdir_one(p) mkdir(p, 0755)
@@ -301,10 +303,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 5, "schema version 5");
+    CHECK(db != 0 && mp_db_schema_version(db) == 7, "schema version 7");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 5, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 7, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -567,10 +569,11 @@ test_scanner(void)
 }
 
 /* Re-ingest must REPLACE, not accumulate, a release's assets. Editing a
-   package's manifest (a track title keeps the album identity stable) triggers
-   ingest_valid -> mp_library_replace_release_content, which must delete the
-   previous assets rows before re-inserting, so stale artwork/booklet/lyrics
-   rows never remain servable and rows never duplicate. */
+    package's manifest (a track title keeps the album identity stable) triggers
+    ingest_valid -> mp_library_replace_release_content, which syncs asset rows
+    by their (kind, role, path) key: existing entries are updated in place,
+    removed entries deleted, so stale artwork/booklet/lyrics/extras rows never
+    remain servable and rows never duplicate. */
 static void
 test_reingest_assets(void)
 {
@@ -626,6 +629,487 @@ test_reingest_assets(void)
         "SELECT COUNT(*) FROM (SELECT kind, relative_path FROM assets"
         " GROUP BY kind, relative_path HAVING COUNT(*) > 1)", -1) == 0,
         "re-ingest: no duplicate asset keys");
+
+    mp_library_close(lib_h);
+}
+
+/* ---------- re-ingest identity stability ---------------------------------- */
+
+/* Returns the first column of the first row of \p sql as an integer, or -1
+   when there is no row (or the query fails). \p bind_text may be NULL. */
+static long long
+scalar_ll(sqlite3 *db, const char *sql, const char *bind_text)
+{
+    sqlite3_stmt *st;
+    long long v = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, 0) != SQLITE_OK)
+        return -1;
+    if (bind_text != 0)
+        sqlite3_bind_text(st, 1, bind_text, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/* Removes the JSON object block containing \p needle from the file at
+   \p path. Only valid for the canonical fixture formatting: object blocks
+   inside an array open with "{" and close with "}" on their own line,
+   indented with exactly 8 spaces. */
+static void
+remove_block_containing(const char *path, const char *needle)
+{
+    char *buf = read_file(path);
+    char *hit, *s, *e;
+    if (buf == 0)
+        return;
+    hit = strstr(buf, needle);
+    if (hit == 0) {
+        free(buf);
+        return;
+    }
+    s = hit;
+    while (s > buf && memcmp(s, "\n        {", 10) != 0)
+        s--;
+    e = hit;
+    while (*e != '\0' && memcmp(e, "\n        }", 10) != 0)
+        e++;
+    if (s <= buf || *e == '\0') {
+        free(buf);
+        return;
+    }
+    {
+        size_t len = (size_t) ((e + 10) - (s + 1));
+        if (e[10] == ',')
+            len++; /* swallow the separating comma */
+        memmove(s + 1, s + 1 + len, strlen(s + 1 + len) + 1);
+    }
+    write_file(path, buf);
+    free(buf);
+}
+
+/* Inserts \p text immediately after the "}" that closes the JSON object
+   block containing \p needle (same canonical fixture formatting rules as
+   remove_block_containing). Used to append sibling entries to an array. */
+static void
+insert_block_after_block(const char *path, const char *needle,
+                         const char *text)
+{
+    char *buf = read_file(path);
+    char *hit, *e;
+    size_t tlen;
+    char *out;
+    if (buf == 0)
+        return;
+    hit = strstr(buf, needle);
+    if (hit == 0) {
+        free(buf);
+        return;
+    }
+    e = hit;
+    while (*e != '\0' && memcmp(e, "\n        }", 10) != 0)
+        e++;
+    if (*e == '\0') {
+        free(buf);
+        return;
+    }
+    e += 10; /* just past the closing brace */
+    tlen = strlen(text);
+    out = (char *) malloc((size_t) (e - buf) + tlen + strlen(e) + 1);
+    if (out == 0) {
+        free(buf);
+        return;
+    }
+    memcpy(out, buf, (size_t) (e - buf));
+    memcpy(out + (e - buf), text, tlen);
+    strcpy(out + (e - buf) + tlen, e);
+    write_file(path, out);
+    free(out);
+    free(buf);
+}
+
+/* Re-ingestion must preserve public identity: a track/audio/media/release
+   that still logically exists keeps its row id across rescans, even when
+   non-identity metadata changes. Genuinely added/removed tracks are
+   inserted/deleted without re-keying survivors, and identity follows audio
+   content rather than position when tracks are renumbered. */
+static void
+test_reingest_preserves_ids(void)
+{
+    const char *T1 = "Alphaville - Big in Japan";
+    const char *T2 = "Bleachers - The Van";
+    const char *T3 = "Synthwave - Night Drive";
+    const char *T4 = "Test Artist - Fourth Track";
+    const char *T5 = "Added Fifth Track";
+    char lib[4096], dbpath[4096], pkg[4096], mpath[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long g1, r1, m1;
+    long long t[5], a[5], s[3];
+    long long ar[3];
+    long long art, bk, ex, ly;
+    char cmd[8192];
+
+    snprintf(lib, sizeof lib, "%s/idlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/id.db", g_tmpdir);
+    make_dir(lib);
+    /* Seed another package FIRST so its tracks occupy low rowids: with the
+       historical delete+reinsert ingest, re-created rows land above them
+       and every id of the edited package shifts. A lone-package library
+       accidentally reproduces the same ids (rowids restart at 1), which
+       would mask the bug this test exists to catch. */
+    {
+        char seed[4096];
+        snprintf(seed, sizeof seed, "%s/SeedClassical.mpack", lib);
+        copy_tree(g_ref_flac, seed);
+        snprintf(pkg, sizeof pkg, "%s/Stable.mpack", lib);
+        copy_tree(g_ref_mpc, pkg);
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+        lib_h = mp_library_open(dbpath, 1, 0, 0);
+        CHECK(lib_h != 0, "ids: open db");
+        db = mp_library_sqlite(lib_h);
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "ids: seed+target scan ok");
+        CHECK(res.added == 2, "ids: two packages added");
+        /* The point of the seed is that the tracks table is never fully
+           emptied when only the target package re-ingests, so accidental
+           rowid reuse cannot mask a re-keying bug. */
+        CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 7,
+              "ids: seven tracks across both packages");
+    }
+
+#define ID_TRACK(title) \
+    scalar_ll(db, "SELECT id FROM tracks WHERE title = ?1", title)
+#define ID_AUDIO(title)                                    \
+    scalar_ll(db, "SELECT a.id FROM audio_objects a"       \
+                  " JOIN tracks t ON t.id = a.track_id"    \
+                  " WHERE t.title = ?1",                   \
+              title)
+
+    /* capture target-package ids (the seeded package already occupies
+       lower rowids, so these are genuinely at risk of shifting) */
+    g1 = scalar_ll(db,
+        "SELECT id FROM release_groups WHERE title = 'Synthetic Test"
+        " Compilation'", 0);
+    r1 = scalar_ll(db,
+        "SELECT r.id FROM releases r JOIN release_groups g"
+        " ON g.id = r.group_id WHERE g.title = 'Synthetic Test Compilation'",
+        0);
+    m1 = scalar_ll(db,
+        "SELECT me.id FROM media me JOIN releases r ON r.id = me.release_id"
+        " WHERE r.id IN (SELECT id FROM releases WHERE group_id = "
+        "(SELECT id FROM release_groups WHERE title = 'Synthetic Test"
+        " Compilation')) AND me.disc_number = 1", 0);
+    t[0] = ID_TRACK(T1); t[1] = ID_TRACK(T2);
+    t[2] = ID_TRACK(T3); t[3] = ID_TRACK(T4);
+    a[0] = ID_AUDIO(T1); a[1] = ID_AUDIO(T2);
+    a[2] = ID_AUDIO(T3); a[3] = ID_AUDIO(T4);
+    art = scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='artwork' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0);
+    bk = scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='booklet' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0);
+    ex = scalar_ll(db,
+        "SELECT id FROM assets WHERE kind='extras' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0);
+    ly = scalar_ll(db,
+        "SELECT MIN(id) FROM assets WHERE kind='lyrics' AND release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))", 0);
+    s[0] = ID_TRACK("Classical Piece No 1");
+    s[1] = ID_TRACK("Classical Piece No 2");
+    s[2] = ID_TRACK("Classical Piece No 3");
+    ar[0] = scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                      "Alphaville");
+    ar[1] = scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                      "Bleachers");
+    ar[2] = scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                      "Synthetic Chamber Orchestra");
+    CHECK(g1 > 0 && r1 > 0 && m1 > 0, "ids: hierarchy captured");
+    CHECK(t[0] > 0 && t[1] > 0 && t[2] > 0 && t[3] > 0, "ids: tracks captured");
+    CHECK(a[0] > 0 && a[1] > 0 && a[2] > 0 && a[3] > 0, "ids: audio captured");
+    CHECK(art > 0 && bk > 0 && ex > 0 && ly > 0, "ids: assets captured");
+    CHECK(s[0] > 0 && s[1] > 0 && s[2] > 0, "ids: seeded tracks captured");
+    CHECK(ar[0] > 0 && ar[1] > 0 && ar[2] > 0, "ids: artists captured");
+
+    /* 1. identical rescan (unchanged manifest bytes): full idempotence */
+    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 0 && res.updated == 0,
+          "ids: unchanged rescan is a no-op");
+    CHECK(ID_TRACK(T1) == t[0] && ID_AUDIO(T1) == a[0],
+          "ids: unchanged rescan preserves track/audio ids");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Alphaville") == ar[0] &&
+          scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Bleachers") == ar[1] &&
+          scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Synthetic Chamber Orchestra") == ar[2],
+          "ids: unchanged rescan preserves artist ids");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM track_waveforms", -1) == 4,
+          "ids: waveform rows stable across unchanged rescan");
+
+    /* 2. metadata-only edit (track title + loudness value): the manifest
+       bytes change, so the full ingest path runs, but no logical entity is
+       added or removed -> every public id must survive. */
+    replace_in_file(mpath, "\"title\": \"Alphaville - Big in Japan\"",
+                    "\"title\": \"Big in Japan (2016 remaster)\"");
+    replace_in_file(mpath, "-7.1915088", "-7.1111111");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "ids: metadata-edit scan ok");
+    CHECK(res.updated == 1 && res.added == 0,
+          "ids: metadata edit updates the package");
+    CHECK(scalar_ll(db,
+        "SELECT id FROM release_groups WHERE title = 'Synthetic Test"
+        " Compilation'", 0) == g1 &&
+          scalar_ll(db,
+        "SELECT r.id FROM releases r JOIN release_groups g"
+        " ON g.id = r.group_id WHERE g.title = 'Synthetic Test Compilation'",
+        0) == r1 &&
+          scalar_ll(db,
+              "SELECT me.id FROM media me WHERE me.release_id = "
+              "(SELECT id FROM releases WHERE group_id = "
+              "(SELECT id FROM release_groups WHERE title = 'Synthetic Test"
+              " Compilation')) AND me.disc_number = 1", 0) == m1,
+          "ids: group/release/media ids preserved across metadata edit");
+    CHECK(ID_TRACK("Big in Japan (2016 remaster)") == t[0],
+          "ids: renamed track keeps its id");
+    CHECK(ID_TRACK(T2) == t[1] && ID_TRACK(T3) == t[2] && ID_TRACK(T4) == t[3],
+          "ids: untouched tracks keep their ids");
+    CHECK(ID_AUDIO("Big in Japan (2016 remaster)") == a[0] &&
+          ID_AUDIO(T2) == a[1] && ID_AUDIO(T3) == a[2] && ID_AUDIO(T4) == a[3],
+          "ids: audio object ids preserved across metadata edit");
+    CHECK(scalar_ll(db, "SELECT id FROM assets WHERE kind='artwork'", 0) == art &&
+          scalar_ll(db, "SELECT id FROM assets WHERE kind='booklet'", 0) == bk &&
+          scalar_ll(db, "SELECT id FROM assets WHERE kind='extras'", 0) == ex &&
+          scalar_ll(db, "SELECT MIN(id) FROM assets WHERE kind='lyrics'", 0) == ly,
+          "ids: asset ids preserved across metadata edit");
+    CHECK(scalar_ll(db,
+        "SELECT COUNT(*) FROM assets WHERE release_id = "
+        "(SELECT id FROM releases WHERE group_id = (SELECT id FROM"
+        " release_groups WHERE title = 'Synthetic Test Compilation'))",
+        0) == 5, "ids: target asset count stable across metadata edit");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM track_waveforms", -1) == 4 &&
+          count_rows(db,
+              "SELECT COUNT(*) FROM track_waveforms WHERE track_id IS NOT"
+              " NULL AND track_id IN (SELECT id FROM tracks)", -1) == 4,
+          "ids: waveforms re-attached to the same surviving tracks");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM track_waveforms WHERE track_id = "
+        "(SELECT id FROM tracks WHERE title = 'Big in Japan (2016 remaster)')",
+        -1) == 1, "ids: renamed track keeps its waveform association");
+    CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Alphaville") == ar[0] &&
+          scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Bleachers") == ar[1] &&
+          scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
+                    "Synthetic Chamber Orchestra") == ar[2],
+          "ids: artist ids preserved across metadata edit");
+
+    /* 3. renumbering swaps positions but not identities: content identity
+       (audio sha256) beats position. Tracks 3 and 4 swap numbers; each must
+       keep the id it had before the swap. Run before any duplicate-audio
+       track exists, so content matching is unambiguous here. */
+    replace_in_file(mpath, "\"track\": 3", "\"track\": 99");
+    replace_in_file(mpath, "\"track\": 4", "\"track\": 3");
+    replace_in_file(mpath, "\"track\": 99", "\"track\": 4");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "ids: renumber scan ok");
+    CHECK(ID_TRACK(T3) == t[2] && ID_TRACK(T4) == t[3],
+          "ids: renumbered tracks keep their ids (identity != position)");
+    CHECK(scalar_ll(db,
+        "SELECT track_number FROM tracks WHERE id = "
+        "(SELECT id FROM tracks WHERE title = ?1)", T3) == 4 &&
+          scalar_ll(db,
+        "SELECT track_number FROM tracks WHERE id = "
+        "(SELECT id FROM tracks WHERE title = ?1)", T4) == 3,
+          "ids: numbers actually swapped in the database");
+    CHECK(ID_AUDIO(T3) == a[2] && ID_AUDIO(T4) == a[3],
+          "ids: renumbered tracks keep their audio object ids");
+
+    /* 4. adding a track inserts one new entity and never re-keys existing
+       ones. The new entry references a byte-identical copy of track 4's
+       audio file, so its sha256 is known without hashing here. */
+    {
+        char src[4096], dst[4096];
+        snprintf(src, sizeof src, "%s/audio/04 - Test Artist - Fourth Track.mpc",
+                 pkg);
+        snprintf(dst, sizeof dst, "%s/audio/05 - Added Track.mpc", pkg);
+        copy_file(src, dst);
+    }
+    insert_block_after_block(mpath, "analysis/waveform/01-04.wfm",
+        ",\n"
+        "        {\n"
+        "          \"audio\": {\n"
+        "            \"path\": \"audio/05 - Added Track.mpc\",\n"
+        "            \"sha256\": "
+        "\"e99002a619704d137611bf928f4d328a5d3cf5cb0e0bba62a343f6281e79bd29\"\n"
+        "          },\n"
+        "          \"duration\": 1,\n"
+        "          \"loudness\": {\n"
+        "            \"trackLUFS\": -7.3654852,\n"
+        "            \"truePeakDbTP\": -4.2588095\n"
+        "          },\n"
+        "          \"title\": \"Added Fifth Track\",\n"
+        "          \"track\": 5\n"
+        "        }");
+    /* verify=1 proves the appended entry passes full integrity checks. A
+       verified scan bypasses the unchanged-manifest fast path for BOTH
+       packages, so both are re-ingested and reported as updated. */
+    CHECK(mp_scan_library(lib_h, lib, 1, &res, 0, 0) == MUSICPACK_OK,
+          "ids: add-track scan (verified) ok");
+    CHECK(res.updated == 2 && res.added == 0,
+          "ids: verified scan re-ingests both packages");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 8,
+          "ids: eight tracks total after add (3 seeded + 5 target)");
+    CHECK(ID_TRACK("Big in Japan (2016 remaster)") == t[0] &&
+          ID_TRACK(T2) == t[1] && ID_TRACK(T3) == t[2] && ID_TRACK(T4) == t[3],
+          "ids: adding a track does not re-key existing tracks");
+    CHECK(ID_AUDIO("Big in Japan (2016 remaster)") == a[0] &&
+          ID_AUDIO(T2) == a[1] && ID_AUDIO(T3) == a[2] && ID_AUDIO(T4) == a[3],
+          "ids: adding a track does not re-key existing audio objects");
+    {
+        long long t5 = ID_TRACK(T5);
+        CHECK(t5 > 0 && t5 != t[0] && t5 != t[1] && t5 != t[2] && t5 != t[3],
+              "ids: new track gets a fresh id");
+    }
+
+    /* 5. removing a track deletes exactly that entity; survivors keep ids.
+       The removed track's audio file is deleted too (unreferenced files are
+       only warnings, but a clean fixture is easier to reason about). */
+    remove_block_containing(mpath, "audio/02 - Bleachers - The Van.mpc");
+    snprintf(cmd, sizeof cmd, "rm -f '%s/audio/02 - Bleachers - The Van.mpc'",
+             pkg);
+    if (system(cmd) != 0) { }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "ids: remove-track scan ok");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 7,
+          "ids: seven tracks after removal (3 seeded + 4 target)");
+    CHECK(ID_TRACK(T2) < 0, "ids: removed track is gone");
+    CHECK(scalar_ll(db,
+        "SELECT COUNT(*) FROM audio_objects WHERE track_id IN"
+        " (SELECT id FROM tracks)", 0) == 7,
+        "ids: removed track's audio object is gone (no orphans)");
+    CHECK(ID_TRACK("Big in Japan (2016 remaster)") == t[0] &&
+          ID_TRACK(T3) == t[2] && ID_TRACK(T4) == t[3] && ID_TRACK(T5) > 0,
+          "ids: removal does not re-key remaining tracks");
+
+    CHECK(scalar_ll(db,
+        "SELECT r.id FROM releases r JOIN release_groups g"
+        " ON g.id = r.group_id WHERE g.title = 'Synthetic Test Compilation'",
+        0) == r1, "ids: release id survives structural churn");
+
+    /* the seeded package was never edited: its track ids must be untouched
+       by everything that happened to the target package */
+    CHECK(s[0] > 0 &&
+          ID_TRACK("Classical Piece No 1") == s[0] &&
+          ID_TRACK("Classical Piece No 2") == s[1] &&
+          ID_TRACK("Classical Piece No 3") == s[2],
+          "ids: seeded package keeps its track ids (no cross-package"
+          " interference)");
+
+#undef ID_TRACK
+#undef ID_AUDIO
+
+    /* 6. final unchanged rescan: still a no-op after all the churn */    mp_scan_library(lib_h, lib, 0, &res, 0, 0);
+    CHECK(res.added == 0 && res.updated == 0,
+          "ids: post-churn unchanged rescan is a no-op");
+
+    mp_library_close(lib_h);
+}
+
+/* Stable-uid and index hardening (schema migrations 6 and 7): every track
+   and asset row carries a server-generated uid that survives re-ingest,
+   and the artist join tables used by listing/visibility queries have
+   indexes. */
+static void
+test_stable_uid_and_indexes(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096], mpath[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/uidlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/uid.db", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/UidPkg.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "uid: open db");
+    db = mp_library_sqlite(lib_h);
+
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "uid: first scan ok");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks WHERE uid IS NULL",
+                     -1) == 0,
+          "uid: every track row carries a uid");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM assets WHERE uid IS NULL",
+                     -1) == 0,
+          "uid: every asset row carries a uid");
+
+    /* uids are preserved across a metadata-only re-ingest */
+    {
+        char u_before[8][64];
+        const char *titles[4] = { "Alphaville - Big in Japan",
+                                  "Bleachers - The Van",
+                                  "Synthwave - Night Drive",
+                                  "Test Artist - Fourth Track" };
+        size_t k;
+        for (k = 0; k < 4; k++) {
+            sqlite3_stmt *st;
+            u_before[k][0] = '\0';
+            if (sqlite3_prepare_v2(db,
+                    "SELECT uid FROM tracks WHERE title = ?1", -1, &st, 0)
+                == SQLITE_OK) {
+                sqlite3_bind_text(st, 1, titles[k], -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(st) == SQLITE_ROW) {
+                    const unsigned char *u = sqlite3_column_text(st, 0);
+                    if (u != 0)
+                        snprintf(u_before[k], sizeof u_before[k], "%s",
+                                 (const char *) u);
+                }
+                sqlite3_finalize(st);
+            }
+        }
+        replace_in_file(mpath, "\"title\": \"Alphaville - Big in Japan\"",
+                        "\"title\": \"Big in Japan (uid probe)\"");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "uid: rescan ok");
+        for (k = 0; k < 4; k++) {
+            const char *t = (k == 0) ? "Big in Japan (uid probe)" : titles[k];
+            char u_after[64];
+            sqlite3_stmt *st;
+            u_after[0] = '\0';
+            if (sqlite3_prepare_v2(db,
+                    "SELECT uid FROM tracks WHERE title = ?1", -1, &st, 0)
+                == SQLITE_OK) {
+                sqlite3_bind_text(st, 1, t, -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(st) == SQLITE_ROW) {
+                    const unsigned char *u = sqlite3_column_text(st, 0);
+                    if (u != 0)
+                        snprintf(u_after, sizeof u_after, "%s",
+                                 (const char *) u);
+                }
+                sqlite3_finalize(st);
+            }
+            CHECK(u_before[k][0] != '\0' && strcmp(u_before[k], u_after) == 0,
+                  "uid: track uid survives re-ingest");
+        }
+    }
+
+    /* audit finding E: artist join indexes exist */
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN"
+        " ('group_artists_artist_idx','track_artists_artist_idx',"
+        " 'tracks_uid_idx','assets_uid_idx')", -1) == 4,
+        "uid: hardening indexes exist");
 
     mp_library_close(lib_h);
 }
@@ -1463,6 +1947,84 @@ test_waveform_no_waveform_fixture(void)
     mp_library_close(lib_h);
 }
 
+/* Upgrade path: a database created at schema version 5 (pre-uid) must
+   migrate cleanly to the current version, backfill uids, and gain the
+   hardening indexes. Uses the real migration strings, applied up to
+   version 5, then reopens through the normal auto-migrating open. */
+static void
+test_upgrade_from_v5(void)
+{
+    char dbpath[4096], lib[4096], pkg[4096];
+    sqlite3 *raw;
+    const char *const *migrations = mp_schema_migrations();
+    int i;
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(dbpath, sizeof dbpath, "%s/upg-v5.db", g_tmpdir);
+    CHECK(sqlite3_open(dbpath, &raw) == SQLITE_OK, "upgrade: create raw db");
+    CHECK(sqlite3_exec(raw,
+        "CREATE TABLE schema_version ("
+        "  version INTEGER PRIMARY KEY,"
+        "  applied_at TEXT NOT NULL);", 0, 0, 0) == SQLITE_OK,
+        "upgrade: schema_version table");
+    /* mirror db.c bookkeeping: one version row, bumped after each migration */
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO schema_version(version, applied_at)"
+        " VALUES (0, datetime('now'));", 0, 0, 0) == SQLITE_OK,
+        "upgrade: stamp version 0");
+    /* migrations[0..4] == schema versions 1..5 */
+    for (i = 0; i < 5; i++) {
+        char sql[128];
+        snprintf(sql, sizeof sql,
+                 "UPDATE schema_version SET version=%d, applied_at="
+                 "datetime('now');", i + 1);
+        CHECK(sqlite3_exec(raw, migrations[i], 0, 0, 0) == SQLITE_OK,
+              "upgrade: apply migration");
+        CHECK(sqlite3_exec(raw, sql, 0, 0, 0) == SQLITE_OK,
+              "upgrade: record new version");
+    }
+    sqlite3_close(raw);
+
+    /* normal writable open must migrate 5 -> 7 automatically */
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "upgrade: migrated open succeeds");
+    db = mp_library_sqlite(lib_h);
+    CHECK(mp_library_schema_version(lib_h) == 7,
+          "upgrade: schema version now 7");
+
+    /* ingesting into the upgraded schema assigns uids; a metadata edit
+       re-ingest preserves ids exactly like a fresh database */
+    snprintf(lib, sizeof lib, "%s/upglib", g_tmpdir);
+    make_dir(lib);
+    snprintf(pkg, sizeof pkg, "%s/UpgPkg.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "upgrade: ingest into migrated db ok");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks WHERE uid IS NULL",
+                     -1) == 0,
+          "upgrade: ingested rows carry uids");
+    {
+        long long before = scalar_ll(
+            db, "SELECT id FROM tracks WHERE title = 'Bleachers - The Van'",
+            0);
+        char mpath[4096];
+        mp_scan_result res2;
+        snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+        replace_in_file(mpath, "\"title\": \"Bleachers - The Van\"",
+                        "\"title\": \"The Van (upgraded)\"");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res2, 0, 0) == MUSICPACK_OK,
+              "upgrade: rescan ok");
+        CHECK(scalar_ll(db,
+            "SELECT id FROM tracks WHERE title = 'The Van (upgraded)'",
+            0) == before && before > 0,
+            "upgrade: track id preserved across re-ingest");
+    }
+
+    mp_library_close(lib_h);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1494,6 +2056,9 @@ main(int argc, char **argv)
     test_verify();
     test_scanner();
     test_reingest_assets();
+    test_reingest_preserves_ids();
+    test_stable_uid_and_indexes();
+    test_upgrade_from_v5();
     test_ingest_busy_rollback();
     test_ownership_conflict();
     test_conflict_survives_verify();

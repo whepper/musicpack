@@ -115,6 +115,39 @@ Resource ids are decimal integers (SQLite rowids) carried as JSON numbers.
 Client-supplied ids are parsed **strictly**: only ASCII digits, at most 18
 characters, value ≤ 2^63−1. Anything else is a `400 invalid_request`.
 
+### Identifier lifetime
+
+A public identifier remains stable across re-ingestion while the logical
+entity remains the same. Metadata changes must never cause an entity to
+receive a new public id:
+
+- **Tracks and audio objects** keep their ids across scans when the track's
+  audio content is unchanged. Identity follows audio content (the manifest's
+  `sha256`), not position: renumbering a track or moving it between discs
+  keeps its id; editing titles, loudness, artwork, or other metadata does
+  too. A full library verification pass likewise preserves ids.
+- **Assets** (artwork/booklet/lyrics/extras) keep their ids while their
+  `(kind, role, path)` key remains in the manifest.
+- **Albums (release groups), releases (editions), artists** keep their ids
+  for as long as their identity keys match (`group_key`/`release_key`,
+  artist name). Artist ids have always been stable in practice (artists
+  are upserted, never deleted).
+
+Limits of the guarantee — a new id is issued exactly when an entity is
+genuinely created or destroyed:
+
+- removing an entry from a manifest deletes its rows (with them, their ids);
+  re-adding it later yields fresh ids;
+- replacing a track's audio file with different content (a different
+  `sha256`) at the same position is treated as removal + creation;
+- ambiguous situations are resolved conservatively: duplicate audio content
+  within one package can only be matched positionally, never by content
+  alone.
+
+Clients should therefore treat ids as durable references (persisted queue
+positions, deep links, caches keyed by track id), not as ephemeral values,
+while still handling `404 not_found` gracefully after genuine removals.
+
 ### Methods
 
 `GET`, `HEAD`, `POST` (library maintenance, session create) and `DELETE`

@@ -6,6 +6,7 @@
 */
 #include "library.h"
 #include "mime.h"
+#include "random.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -576,6 +577,47 @@ mp_library_upsert_release(mp_library *lib, const musicpack_manifest *m,
     return id;
 }
 
+/* Generates a fresh 128-bit uid rendered as 32 lowercase hex chars (the
+   same format the schema migration backfill uses). Returns 0 on success. */
+static int
+generate_uid(char out[33])
+{
+    static const char hex[] = "0123456789abcdef";
+    unsigned char b[16];
+    int i;
+    if (mp_random_bytes(b, sizeof b) != 0)
+        return -1;
+    for (i = 0; i < 16; i++) {
+        out[i * 2] = hex[b[i] >> 4];
+        out[i * 2 + 1] = hex[b[i] & 0x0f];
+    }
+    out[32] = '\0';
+    return 0;
+}
+
+/* Assigns a uid to a row that predates migration 6 without overwriting an
+   existing one: uids are generated once and never change afterwards. */
+static int
+ensure_row_uid(mp_library *lib, const char *table, long long id)
+{
+    char sql[96];
+    char uid[33];
+    sqlite3_stmt *st;
+    int rc;
+    if (generate_uid(uid) != 0)
+        return -1;
+    snprintf(sql, sizeof sql,
+             "UPDATE %s SET uid = ?1 WHERE id = ?2 AND uid IS NULL", table);
+    st = stmt_prepare(lib, sql);
+    if (st == 0)
+        return -1;
+    sqlite3_bind_text(st, 1, uid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, id);
+    rc = sqlite3_step(st) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(st);
+    return rc;
+}
+
 static long long
 file_size_of(const char *path)
 {
@@ -619,15 +661,18 @@ insert_asset_row(mp_library *lib, long long release_id, const char *root,
                  const char *rel, const char *sha)
 {
     char abs[MUSICPACK_PATH_MAX + 2];
+    char uid[33];
     sqlite3_stmt *st;
     long long size;
 
     if (musicpack_path_resolve(root, rel, abs, sizeof abs) != MUSICPACK_OK)
         return 0;
     size = file_size_of(abs);
+    if (generate_uid(uid) != 0)
+        return -1;
     st = stmt_prepare(lib,
         "INSERT INTO assets(release_id, kind, role, relative_path, sha256,"
-        "  file_size, mime_type) VALUES (?1,?2,?3,?4,?5,?6,?7)");
+        "  file_size, mime_type, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)");
     if (st == 0)
         return -1;
     sqlite3_bind_int64(st, 1, release_id);
@@ -637,6 +682,7 @@ insert_asset_row(mp_library *lib, long long release_id, const char *root,
     sqlite3_bind_text(st, 5, sha, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 6, size);
     sqlite3_bind_text(st, 7, mp_mime_for_path(rel), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 8, uid, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(st) != SQLITE_DONE) {
         sqlite3_finalize(st);
         return -1;
@@ -645,30 +691,607 @@ insert_asset_row(mp_library *lib, long long release_id, const char *root,
     return 0;
 }
 
+/* ---------- diff-aware release content sync ------------------------------ */
+
+/* A track row currently stored under the release, used to match incoming
+   manifest tracks against existing rows so logically unchanged entities
+   keep their row ids. */
+typedef struct existing_track {
+    long long id;
+    long long media_id;
+    int track_number;
+    int disc_number;
+    char sha256[MUSICPACK_SHA256_HEX_SIZE];
+    int matched;
+} existing_track;
+
+/* An asset row currently stored under the release. */
+typedef struct existing_asset {
+    long long id;
+    char *kind;
+    char *role; /* NULL when SQL NULL */
+    char *path;
+    int matched;
+} existing_asset;
+
 static int
-insert_asset_list(mp_library *lib, long long release_id, const char *root,
-                  const char *kind, const musicpack_asset *a, size_t n)
+load_existing_tracks(mp_library *lib, long long release_id,
+                     existing_track **out, size_t *out_n)
 {
-    size_t i;
-    for (i = 0; i < n; i++) {
-        if (insert_asset_row(lib, release_id, root, kind, 0, a[i].path,
-                             a[i].sha256) != 0)
-            return -1;
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT t.id, t.media_id, t.track_number, me.disc_number, a.sha256"
+        "  FROM tracks t"
+        "  JOIN media me ON me.id = t.media_id"
+        "  LEFT JOIN audio_objects a ON a.track_id = t.id"
+        " WHERE me.release_id = ?1"
+        " ORDER BY me.disc_number, t.track_number");
+    existing_track *rows = 0;
+    size_t n = 0, cap = 0;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        existing_track *r;
+        if (n == cap) {
+            size_t next = cap != 0 ? cap * 2 : 32;
+            existing_track *grown =
+                (existing_track *) realloc(rows, next * sizeof *grown);
+            if (grown == 0) {
+                sqlite3_finalize(st);
+                free(rows);
+                return -1;
+            }
+            rows = grown;
+            cap = next;
+        }
+        r = &rows[n++];
+        memset(r, 0, sizeof *r);
+        r->id = sqlite3_column_int64(st, 0);
+        r->media_id = sqlite3_column_int64(st, 1);
+        r->track_number = sqlite3_column_int(st, 2);
+        r->disc_number = sqlite3_column_int(st, 3);
+        col_cpy(r->sha256, sizeof r->sha256, st, 4);
     }
+    sqlite3_finalize(st);
+    *out = rows;
+    *out_n = n;
     return 0;
 }
 
 static int
-insert_artwork(mp_library *lib, long long release_id, const char *root,
-               const musicpack_artwork *a, size_t n)
+load_existing_assets(mp_library *lib, long long release_id,
+                     existing_asset **out, size_t *out_n)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT id, kind, role, relative_path FROM assets"
+        " WHERE release_id = ?1 ORDER BY id");
+    existing_asset *rows = 0;
+    size_t n = 0, cap = 0;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        existing_asset *r;
+        if (n == cap) {
+            size_t next = cap != 0 ? cap * 2 : 32;
+            existing_asset *grown =
+                (existing_asset *) realloc(rows, next * sizeof *grown);
+            if (grown == 0) {
+                sqlite3_finalize(st);
+                goto fail;
+            }
+            rows = grown;
+            cap = next;
+        }
+        r = &rows[n++];
+        memset(r, 0, sizeof *r);
+        r->id = sqlite3_column_int64(st, 0);
+        if (sqlite3_column_type(st, 1) != SQLITE_NULL)
+            r->kind = strdup((const char *) sqlite3_column_text(st, 1));
+        if (sqlite3_column_type(st, 2) != SQLITE_NULL)
+            r->role = strdup((const char *) sqlite3_column_text(st, 2));
+        if (sqlite3_column_type(st, 3) != SQLITE_NULL)
+            r->path = strdup((const char *) sqlite3_column_text(st, 3));
+        if (r->kind == 0 || r->path == 0) {
+            sqlite3_finalize(st);
+            goto fail;
+        }
+    }
+    sqlite3_finalize(st);
+    *out = rows;
+    *out_n = n;
+    return 0;
+fail:
+    for (cap = 0; cap < n; cap++) {
+        free(rows[cap].kind);
+        free(rows[cap].role);
+        free(rows[cap].path);
+    }
+    free(rows);
+    return -1;
+}
+
+static void
+free_existing_assets(existing_asset **rows, size_t *n)
 {
     size_t i;
-    for (i = 0; i < n; i++) {
-        if (insert_asset_row(lib, release_id, root, "artwork",
-                             a[i].role, a[i].asset.path, a[i].asset.sha256) != 0)
+    if (*rows == 0)
+        return;
+    for (i = 0; i < *n; i++) {
+        free((*rows)[i].kind);
+        free((*rows)[i].role);
+        free((*rows)[i].path);
+    }
+    free(*rows);
+    *rows = 0;
+    *n = 0;
+}
+
+/* Finds the media row for a disc number, creating it when absent; updates
+   format/title/position in place when present. Disc number is the identity
+   of a medium within an edition. */
+static int
+upsert_media_row(mp_library *lib, long long release_id,
+                 const musicpack_disc *disc, size_t position,
+                 long long *media_id)
+{
+    sqlite3_stmt *st;
+    long long id = -1;
+
+    st = stmt_prepare(lib,
+        "SELECT id FROM media WHERE release_id = ?1 AND disc_number = ?2");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    sqlite3_bind_int64(st, 2, disc->disc);
+    if (sqlite3_step(st) == SQLITE_ROW)
+        id = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+
+    if (id >= 0) {
+        st = stmt_prepare(lib,
+            "UPDATE media SET format = ?1, title = ?2, position = ?3"
+            " WHERE id = ?4");
+        if (st == 0)
             return -1;
+        sqlite3_bind_text(st, 1, disc->format, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, disc->title, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (long long) position);
+        sqlite3_bind_int64(st, 4, id);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        sqlite3_finalize(st);
+    } else {
+        st = stmt_prepare(lib,
+            "INSERT INTO media(release_id, disc_number, format, title,"
+            "  position) VALUES (?1,?2,?3,?4,?5)");
+        if (st == 0)
+            return -1;
+        sqlite3_bind_int64(st, 1, release_id);
+        sqlite3_bind_int64(st, 2, disc->disc);
+        sqlite3_bind_text(st, 3, disc->format, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 4, disc->title, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 5, (long long) position);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        sqlite3_finalize(st);
+        id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
+    }
+    *media_id = id;
+    return 0;
+}
+
+/* Positional identity: same disc + track number AND identical audio
+   content. This is the common metadata-only re-ingest case. */
+static existing_track *
+find_track_by_position(existing_track *rows, size_t n, int disc_number,
+                       int track_number, const char *sha256)
+{
+    size_t i;
+    if (sha256 == 0 || sha256[0] == '\0')
+        return 0; /* no content anchor: refuse to guess */
+    for (i = 0; i < n; i++) {
+        existing_track *r = &rows[i];
+        if (!r->matched && r->disc_number == disc_number &&
+            r->track_number == track_number &&
+            strcmp(r->sha256, sha256) == 0)
+            return r;
     }
     return 0;
+}
+
+/* Content identity fallback: exactly one unmatched row carries the same
+   audio sha256 anywhere in the release. Survives renumbering within a disc
+   and moves across discs. Ambiguous matches (duplicate audio) never match:
+   both copies stay distinct entities keyed by their own positions. */
+static existing_track *
+find_track_by_content(existing_track *rows, size_t n, const char *sha256)
+{
+    existing_track *hit = 0;
+    size_t i;
+    if (sha256 == 0 || sha256[0] == '\0')
+        return 0;
+    for (i = 0; i < n; i++) {
+        existing_track *r = &rows[i];
+        if (!r->matched && strcmp(r->sha256, sha256) == 0) {
+            if (hit != 0)
+                return 0; /* ambiguous */
+            hit = r;
+        }
+    }
+    return hit;
+}
+
+/* Codec probe result precedence shared by the insert and update paths. */
+static void
+resolve_audio_codec(char *codec, size_t cap, const mp_track_ingest *ti,
+                    const musicpack_track *tr)
+{
+    if (ti != 0 && ti->codec.codec[0] != '\0')
+        snprintf(codec, cap, "%s", ti->codec.codec);
+    else
+        snprintf(codec, cap, "%s", mp_codec_for_path(tr->audio.path));
+}
+
+static long long
+audio_file_size(const mp_track_ingest *ti)
+{
+    return ti != 0 ? file_size_of(ti->abs_path) : 0;
+}
+
+/* Writes one track_waveforms row (the caller clears any previous row). */
+static int
+insert_waveform_row(mp_library *lib, long long track_id, const char *root,
+                    const musicpack_waveform_ref *w)
+{
+    char wpath[MUSICPACK_PATH_MAX + 2];
+    long long wsize;
+    sqlite3_stmt *st;
+    if (snprintf(wpath, sizeof wpath, "%s/%s", root, w->path)
+        >= (int) sizeof wpath)
+        return -1;
+    wsize = file_size_of(wpath);
+    st = stmt_prepare(lib,
+        "INSERT INTO track_waveforms(track_id, version, relative_path,"
+        "  sha256, file_size, mime_type, interval_ms, encoding,"
+        "  floor_db, points) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    sqlite3_bind_int(st, 2, w->version);
+    sqlite3_bind_text(st, 3, w->path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, w->sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 5, wsize);
+    sqlite3_bind_text(st, 6, mp_mime_for_path(w->path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 7, w->interval_ms);
+    sqlite3_bind_text(st, 8, w->encoding, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 9, w->floor_db);
+    sqlite3_bind_int64(st, 10, (long long) w->points);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+/* Refreshes waveform state to match the manifest: remove any stored row,
+   then store the new reference when the manifest declares one. */
+static int
+sync_track_waveform(mp_library *lib, long long track_id, const char *root,
+                    const musicpack_waveform_ref *w)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "DELETE FROM track_waveforms WHERE track_id = ?1");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    if (!w->present)
+        return 0;
+    return insert_waveform_row(lib, track_id, root, w);
+}
+
+/* Updates an existing track row in place (same rowid), including its
+   1:1 audio object, artist credits, and waveform. */
+static int
+update_track_row(mp_library *lib, const existing_track *r, long long media_id,
+                 const musicpack_track *tr, const mp_track_ingest *ti,
+                 const char *root)
+{
+    sqlite3_stmt *st;
+    char codec[24];
+    long long size;
+
+    st = stmt_prepare(lib,
+        "UPDATE tracks SET media_id = ?1, track_number = ?2, title = ?3,"
+        "  isrc = ?4, mbid_track = ?5, mbid_recording = ?6,"
+        "  source_store = ?7, source_track_id = ?8, source_audio_codec = ?9,"
+        "  source_audio_md5 = ?10, has_duration = ?11, duration = ?12,"
+        "  has_loudness = ?13, loudness_lufs = ?14,"
+        "  loudness_true_peak_db = ?15 WHERE id = ?16");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, media_id);
+    sqlite3_bind_int64(st, 2, tr->number);
+    sqlite3_bind_text(st, 3, tr->title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, tr->isrc, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, tr->musicbrainz_track_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 6, tr->musicbrainz_recording_id, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 7, tr->source_store, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 8, tr->source_track_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 9, tr->source_audio_codec, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 10, tr->source_audio_md5, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 11, tr->has_duration);
+    sqlite3_bind_double(st, 12, tr->duration);
+    sqlite3_bind_int(st, 13, tr->loudness.present);
+    sqlite3_bind_double(st, 14, tr->loudness.lufs);
+    sqlite3_bind_double(st, 15, tr->loudness.true_peak_db);
+    sqlite3_bind_int64(st, 16, r->id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    if (ensure_row_uid(lib, "tracks", r->id) != 0)
+        return -1;
+
+    resolve_audio_codec(codec, sizeof codec, ti, tr);
+    size = audio_file_size(ti);
+    st = stmt_prepare(lib,
+        "UPDATE audio_objects SET relative_path = ?1, sha256 = ?2,"
+        "  file_size = ?3, mime_type = ?4, codec = ?5,"
+        "  stream_version = ?6, sample_rate = ?7, channels = ?8"
+        " WHERE track_id = ?9");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_text(st, 1, tr->audio.path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, tr->audio.sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, size);
+    sqlite3_bind_text(st, 4, mp_mime_for_path(tr->audio.path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, codec, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 6, ti != 0 ? ti->codec.stream_version : 0);
+    sqlite3_bind_int64(st, 7, ti != 0 ? ti->codec.sample_rate : 0);
+    sqlite3_bind_int64(st, 8, ti != 0 ? ti->codec.channels : 0);
+    sqlite3_bind_int64(st, 9, r->id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+
+    /* Artist credits may change freely; artist rows themselves are shared
+       and stable (name-keyed upsert). */
+    st = stmt_prepare(lib, "DELETE FROM track_artists WHERE track_id = ?1");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, r->id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    if (insert_track_artists(lib, r->id, tr) != 0)
+        return -1;
+
+    return sync_track_waveform(lib, r->id, root, &tr->waveform);
+}
+
+/* Inserts a brand-new track entity with fresh row ids. */
+static int
+insert_track_row(mp_library *lib, long long media_id,
+                 const musicpack_track *tr, const mp_track_ingest *ti,
+                 const char *root)
+{
+    sqlite3_stmt *st;
+    char codec[24];
+    char uid[33];
+    long long track_id;
+    long long size;
+
+    if (generate_uid(uid) != 0)
+        return -1;
+    st = stmt_prepare(lib,
+        "INSERT INTO tracks(media_id, track_number, title, isrc,"
+        "  mbid_track, mbid_recording, source_store, source_track_id,"
+        "  source_audio_codec, source_audio_md5, has_duration,"
+        "  duration, has_loudness, loudness_lufs, loudness_true_peak_db,"
+        "  uid)"
+        " VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, media_id);
+    sqlite3_bind_int64(st, 2, tr->number);
+    sqlite3_bind_text(st, 3, tr->title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, tr->isrc, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 5, tr->musicbrainz_track_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 6, tr->musicbrainz_recording_id, -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 7, tr->source_store, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 8, tr->source_track_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 9, tr->source_audio_codec, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 10, tr->source_audio_md5, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 11, tr->has_duration);
+    sqlite3_bind_double(st, 12, tr->duration);
+    sqlite3_bind_int(st, 13, tr->loudness.present);
+    sqlite3_bind_double(st, 14, tr->loudness.lufs);
+    sqlite3_bind_double(st, 15, tr->loudness.true_peak_db);
+    sqlite3_bind_text(st, 16, uid, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    track_id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
+
+    resolve_audio_codec(codec, sizeof codec, ti, tr);
+    size = audio_file_size(ti);
+    st = stmt_prepare(lib,
+        "INSERT INTO audio_objects(track_id, relative_path, sha256,"
+        "  file_size, mime_type, codec, stream_version, sample_rate,"
+        "  channels) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    sqlite3_bind_text(st, 2, tr->audio.path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, tr->audio.sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, size);
+    sqlite3_bind_text(st, 5, mp_mime_for_path(tr->audio.path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 6, codec, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 7, ti != 0 ? ti->codec.stream_version : 0);
+    sqlite3_bind_int64(st, 8, ti != 0 ? ti->codec.sample_rate : 0);
+    sqlite3_bind_int64(st, 9, ti != 0 ? ti->codec.channels : 0);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+
+    if (insert_track_artists(lib, track_id, tr) != 0)
+        return -1;
+
+    if (tr->waveform.present &&
+        insert_waveform_row(lib, track_id, root, &tr->waveform) != 0)
+        return -1;
+    return 0;
+}
+
+static int
+delete_track_row(mp_library *lib, long long track_id)
+{
+    sqlite3_stmt *st = stmt_prepare(lib, "DELETE FROM tracks WHERE id = ?1");
+    int rc;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    rc = sqlite3_step(st) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(st);
+    return rc;
+}
+
+/* Removes media rows whose disc number no longer exists in the manifest.
+   Their tracks were already handled above (re-parented by content or
+   deleted); this only removes the empty medium shells. */
+static int
+delete_absent_media(mp_library *lib, long long release_id,
+                    const musicpack_manifest *m)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT id, disc_number FROM media WHERE release_id = ?1");
+    long long *ids = 0;
+    size_t n = 0, cap = 0, i;
+    int rc;
+
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        int disc = sqlite3_column_int(st, 1);
+        size_t d;
+        int present = 0;
+        for (d = 0; d < m->disc_count; d++) {
+            if (m->discs[d].disc == disc) {
+                present = 1;
+                break;
+            }
+        }
+        if (present)
+            continue;
+        if (n == cap) {
+            size_t next = cap != 0 ? cap * 2 : 8;
+            long long *grown =
+                (long long *) realloc(ids, next * sizeof *grown);
+            if (grown == 0) {
+                sqlite3_finalize(st);
+                free(ids);
+                return -1;
+            }
+            ids = grown;
+            cap = next;
+        }
+        ids[n++] = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+
+    rc = 0;
+    for (i = 0; rc == 0 && i < n; i++) {
+        st = stmt_prepare(lib, "DELETE FROM media WHERE id = ?1");
+        if (st == 0)
+            return -1;
+        sqlite3_bind_int64(st, 1, ids[i]);
+        rc = sqlite3_step(st) == SQLITE_DONE ? 0 : -1;
+        sqlite3_finalize(st);
+    }
+    free(ids);
+    return rc;
+}
+
+static int
+asset_key_match(const existing_asset *ea, const char *kind,
+                const char *role, const char *path)
+{
+    int role_eq = (ea->role == 0 && role == 0) ||
+                  (ea->role != 0 && role != 0 &&
+                   strcmp(ea->role, role) == 0);
+    return strcmp(ea->kind, kind) == 0 && role_eq &&
+           strcmp(ea->path, path) == 0;
+}
+
+static existing_asset *
+find_asset_slot(existing_asset *rows, size_t n, const char *kind,
+                const char *role, const char *path)
+{
+    size_t i;
+    for (i = 0; i < n; i++)
+        if (!rows[i].matched && asset_key_match(&rows[i], kind, role, path))
+            return &rows[i];
+    return 0;
+}
+
+/* Syncs one incoming asset against the existing rows: update in place when
+   the (kind, role, relative_path) key already exists, insert when new. */
+static int
+sync_one_asset(mp_library *lib, long long release_id, const char *root,
+               const char *kind, const char *role, const char *rel,
+               const char *sha, existing_asset *rows, size_t n)
+{
+    existing_asset *ea = find_asset_slot(rows, n, kind, role, rel);
+    char abs[MUSICPACK_PATH_MAX + 2];
+    long long size = 0;
+    sqlite3_stmt *st;
+
+    if (ea == 0)
+        return insert_asset_row(lib, release_id, root, kind, role, rel, sha);
+    ea->matched = 1;
+    if (musicpack_path_resolve(root, rel, abs, sizeof abs) == MUSICPACK_OK)
+        size = file_size_of(abs);
+    st = stmt_prepare(lib,
+        "UPDATE assets SET sha256 = ?1, file_size = ?2, mime_type = ?3"
+        " WHERE id = ?4");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_text(st, 1, sha, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, size);
+    sqlite3_bind_text(st, 3, mp_mime_for_path(rel), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, ea->id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return ensure_row_uid(lib, "assets", ea->id);
 }
 
 int
@@ -678,180 +1301,120 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
                                    const mp_track_ingest *codecs,
                                    size_t codec_count)
 {
-    sqlite3_stmt *st;
-    size_t d, t;
+    existing_track *old_tracks = 0;
+    size_t old_track_n = 0;
+    existing_asset *old_assets = 0;
+    size_t old_asset_n = 0;
+    long long *media_ids = 0;
     size_t ci = 0;
+    size_t d, t, i;
+    int rc = -1;
 
-    st = stmt_prepare(lib, "DELETE FROM media WHERE release_id = ?1");
-    if (st == 0)
+    /* Snapshot what this release currently stores so entities that still
+       exist in the incoming manifest can be updated in place instead of
+       deleted and recreated (public ids survive). */
+    if (load_existing_tracks(lib, release_id, &old_tracks, &old_track_n) != 0)
         return -1;
-    sqlite3_bind_int64(st, 1, release_id);
-    if (sqlite3_step(st) != SQLITE_DONE) {
-        sqlite3_finalize(st);
-        return -1;
+    if (load_existing_assets(lib, release_id, &old_assets, &old_asset_n)
+        != 0)
+        goto out;
+    media_ids = (long long *) calloc(m->disc_count ? m->disc_count : 1,
+                                     sizeof *media_ids);
+    if (media_ids == 0)
+        goto out;
+
+    /* Media: upsert per disc number. */
+    for (d = 0; d < m->disc_count; d++) {
+        if (upsert_media_row(lib, release_id, &m->discs[d], d,
+                             &media_ids[d]) != 0)
+            goto out;
     }
-    sqlite3_finalize(st);
 
-    /* Assets reference the release (not media), so they survive the media
-       delete above. Remove them here so a re-ingest never leaves stale
-       artwork/booklet/lyrics/extras rows behind or serves old bytes. */
-    st = stmt_prepare(lib, "DELETE FROM assets WHERE release_id = ?1");
-    if (st == 0)
-        return -1;
-    sqlite3_bind_int64(st, 1, release_id);
-    if (sqlite3_step(st) != SQLITE_DONE) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    sqlite3_finalize(st);
-
+    /* Tracks: match each manifest entry against existing rows, update the
+       matched ones in place, insert the genuinely new ones. */
     for (d = 0; d < m->disc_count; d++) {
         const musicpack_disc *disc = &m->discs[d];
-        long long media_id;
-        st = stmt_prepare(lib,
-            "INSERT INTO media(release_id, disc_number, format, title, position)"
-            " VALUES (?1,?2,?3,?4,?5)");
-        if (st == 0)
-            return -1;
-        sqlite3_bind_int64(st, 1, release_id);
-        sqlite3_bind_int64(st, 2, disc->disc);
-        sqlite3_bind_text(st, 3, disc->format, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 4, disc->title, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 5, (long long) d);
-        if (sqlite3_step(st) != SQLITE_DONE) {
-            sqlite3_finalize(st);
-            return -1;
-        }
-        sqlite3_finalize(st);
-        media_id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
-
         for (t = 0; t < disc->track_count; t++) {
             const musicpack_track *tr = &disc->tracks[t];
-            long long track_id;
             const mp_track_ingest *ti = ci < codec_count ? &codecs[ci] : 0;
-            char codec[24];
-            const char *sha = tr->audio.sha256;
-            long long size = 0;
-
+            existing_track *mt;
             ci++;
-            st = stmt_prepare(lib,
-                "INSERT INTO tracks(media_id, track_number, title, isrc,"
-                "  mbid_track, mbid_recording, source_store, source_track_id,"
-                "  source_audio_codec, source_audio_md5, has_duration,"
-                "  duration, has_loudness, loudness_lufs, loudness_true_peak_db)"
-                " VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)");
-            if (st == 0)
-                return -1;
-            sqlite3_bind_int64(st, 1, media_id);
-            sqlite3_bind_int64(st, 2, tr->number);
-            sqlite3_bind_text(st, 3, tr->title, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 4, tr->isrc, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 5, tr->musicbrainz_track_id, -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 6, tr->musicbrainz_recording_id, -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 7, tr->source_store, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 8, tr->source_track_id, -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 9, tr->source_audio_codec, -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 10, tr->source_audio_md5, -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_int(st, 11, tr->has_duration);
-            sqlite3_bind_double(st, 12, tr->duration);
-            sqlite3_bind_int(st, 13, tr->loudness.present);
-            sqlite3_bind_double(st, 14, tr->loudness.lufs);
-            sqlite3_bind_double(st, 15, tr->loudness.true_peak_db);
-            if (sqlite3_step(st) != SQLITE_DONE) {
-                sqlite3_finalize(st);
-                return -1;
-            }
-            sqlite3_finalize(st);
-            track_id = sqlite3_last_insert_rowid(mp_db_sqlite(lib->db));
-
-            if (ti != 0) {
-                size = file_size_of(ti->abs_path);
-                snprintf(codec, sizeof codec, "%s",
-                         ti->codec.codec[0] != '\0'
-                             ? ti->codec.codec
-                             : mp_codec_for_path(tr->audio.path));
-            } else {
-                snprintf(codec, sizeof codec, "%s",
-                         mp_codec_for_path(tr->audio.path));
-            }
-            st = stmt_prepare(lib,
-                "INSERT INTO audio_objects(track_id, relative_path, sha256,"
-                "  file_size, mime_type, codec, stream_version, sample_rate,"
-                "  channels) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)");
-            if (st == 0)
-                return -1;
-            sqlite3_bind_int64(st, 1, track_id);
-            sqlite3_bind_text(st, 2, tr->audio.path, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 3, sha, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(st, 4, size);
-            sqlite3_bind_text(st, 5, mp_mime_for_path(tr->audio.path), -1,
-                              SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 6, codec, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(st, 7, ti != 0 ? ti->codec.stream_version : 0);
-            sqlite3_bind_int64(st, 8, ti != 0 ? ti->codec.sample_rate : 0);
-            sqlite3_bind_int64(st, 9, ti != 0 ? ti->codec.channels : 0);
-            if (sqlite3_step(st) != SQLITE_DONE) {
-                sqlite3_finalize(st);
-                return -1;
-            }
-            sqlite3_finalize(st);
-
-            if (insert_track_artists(lib, track_id, tr) != 0)
-                return -1;
-
-            if (tr->waveform.present) {
-                char wpath[MUSICPACK_PATH_MAX + 2];
-                long long wsize = 0;
-                if (snprintf(wpath, sizeof wpath, "%s/%s", root,
-                             tr->waveform.path) >= (int) sizeof wpath)
-                    return -1;
-                wsize = file_size_of(wpath);
-                st = stmt_prepare(lib,
-                    "INSERT INTO track_waveforms(track_id, version, relative_path,"
-                    "  sha256, file_size, mime_type, interval_ms, encoding,"
-                    "  floor_db, points) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)");
-                if (st == 0)
-                    return -1;
-                sqlite3_bind_int64(st, 1, track_id);
-                sqlite3_bind_int(st, 2, tr->waveform.version);
-                sqlite3_bind_text(st, 3, tr->waveform.path, -1,
-                                  SQLITE_TRANSIENT);
-                sqlite3_bind_text(st, 4, tr->waveform.sha256, -1,
-                                  SQLITE_TRANSIENT);
-                sqlite3_bind_int64(st, 5, wsize);
-                sqlite3_bind_text(st, 6, mp_mime_for_path(tr->waveform.path),
-                                  -1, SQLITE_TRANSIENT);
-                sqlite3_bind_int(st, 7, tr->waveform.interval_ms);
-                sqlite3_bind_text(st, 8, tr->waveform.encoding, -1,
-                                  SQLITE_TRANSIENT);
-                sqlite3_bind_int(st, 9, tr->waveform.floor_db);
-                sqlite3_bind_int64(st, 10, (long long) tr->waveform.points);
-                if (sqlite3_step(st) != SQLITE_DONE) {
-                    sqlite3_finalize(st);
-                    return -1;
-                }
-                sqlite3_finalize(st);
+            mt = find_track_by_position(old_tracks, old_track_n,
+                                        disc->disc, tr->number,
+                                        tr->audio.sha256);
+            if (mt == 0)
+                mt = find_track_by_content(old_tracks, old_track_n,
+                                           tr->audio.sha256);
+            if (mt != 0) {
+                mt->matched = 1;
+                if (update_track_row(lib, mt, media_ids[d], tr, ti, root)
+                    != 0)
+                    goto out;
+            } else if (insert_track_row(lib, media_ids[d], tr, ti, root)
+                       != 0) {
+                goto out;
             }
         }
     }
 
-    if (insert_artwork(lib, release_id, root, m->artwork, m->artwork_count) != 0)
-        return -1;
-    if (insert_asset_list(lib, release_id, root, "booklet", m->booklet,
-                          m->booklet_count) != 0)
-        return -1;
-    if (insert_asset_list(lib, release_id, root, "lyrics", m->lyrics,
-                          m->lyrics_count) != 0)
-        return -1;
-    if (insert_asset_list(lib, release_id, root, "extras", m->extras,
-                          m->extras_count) != 0)
-        return -1;
-    return 0;
+    /* Delete tracks whose entity no longer exists (cascades audio objects,
+       waveforms, and artist credits). */
+    for (i = 0; i < old_track_n; i++) {
+        if (!old_tracks[i].matched &&
+            delete_track_row(lib, old_tracks[i].id) != 0)
+            goto out;
+    }
+
+    if (delete_absent_media(lib, release_id, m) != 0)
+        goto out;
+
+    /* Assets: sync by natural key, then delete whatever vanished. */
+    for (i = 0; i < m->artwork_count; i++) {
+        if (sync_one_asset(lib, release_id, root, "artwork",
+                           m->artwork[i].role, m->artwork[i].asset.path,
+                           m->artwork[i].asset.sha256, old_assets,
+                           old_asset_n) != 0)
+            goto out;
+    }
+    for (i = 0; i < m->booklet_count; i++) {
+        if (sync_one_asset(lib, release_id, root, "booklet", 0,
+                           m->booklet[i].path, m->booklet[i].sha256,
+                           old_assets, old_asset_n) != 0)
+            goto out;
+    }
+    for (i = 0; i < m->lyrics_count; i++) {
+        if (sync_one_asset(lib, release_id, root, "lyrics", 0,
+                           m->lyrics[i].path, m->lyrics[i].sha256,
+                           old_assets, old_asset_n) != 0)
+            goto out;
+    }
+    for (i = 0; i < m->extras_count; i++) {
+        if (sync_one_asset(lib, release_id, root, "extras", 0,
+                           m->extras[i].path, m->extras[i].sha256,
+                           old_assets, old_asset_n) != 0)
+            goto out;
+    }
+    for (i = 0; i < old_asset_n; i++) {
+        sqlite3_stmt *st;
+        if (old_assets[i].matched)
+            continue;
+        st = stmt_prepare(lib, "DELETE FROM assets WHERE id = ?1");
+        if (st == 0)
+            goto out;
+        sqlite3_bind_int64(st, 1, old_assets[i].id);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            goto out;
+        }
+        sqlite3_finalize(st);
+    }
+
+    rc = 0;
+out:
+    free(media_ids);
+    free_existing_assets(&old_assets, &old_asset_n);
+    free(old_tracks);
+    return rc; /* nonzero rolls back the caller's transaction */
 }
 
 /* ---- object resolution for streaming ----------------------------------- */

@@ -154,9 +154,14 @@ typedef struct mp_track_ingest {
     mp_codec_info codec;
 } mp_track_ingest;
 
-/// Replaces all media/tracks/audio/assets under \p release_id from \p m.
+/// Synchronizes media/tracks/audio/assets under \p release_id from \p m.
+/// Diff-aware: entities that still logically exist keep their row ids
+/// (tracks match by disc+track position with equal audio content, then by
+/// unique audio content across the release; assets by kind/role/path);
+/// genuinely new entities are inserted and absent ones deleted.
 /// \p codecs must contain one entry per track in manifest order
-/// (disc-major, then track order).
+/// (disc-major, then track order). Run inside the caller's transaction; a
+/// nonzero return leaves the rollback decision to the caller.
 int mp_library_replace_release_content(mp_library *lib, long long release_id,
                                        const musicpack_manifest *m,
                                        const char *root,
