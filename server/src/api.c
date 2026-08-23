@@ -295,6 +295,46 @@ group_object(mp_library *lib, sqlite3_stmt *g)
     mp_json_str_opt(o, "releaseType", col_text(g, 2));
     mp_json_str_opt(o, "originalReleaseDate", col_text(g, 3));
     mp_json_str_opt(o, "mbid", col_text(g, 4));
+    /* column 5: genres_json — parse and add as optional genres[] */
+    {
+        const char *gj = (const char *) sqlite3_column_text(g, 5);
+        if (gj != 0 && *gj == '[') {
+            mp_json *ga = mp_json_arr();
+            /* parse ["str","str2",...] — simple walker */
+            const char *p = gj + 1;
+            while (*p != '\0' && *p != ']') {
+                while (*p != '\0' && *p != '\0' && *p != '"')
+                    p++;
+                if (*p == '"') {
+                    p++;
+                    size_t cap = 64, len = 0;
+                    char *buf = (char *) malloc(cap);
+                    if (buf != 0) {
+                        while (*p != '\0' && *p != '"') {
+                            if (*p == '\\' && (p[1] == '"' || p[1] == '\\'))
+                                p++;
+                            buf[len++] = *p++;
+                            if (len + 1 >= cap) {
+                                cap *= 2;
+                                char *nb = (char *) realloc(buf, cap);
+                                if (nb == 0) { free(buf); buf = 0; break; }
+                                buf = nb;
+                            }
+                        }
+                        if (*p == '"') p++;
+                        if (buf != 0) {
+                            buf[len] = '\0';
+                            mp_json_add(ga, 0, mp_json_strnode(buf));
+                            free(buf);
+                        }
+                    }
+                }
+                while (*p != '\0' && (*p == ',' || *p == ' '))
+                    p++;
+            }
+            mp_json_add(o, "genres", ga);
+        }
+    }
     mp_json_add(o, "artists", artists_of_group(lib, sqlite3_column_int64(g, 0)));
     return o;
 }
@@ -779,6 +819,7 @@ handle_albums(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
 
     n = snprintf(sql, sizeof sql,
         "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid,"
+        " g.genres_json,"
         "  (SELECT a.name FROM group_artists ga"
         "    JOIN artists a ON a.id = ga.artist_id"
         "    WHERE ga.group_id = g.id ORDER BY ga.position LIMIT 1) AS artist,"
@@ -826,13 +867,13 @@ handle_albums(mp_library *lib, struct MHD_Connection *c, unsigned int *st)
         sqlite3_bind_text(qs, 3, esc, -1, SQLITE_TRANSIENT);
     while (sqlite3_step(qs) == SQLITE_ROW) {
         mp_json *it = group_object(lib, qs);
-        mp_json_int(it, "releaseCount", sqlite3_column_int64(qs, 6));
-        if (sqlite3_column_int64(qs, 7) > 0) {
+        mp_json_int(it, "releaseCount", sqlite3_column_int64(qs, 7));
+        if (sqlite3_column_int64(qs, 8) > 0) {
             char url[64];
             mp_json *art = mp_json_obj();
-            mp_json_int(art, "id", sqlite3_column_int64(qs, 7));
+            mp_json_int(art, "id", sqlite3_column_int64(qs, 8));
             snprintf(url, sizeof url, "/api/%s/assets/%lld", API_VERSION,
-                     sqlite3_column_int64(qs, 7));
+                     sqlite3_column_int64(qs, 8));
             mp_json_str(art, "url", url);
             mp_json_add(it, "artwork", art);
         }
@@ -860,7 +901,8 @@ handle_album_detail(mp_library *lib, long long id, unsigned int *st)
     int visible_releases = 0;
 
     if (sqlite3_prepare_v2(db,
-            "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid"
+            "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid,"
+            " g.genres_json"
             " FROM release_groups g WHERE g.id = ?1", -1, &g, 0)
         != SQLITE_OK) {
         mp_json_free(o);

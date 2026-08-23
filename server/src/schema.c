@@ -228,7 +228,12 @@ static const char *const mp_migrations[] = {
      name UNIQUE NOCASE constraint is deliberately untouched. */
 ("ALTER TABLE artists ADD COLUMN musicbrainz_id TEXT;"
  "CREATE UNIQUE INDEX artists_mbid_idx ON artists(musicbrainz_id)"
- " WHERE musicbrainz_id IS NOT NULL;")
+ " WHERE musicbrainz_id IS NOT NULL;"),
+
+/* 8 -> 9: preserve release-group-level genres as JSON array (Phase 2B).
+    Manifest `album.genres[]` strings are stored verbatim; NULL = no genres
+    supplied. No entity table, no normalisation. */
+"ALTER TABLE release_groups ADD COLUMN genres_json TEXT;"
 };
 
 const char *const *

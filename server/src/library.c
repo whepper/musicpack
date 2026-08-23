@@ -556,6 +556,41 @@ mp_library_release_set_owner(mp_library *lib, long long release_id,
     return rc;
 }
 
+/* Builds a JSON array string from manifest genres, or returns NULL when
+   no genres are supplied. The caller owns the returned allocation. */
+static char *
+genres_json(const musicpack_manifest *m)
+{
+    size_t i, cap, pos;
+    char *json;
+    if (m->genre_count == 0)
+        return 0;
+    /* worst case: every char might need escaping (\ or ") */
+    cap = 3; /* [ + ] + NUL */
+    for (i = 0; i < m->genre_count; i++)
+        cap += strlen(m->genres[i]) * 2 + 3; /* "str", */
+    json = (char *) malloc(cap);
+    if (json == 0)
+        return 0;
+    pos = 0;
+    json[pos++] = '[';
+    for (i = 0; i < m->genre_count; i++) {
+        const char *s = m->genres[i];
+        if (i > 0)
+            json[pos++] = ',';
+        json[pos++] = '"';
+        while (*s != '\0') {
+            if (*s == '"' || *s == '\\')
+                json[pos++] = '\\';
+            json[pos++] = *s++;
+        }
+        json[pos++] = '"';
+    }
+    json[pos++] = ']';
+    json[pos] = '\0';
+    return json;
+}
+
 long long
 mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
                         const char *group_key, int update_metadata)
@@ -573,8 +608,8 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
     if (id < 0) {
         st = stmt_prepare(lib,
             "INSERT INTO release_groups(title, release_type,"
-            " original_release_date, mbid, group_key)"
-            " VALUES (?1, ?2, ?3, ?4, ?5)");
+            " original_release_date, mbid, group_key, genres_json)"
+            " VALUES (?1, ?2, ?3, ?4, ?5, ?6)");
         if (st == 0)
             return -1;
         sqlite3_bind_text(st, 1, m->album_title, -1, SQLITE_TRANSIENT);
@@ -583,6 +618,10 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
         sqlite3_bind_text(st, 4, m->musicbrainz_release_group_id, -1,
                           SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 5, group_key, -1, SQLITE_TRANSIENT);
+        {
+            char *gj = genres_json(m);
+            sqlite3_bind_text(st, 6, gj, -1, free);
+        }
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             return -1;
@@ -592,8 +631,8 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
     } else if (update_metadata) {
         st = stmt_prepare(lib,
             "UPDATE release_groups SET title=?1, release_type=?2,"
-            " original_release_date=?3, mbid=?4, updated_at=datetime('now')"
-            " WHERE id=?5");
+            " original_release_date=?3, mbid=?4, genres_json=?5,"
+            " updated_at=datetime('now') WHERE id=?6");
         if (st == 0)
             return -1;
         sqlite3_bind_text(st, 1, m->album_title, -1, SQLITE_TRANSIENT);
@@ -601,7 +640,11 @@ mp_library_upsert_group(mp_library *lib, const musicpack_manifest *m,
         sqlite3_bind_text(st, 3, m->original_release_date, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 4, m->musicbrainz_release_group_id, -1,
                           SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 5, id);
+        {
+            char *gj = genres_json(m);
+            sqlite3_bind_text(st, 5, gj, -1, free);
+        }
+        sqlite3_bind_int64(st, 6, id);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             return -1;

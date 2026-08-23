@@ -303,10 +303,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 8, "schema version 8");
+    CHECK(db != 0 && mp_db_schema_version(db) == 9, "schema version 9");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 8, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 9, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -2006,12 +2006,12 @@ test_upgrade_from_v5(void)
     }
     sqlite3_close(raw);
 
-    /* normal writable open must migrate 5 -> 8 automatically */
+    /* normal writable open must migrate 5 -> 9 automatically */
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upgrade: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 8,
-          "upgrade: schema version now 8");
+    CHECK(mp_library_schema_version(lib_h) == 9,
+          "upgrade: schema version now 9");
 
     /* ingesting into the upgraded schema assigns uids; a metadata edit
        re-ingest preserves ids exactly like a fresh database */
@@ -2043,6 +2043,7 @@ test_upgrade_from_v5(void)
 
     mp_library_close(lib_h);
 }
+
 /* ---------- Phase 2A: artist identity / MusicBrainz anchors ------------- */
 
 /* Credit-anchor identity freeze: adding musicbrainzId/sortName to credits
@@ -2384,7 +2385,7 @@ test_upgrade_from_v7(void)
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upg7: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 8, "upg7: schema version 8");
+    CHECK(mp_library_schema_version(lib_h) == 9, "upg7: schema version 9");
     CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
                     "Legacy Artist") == 1,
           "upg7: artist row id preserved");
@@ -2431,6 +2432,198 @@ test_upgrade_from_v7(void)
     mp_library_close(lib_h);
 }
 
+/* ---------- genres (Phase 2B) ------------------------------------------- */
+
+static void
+test_upgrade_from_v8(void)
+{
+    char dbpath[4096];
+    sqlite3 *raw;
+    const char *const *migrations = mp_schema_migrations();
+    int i;
+    mp_library *lib_h;
+    sqlite3 *db;
+
+    snprintf(dbpath, sizeof dbpath, "%s/upg-v8.db", g_tmpdir);
+    CHECK(sqlite3_open(dbpath, &raw) == SQLITE_OK, "upg8: create raw db");
+    CHECK(sqlite3_exec(raw,
+        "CREATE TABLE schema_version ("
+        "  version INTEGER PRIMARY KEY,"
+        "  applied_at TEXT NOT NULL);", 0, 0, 0) == SQLITE_OK,
+        "upg8: schema_version table");
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO schema_version(version, applied_at)"
+        " VALUES (0, datetime('now'));", 0, 0, 0) == SQLITE_OK,
+        "upg8: stamp version 0");
+    for (i = 0; i < 8; i++) {
+        char sql[128];
+        snprintf(sql, sizeof sql,
+                 "UPDATE schema_version SET version=%d, applied_at="
+                 "datetime('now');", i + 1);
+        CHECK(sqlite3_exec(raw, migrations[i], 0, 0, 0) == SQLITE_OK,
+              "upg8: apply migration");
+        CHECK(sqlite3_exec(raw, sql, 0, 0, 0) == SQLITE_OK,
+              "upg8: record new version");
+    }
+    /* seed a release group without genres (pre-P2B data) */
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO artists(id, name) VALUES (1, 'Legacy Artist');"
+        "INSERT INTO release_groups(id, title, group_key)"
+        " VALUES (1, 'Legacy Album', 'legacy-key');"
+        "INSERT INTO group_artists(group_id, artist_id, position, role)"
+        " VALUES (1, 1, 0, 'main');", 0, 0, 0) == SQLITE_OK,
+        "upg8: seed pre-P2B rows");
+    sqlite3_close(raw);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "upg8: migrated open succeeds");
+    db = mp_library_sqlite(lib_h);
+    CHECK(mp_library_schema_version(lib_h) == 9, "upg8: schema version 9");
+    CHECK(scalar_ll(db, "SELECT id FROM release_groups WHERE title=?1",
+                    "Legacy Album") == 1,
+          "upg8: group row preserved");
+    {
+        char gj[128];
+        const char *g = scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title=?1",
+            "Legacy Album", gj, sizeof gj);
+        CHECK(g != 0 && *g == '\0', "upg8: legacy genres_json NULL");
+    }
+    mp_library_close(lib_h);
+}
+
+static void
+test_genre_preservation(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096], mpath[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+
+    snprintf(lib, sizeof lib, "%s/genre-lib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/genre.db", g_tmpdir);
+    snprintf(pkg, sizeof pkg, "%s/GenrePkg.mpack", lib);
+    make_dir(lib);
+    copy_tree(g_ref_mpc, pkg);
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "genre: open db");
+    db = mp_library_sqlite(lib_h);
+
+    /* 1. initial ingest — genres stored */
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "genre: initial scan");
+    {
+        long long gid = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        CHECK(gid > 0, "genre: release group id");
+        char gj[256];
+        const char *gj_raw = scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation", gj, sizeof gj);
+        /* the MPC fixture may or may not have genres — either is valid */
+        CHECK(gj_raw != 0, "genre: genres_json column readable");
+    }
+
+    /* 2. add genres via manifest edit */
+    {
+        long long gid_before = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        replace_in_file(mpath, "\"title\": \"Synthetic Test Compilation\"",
+                        "\"title\": \"Synthetic Test Compilation\","
+                        " \"genres\": [\"Electronic\", \"Synth-pop\"]");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "genre: rescan with genres");
+        long long gid_after = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        CHECK(gid_before == gid_after, "genre: group id stable after genre add");
+        char gj[256];
+        scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation", gj, sizeof gj);
+        CHECK(strstr(gj, "Electronic") != 0 &&
+              strstr(gj, "Synth-pop") != 0,
+              "genre: stored genres contain expected values");
+    }
+
+    /* 3. re-ingest unchanged is idempotent */
+    {
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+              res.added == 0 && res.updated == 0,
+              "genre: identical rescan no-op");
+    }
+
+    /* 4. add another genre — IDs preserved */
+    {
+        long long gid_before = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        replace_in_file(mpath, "\"Electronic\", \"Synth-pop\"",
+                        "\"Electronic\", \"Synth-pop\", \"Ambient\"");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "genre: rescan add genre");
+        long long gid_after = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        CHECK(gid_before == gid_after, "genre: group id stable after change");
+        char gj[512];
+        scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation", gj, sizeof gj);
+        CHECK(strstr(gj, "Ambient") != 0, "genre: third genre stored");
+    }
+
+    /* 5. remove genre — IDs preserved */
+    {
+        long long gid_before = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        replace_in_file(mpath, "\"Electronic\", \"Synth-pop\", \"Ambient\"",
+                        "\"Synth-pop\", \"Ambient\"");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "genre: rescan remove genre");
+        long long gid_after = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        CHECK(gid_before == gid_after,
+              "genre: group id stable after genre removal");
+        char gj[512];
+        scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation", gj, sizeof gj);
+        CHECK(strstr(gj, "Synth-pop") != 0 && strstr(gj, "Ambient") != 0 &&
+              strstr(gj, "Electronic") == 0,
+              "genre: removed genre absent, others preserved");
+    }
+
+    /* 6. clear all genres — still preserves group id */
+    {
+        long long gid_before = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        replace_in_file(mpath, "\"genres\": [\"Synth-pop\", \"Ambient\"]",
+                        "\"genres\": []");
+        CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+              "genre: rescan clear genres");
+        long long gid_after = scalar_ll(db,
+            "SELECT id FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation");
+        CHECK(gid_before == gid_after,
+              "genre: group id stable after clearing genres");
+        char gj[128];
+        scalar_text(db,
+            "SELECT genres_json FROM release_groups WHERE title = ?1",
+            "Synthetic Test Compilation", gj, sizeof gj);
+        CHECK(gj[0] == '\0' || strcmp(gj, "[]") == 0,
+              "genre: genres_json null or empty after clearing");
+    }
+
+    mp_library_close(lib_h);
+}
 
 int
 main(int argc, char **argv)
@@ -2469,6 +2662,8 @@ main(int argc, char **argv)
     test_stable_uid_and_indexes();
     test_upgrade_from_v5();
     test_upgrade_from_v7();
+    test_upgrade_from_v8();
+    test_genre_preservation();
     test_ingest_busy_rollback();
     test_ownership_conflict();
     test_conflict_survives_verify();
