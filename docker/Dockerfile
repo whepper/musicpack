@@ -24,7 +24,7 @@ RUN npm run build
 FROM debian:bookworm-slim AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      build-essential cmake pkg-config libmicrohttpd-dev \
+      build-essential cmake pkg-config libmicrohttpd-dev python3 curl \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
