@@ -10,6 +10,14 @@ permissions:
   contents: read
 
 jobs:
+  router-test:
+    name: Router regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test CI router
+        run: python3 scripts/ci_router_test.py
+
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -46,11 +54,7 @@ jobs:
           fi
 
           cat /tmp/changed-files
-          while IFS= read -r line; do
-            [ -n "$line" ] && printf '%s\n' "$line"
-          done < /tmp/changed-files | python3 scripts/ci_router.py > /tmp/router-output
-
-          cat /tmp/router-output
+          python3 scripts/ci_router.py < /tmp/changed-files | tee /tmp/router-output
           grep -E '^(codec|core|server|author|wasm|web|research|unknown)=' /tmp/router-output >> "$GITHUB_OUTPUT"
 
   codec:
