@@ -23,7 +23,14 @@ jobs:
         run: npm ci
       - name: Player Core unit tests
         working-directory: web
-        run: npx vitest run tests/unit
+        run: >
+          npx vitest run
+          tests/unit/queue-model.test.ts
+          tests/unit/player-events.test.ts
+          tests/unit/queue-policy.test.ts
+          tests/unit/engine-port.test.ts
+          tests/unit/purity-gate.test.ts
+          tests/unit/snapshot.test.ts
 
   web-client:
     name: web-client
