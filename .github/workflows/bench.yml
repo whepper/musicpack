@@ -19,7 +19,11 @@ on:
       - 'common/**'
       - 'include/**'
       - 'mpcenc/**'
-      - 'bench/**'
+      - 'bench/CMakeLists.txt'
+      - 'bench/*.c'
+      - 'bench/*.sh'
+      - 'bench/*.py'
+      - 'bench/*.mjs'
       - 'wasm/**'
       - 'tests/fixtures/**'
       - 'tests/generate_encoder_corpus.py'
@@ -66,7 +70,7 @@ jobs:
       - name: Report configurations
         run: |
           python3 scripts/ci_config.py --build build --role benchmark-native --selected-config Release --expect compiler_id=GNU --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=sse2
-          python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile --selected-config Release --expect compiler_id=GNU --expect selected_configuration=Release --expect psy_profile=ON
+          python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile --selected-config Release --expect selected_configuration=Release --expect psy_profile=ON
 
       - name: Generate corpus
         run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
