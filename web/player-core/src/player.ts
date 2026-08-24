@@ -19,6 +19,7 @@
 
 import { writable, type Writable } from './store';
 import type {
+  CrossfadeResult,
   Engine,
   EngineEventName,
   PreloadEngine,
@@ -33,6 +34,7 @@ import {
   SNAPSHOT_VERSION,
   type SessionSnapshot,
 } from './snapshot';
+import { PRIME_LEAD_SECONDS } from './transition';
 import type { PlaybackItem, StreamInfo } from './types';
 
 export type PlayerState =
@@ -121,6 +123,15 @@ export interface PlayerPorts {
   clearPersistTimer?(handle: unknown): void;
   /** Persist write throttle interval. Default 2000 ms. */
   persistIntervalMs?: number;
+  /** Optional content-aware transition policy (Sweet Fades). When absent,
+   *  crossfade uses the legacy fixed-length behavior. Pure function: hosts
+   *  resolve content profiles themselves. */
+  planTransition?(query: {
+    outgoing: PlaybackItem;
+    incoming: PlaybackItem;
+    maxFadeSeconds: number;
+    repeatOne: boolean;
+  }): import('./transition').TransitionPlan;
 }
 
 export interface PlayerOptions {
@@ -519,6 +530,13 @@ export class Player {
   private async onEos(): Promise<void> {
     if (!this.engine) return;
     const seq = this.loadingSeq;
+    // Last-chance Sweet Fade: the decoder reached EOF while buffered audio
+    // is still sounding (decode runs far ahead of playback, especially
+    // right after a seek into the fade window — the positional trigger may
+    // never observe it). Try an overlapped transition whose overlap is
+    // clamped to the audio that is actually left; on decline/failure the
+    // normal gapless handoff below runs unchanged.
+    if (await this.tryFadeAtEos(seq)) return;
     let info: StreamInfo | null = null;
     if (isPreloadEngine(this.engine)) info = await this.engine.advance();
     if (seq !== this.loadingSeq) return;
@@ -646,12 +664,15 @@ export class Player {
     const rate = this.rate();
     // Crossfade trigger (M8, opt-in; once per track): near the end of the
     // CURRENT item, playing, with a policy next item and a capable engine.
-    // Never for repeat-one (reload) and never on the queue's last track.
+    // Never for repeat-one (reload semantics win) and never on the queue's
+    // last track. With a planTransition port, the overlap is content-aware
+    // and gapless/hard-cut plans simply let the EOS path own the boundary.
     if (
       !this.crossfadeArmed &&
       !this.crossfadeInProgress &&
       !this.pendingEnded &&
       this.crossfadeSeconds > 0 &&
+      this.queue.repeat !== 'one' &&
       this.model.get().state === 'playing'
     ) {
       const remaining = this.trackRemainingSamples(idx, pos);
@@ -664,8 +685,28 @@ export class Player {
         !singleTrackRepeatAll &&
         this.engine.capabilities.crossfade
       ) {
-        this.crossfadeArmed = true;
-        void this.beginCrossfadeTransition();
+        const target = this.peekPreloadTarget(qi);
+        if (target) {
+          const plan = this.ports.planTransition
+            ? this.ports.planTransition({
+                outgoing: this.queue.at(qi)!,
+                incoming: target.item,
+                maxFadeSeconds: this.crossfadeSeconds,
+                // The outer guard already excluded repeat-one.
+                repeatOne: false,
+              })
+            : { type: 'sweet-fade' as const, overlapSeconds: this.crossfadeSeconds };
+          if (plan.type === 'sweet-fade') {
+            // Arm slightly early so the engine can prime its lane.
+            const lead = Math.floor((plan.overlapSeconds + PRIME_LEAD_SECONDS) * rate);
+            if (remaining <= lead) {
+              this.crossfadeArmed = true;
+              void this.beginCrossfadeTransition(plan.overlapSeconds);
+            }
+          }
+          // gapless / hard-cut plans: nothing to do — the natural EOS path
+          // owns the boundary, which is exactly what those plans describe.
+        }
       }
     }
     // End of queue: the positional drain is the normal signal, but a
@@ -745,24 +786,40 @@ export class Player {
 
 
   /** Attempts an overlapped transition to the policy next item. On success
-   *  performs the same bookkeeping as the EOS handoff; on failure leaves
-   *  everything untouched so the normal EOS path runs. */
-  private async beginCrossfadeTransition(): Promise<void> {
+   *  performs the same bookkeeping as the EOS handoff, shrinking the
+   *  outgoing track's effective length by the reported overlap so offsets,
+   *  positions and end detection stay truthful. On failure leaves
+   *  everything untouched so the normal EOS path runs.
+   *
+   *  Epoch discipline: only a NEW LOAD (loadingSeq) or an engine swap
+   *  invalidates a running transition — pause/resume deliberately do NOT.
+   *  The engine-side fade freezes with the suspended AudioContext and
+   *  completes on resume, so its handoff must still be applied afterwards;
+   *  re-triggering is prevented by crossfadeInProgress staying set for the
+   *  whole attempt (pause no longer clears it). */
+  private async beginCrossfadeTransition(
+    overlapSeconds?: number,
+    seqHint?: number,
+  ): Promise<void> {
     const engine = this.engine;
     if (!engine || !engine.capabilities.crossfade) return;
     const cf = engine as unknown as CrossfadeEngine;
     if (typeof cf.beginCrossfade !== 'function') return;
+    const requested = Math.max(0.25, Math.min(15, overlapSeconds ?? this.crossfadeSeconds));
+    const seqAtStart = seqHint ?? this.loadingSeq;
     const qi = this.queue.get().index;
     const target = this.peekPreloadTarget(qi);
     // No target: end-of-queue or repeat-one — no fade.
     if (!target) return;
+    const prevItem = this.queue.at(qi);
+    const prevLen = prevItem ? this.lengths.get(prevItem.trackId) : undefined;
     this.crossfadeInProgress = true;
     try {
-      const info = await cf.beginCrossfade(target.item, this.crossfadeSeconds);
-      if (!info) {
-        this.crossfadeInProgress = false;
-        return; // fall back to normal EOS
-      }
+      const result: CrossfadeResult | null = await cf.beginCrossfade(target.item, requested);
+      if (!result) return; // fall back to normal EOS
+      // Superseded by a load/engine swap while the fade ran: that path owns
+      // all state now. (Pause/resume intentionally do not land here.)
+      if (seqAtStart !== this.loadingSeq || this.engine !== engine) return;
       // Same handoff bookkeeping as onEos(): lengths, geometry, gain, media,
       // next standby. Cursor advance WITHOUT queue.next() policy re-entry —
       // we already resolved the target.
@@ -770,14 +827,17 @@ export class Player {
       const idxAfter = this.queue
         .get()
         .items.findIndex((it) => it.id === nextItem.id && it.trackId === nextItem.trackId);
-      if (idxAfter < 0) {
-        this.crossfadeInProgress = false;
-        return;
+      if (idxAfter < 0) return;
+      // Compress the album clock by the actual overlap: the faded-out track
+      // keeps `length - overlap` effective frames, so every later offset —
+      // position, seek mapping, Media Session, end-of-queue — stays exact.
+      if (prevItem && result.overlapFrames > 0 && prevLen !== undefined) {
+        this.lengths.set(prevItem.trackId, Math.max(0, prevLen - result.overlapFrames));
       }
       this.mutating = true;
       this.queue.moveTo(idxAfter);
       this.mutating = false;
-      this.lengths.set(nextItem.trackId, info.lengthSamples);
+      this.lengths.set(nextItem.trackId, result.info.lengthSamples);
       const offs = this.offsets();
       const nqi = this.queue.get().index;
       this.model.update((m) => ({
@@ -799,10 +859,35 @@ export class Player {
       }
       this.persist();
     } catch {
-      this.crossfadeInProgress = false;
+      /* fall back to normal EOS */
     } finally {
       this.crossfadeInProgress = false;
     }
+  }
+
+  /** Attempts a fade when the decoder's EOS arrives with buffered audio
+   *  still to play (decode beats the positional trigger). Returns true iff
+   *  the transition was taken — the caller then skips the normal handoff.
+   *  All policy guards mirror the positional trigger. */
+  private async tryFadeAtEos(seq: number): Promise<boolean> {
+    if (this.crossfadeSeconds <= 0 || this.queue.repeat === 'one') return false;
+    if (this.pauseIntent || this.pendingEnded || this.crossfadeInProgress) return false;
+    const engine = this.engine;
+    if (!engine || !engine.capabilities.crossfade) return false;
+    if (!isPreloadEngine(engine)) return false;
+    const cf = engine as unknown as CrossfadeEngine;
+    if (typeof cf.beginCrossfade !== 'function') return false;
+    const qi = this.queue.get().index;
+    const target = this.peekPreloadTarget(qi);
+    if (!target) return false;
+    const remaining = this.trackRemainingSamples(qi, this.albumPosition());
+    // Only while the faded-out track still has audible content buffered:
+    // otherwise the boundary already happened and the EOS path owns it.
+    const rate = this.rate();
+    if (remaining <= END_TOLERANCE_SAMPLES) return false;
+    const overlapSeconds = Math.min(this.crossfadeSeconds, remaining / rate);
+    await this.beginCrossfadeTransition(overlapSeconds, seq);
+    return this.queue.get().index !== qi;
   }
 
   private currentIndexAt(pos: number): number {
@@ -845,7 +930,10 @@ export class Player {
   async pause(): Promise<void> {
     ++this.transportSeq;
     this.pauseIntent = true;
-    this.crossfadeInProgress = false;
+    // NOTE: crossfadeInProgress is deliberately NOT cleared here. A pause
+    // during a running fade freezes it (suspended context) and the handoff
+    // must complete on resume; clearing would allow a second, overlapping
+    // trigger that corrupts the live transition.
     this.setState('paused');
     this.gate().stop();
     await this.engine?.pause();

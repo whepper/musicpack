@@ -74,6 +74,16 @@ export interface PreloadEngine extends Engine {
   advance(): Promise<StreamInfo | null>;
 }
 
+/** Result of a taken crossfade transition. */
+export interface CrossfadeResult {
+  /** The incoming track's stream facts (as from open()/advance()). */
+  info: StreamInfo;
+  /** Output-rate frames of overlap actually mixed. The caller shrinks the
+   *  outgoing track's effective length by this so offsets, positions and
+   *  end-of-queue detection stay truthful after the compressed boundary. */
+  overlapFrames: number;
+}
+
 /** Crossfade capability (M8, opt-in). An engine implementing this can
  *  transition to `next` with an equal-power overlap instead of the normal
  *  sequential handoff. Returning null (or not implementing) makes the
@@ -82,7 +92,7 @@ export interface PreloadEngine extends Engine {
  *  the new lane's lifecycle (eos/position) is the engine's responsibility,
  *  exactly as after a normal advance(). */
 export interface CrossfadeEngine {
-  beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<StreamInfo | null>;
+  beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<CrossfadeResult | null>;
 }
 
 /** Pull-decode gate capability (e.g. the WASM musepack pipeline). */

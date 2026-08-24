@@ -18,6 +18,7 @@ import {
   LOW_WATER,
   PRIME_FRACTION,
   RING_SECONDS,
+  laneCapacityFrames,
   type WorkletReport,
 } from './worklet-protocol';
 
@@ -180,7 +181,13 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
           this.xtoken = msg.token;
           this.xfadeFrames = Math.max(1, Math.floor(msg.fadeFrames));
           this.xlane = {
-            ring: new RingBuffer(Math.round(this.outputRate * RING_SECONDS), this.outputChannels),
+            // Sized to hold the whole fade window plus margin (see
+            // laneCapacityFrames) so long fades prime fully and the mixing
+            // loop never waits on real-time decode of the incoming lane.
+            ring: new RingBuffer(
+              laneCapacityFrames(this.outputRate, this.xfadeFrames),
+              this.outputChannels,
+            ),
             resampler: new StreamingResampler(
               msg.sourceRate,
               msg.sourceChannels,
@@ -564,6 +571,14 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
     this.xoutgoingAtSwap = outgoing.renderedFrames;
     this.xincomingAtSwap = lane.ring.renderedFrames;
     this.ring = lane.ring;
+    // Continue the album clock: the promoted ring's playhead restarts near
+    // zero, so rebase its REPORTED count by the outgoing playhead. Reads
+    // and writes keep their physical layout; every downstream consumer
+    // (rendered reports, underruns, end detection) sees one continuous
+    // frame count across the swap instead of a position regression of
+    // roughly the whole played track.
+    const delta = this.xoutgoingAtSwap - this.xincomingAtSwap;
+    if (delta > 0) this.ring.continuePlayheadFrom(delta);
     this.resampler = lane.resampler;
     this.pending = lane.pending;
     this.ending = lane.ending;

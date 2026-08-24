@@ -10,6 +10,7 @@
 // Musepack backend, which is exact. This is documented in web/README.md.
 import type { EngineStreamInfo } from './musepack-engine';
 import type {
+  CrossfadeResult,
   Engine,
   EngineCapabilities,
   EngineEventName,
@@ -29,6 +30,12 @@ const NATIVE_CAPABILITIES: EngineCapabilities = {
 interface ElementSlot {
   el: HTMLAudioElement;
   src: MediaElementAudioSourceNode;
+  /** Dedicated pre-mix gain for this element: fades schedule AudioParam
+   *  curves here instead of driving el.volume from a JS timer. */
+  gain: GainNode;
+  /** Set while this slot is the OUTGOING lane of a fade: its natural
+   *  'ended' must not emit an eos (the core advanced at trigger time). */
+  suppressEnded?: boolean;
   url: string;
 }
 
@@ -39,6 +46,15 @@ export class NativeBackend {
   private gain: GainNode | null = null;
   private current: ElementSlot | null = null;
   private standby: ElementSlot | null = null;
+  /** Live element-based fade (Phase A). One at a time; pause completes it
+   *  instantly, transport actions abort it back to the outgoing track. */
+  private nativeFade: {
+    outgoing: ElementSlot;
+    incoming: ElementSlot;
+    completed: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+    done: (() => void) | null;
+  } | null = null;
   rate = 44100;
   private channels = 2;
   private token: string | null = null;
@@ -86,15 +102,26 @@ export class NativeBackend {
     el.crossOrigin = 'anonymous';
     el.preload = 'auto';
     const src = this.ctx.createMediaElementSource(el);
-    src.connect(this.gain);
-    el.addEventListener('ended', () => this.emitLegacyAndPort('onEos', 'eos'));
+    const slotGain = this.ctx.createGain();
+    src.connect(slotGain);
+    slotGain.connect(this.gain);
+    const slot: ElementSlot = { el, src, gain: slotGain, url: '' };
+    el.addEventListener('ended', () => {
+      if (slot.suppressEnded) {
+        // Outgoing lane of an active fade: the core advanced its cursor at
+        // trigger time; this natural end must stay silent.
+        el.pause();
+        return;
+      }
+      this.emitLegacyAndPort('onEos', 'eos');
+    });
     el.addEventListener('waiting', () => this.emitLegacyAndPort('onBuffering', 'buffering'));
     el.addEventListener('error', () => {
       this.onError?.('This format cannot be played in your browser.');
       this.emitNamed('error');
     });
     el.addEventListener('timeupdate', () => this.emitLegacyAndPort('onPosition', 'tick'));
-    return { el, src, url: '' };
+    return slot;
   }
 
   private loadInto(slot: ElementSlot, url: string): void {
@@ -114,8 +141,13 @@ export class NativeBackend {
     void size;
     this.playRequest++;
     this.shouldPlay = false;
+    // A stale standby belongs to the PREVIOUS track's boundary; disposing it
+    // here prevents a still-loaded (or still-fading) incoming element from
+    // bleeding over the freshly selected track.
+    this.abortNativeFade();
     const slot = this.makeSlot();
     this.disposeCurrent();
+    this.disposeStandby();
     this.current = slot;
     this.loadInto(slot, url);
     const info = await this.metadata(slot);
@@ -187,39 +219,30 @@ export class NativeBackend {
   }
 
   /** Crossfade (M8 Phase A, opt-in): overlap the standby element over the
-   *  current one with equal-power ramps. Element-based timing is
-   *  approximate by nature — the capability flag is per-engine and the
-   *  musepack lane reports crossfade:false until its exact path lands.
-   *  Returns null when no standby is loaded (caller falls back to EOS). */
-  async beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<EngineStreamInfo | null> {
+   *  current one with equal-power ramps scheduled on per-slot GainNodes.
+   *  Element-based timing is approximate by nature — the capability flag is
+   *  honest about it. Returns null when no standby is loaded, a fade is
+   *  already running, or a transport action superseded the ramp (caller
+   *  falls back to EOS). */
+  async beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<CrossfadeResult | null> {
     const outgoing = this.current;
-    if (!outgoing || !this.standby || !this.ctx) return null;
+    if (!outgoing || !this.standby || !this.ctx || this.nativeFade) return null;
     void next; // the standby is already opened on the prepared item
     const incoming = this.standby;
     const fade = Math.max(0.25, Math.min(15, fadeSeconds));
-    const now0 = this.ctx.currentTime;
-    const t1 = now0 + fade;
 
-    // The old element's 'ended' would fire mid-fade and emit a stale eos;
-    // suppress it for the duration of the transition.
-    const onEnded = (): void => this.emitLegacyAndPort('onEos', 'eos');
-    outgoing.el.removeEventListener('ended', onEnded);
-    outgoing.el.addEventListener('ended', () => {
-      // natural end of the OUTGOING lane after the swap: silence only
-      outgoing.el.pause();
-    });
+    // The old element's natural 'ended' mid-fade must not emit a stale eos.
+    outgoing.suppressEnded = true;
 
-    // Start the incoming element muted, in sync with the ramp window.
-    incoming.el.volume = 1; // element volume stays 1; ramps live on gain nodes
+    // Start the incoming element silent and ramp it in via AudioParam
+    // curves (sample-accurate scheduling on the shared context clock).
+    incoming.gain.gain.value = 0;
     try {
       await incoming.el.play();
     } catch {
       return null; // autoplay rejection: fall back to normal handoff
     }
-    // Equal-power curves via setTargetAtTime approximations: linear-ish
-    // attack/release on dedicated per-element gains would need extra nodes,
-    // so we ramp the EXISTING graph gains with setValueCurveAtTime.
-    const n = 32;
+    const n = 64;
     const outCurve = new Float32Array(n);
     const inCurve = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -227,34 +250,76 @@ export class NativeBackend {
       outCurve[i] = Math.cos((x * Math.PI) / 2);
       inCurve[i] = Math.sin((x * Math.PI) / 2);
     }
-
-    // Ramp via Web Audio scheduling on temporary GainNodes is not possible
-    // without new nodes; instead drive the two elements' own volume props
-    // with a short JS ramp loop (element volume is a pre-mix multiplier and
-    // is sample-accurate enough for an audible crossfade).
+    const t0 = this.ctx.currentTime;
+    const f = {
+      outgoing,
+      incoming,
+      completed: false,
+      timer: null as ReturnType<typeof setTimeout> | null,
+      done: null as (() => void) | null,
+    };
+    outgoing.gain.gain.setValueCurveAtTime(outCurve, t0, fade);
+    incoming.gain.gain.setValueCurveAtTime(inCurve, t0, fade);
+    this.nativeFade = f;
     await new Promise<void>((resolve) => {
-      const step = (fade * 1000) / n;
-      let i = 0;
-      const timer = setInterval(() => {
-        i++;
-        if (i >= n || this.current !== outgoing) {
-          clearInterval(timer);
-          resolve();
-          return;
-        }
-        outgoing.el.volume = Math.max(0, Math.min(1, outCurve[i] ?? 0));
-        incoming.el.volume = Math.max(0, Math.min(1, inCurve[i] ?? 0));
-      }, step);
-      void t1;
+      f.done = resolve;
+      f.timer = setTimeout(() => {
+        if (this.nativeFade === f) this.completeNativeFade();
+      }, fade * 1000);
     });
 
-    // Swap slots and dispose the spent element.
+    // Whatever happened (natural completion, pause fast-forward, abort),
+    // the ramp window is closed. Only a COMPLETED fade promotes; aborts
+    // (transport supersede) leave the outgoing track in charge.
+    if (!f.completed || this.current !== outgoing) {
+      this.disposeStandby();
+      return null;
+    }
     this.playRequest++;
     this.standby = null;
     this.disposeCurrent();
     this.current = incoming;
-    return this.infoOf(incoming);
-    void now0;
+    // Respect a pause that raced the completion: the core believes it is
+    // paused, so the promoted element must not keep sounding.
+    if (!this.shouldPlay) incoming.el.pause();
+    // Element timing is approximate: report the nominal fade window as the
+    // overlapped frames so the core's effective-length shrink matches what
+    // was audibly consumed.
+    return { info: this.infoOf(incoming), overlapFrames: Math.round(fade * this.rate) };
+  }
+
+  /** Fast-forwards the live fade to its end state (incoming sole owner). */
+  private completeNativeFade(): void {
+    const f = this.nativeFade;
+    if (!f) return;
+    this.nativeFade = null;
+    if (f.timer) clearTimeout(f.timer);
+    f.outgoing.gain.gain.cancelScheduledValues(0);
+    f.outgoing.gain.gain.value = 0;
+    f.incoming.gain.gain.cancelScheduledValues(0);
+    f.incoming.gain.gain.value = 1;
+    f.completed = true;
+    const done = f.done;
+    f.done = null;
+    done?.();
+  }
+
+  /** Cancels the live fade back to the outgoing track; the incoming
+   *  element goes silent and stays in the standby slot for disposal. */
+  private abortNativeFade(): void {
+    const f = this.nativeFade;
+    if (!f) return;
+    this.nativeFade = null;
+    if (f.timer) clearTimeout(f.timer);
+    f.outgoing.gain.gain.cancelScheduledValues(0);
+    f.outgoing.gain.gain.value = 1;
+    f.incoming.gain.gain.cancelScheduledValues(0);
+    f.incoming.gain.gain.value = 0;
+    f.incoming.el.pause();
+    f.completed = false;
+    const done = f.done;
+    f.done = null;
+    done?.();
   }
 
   startPumping(): void {
@@ -279,6 +344,10 @@ export class NativeBackend {
 
   async pause(): Promise<void> {
     this.shouldPlay = false;
+    // A pause during a live element fade fast-forwards the fade to its end
+    // state: the continuation promotes the incoming element and, because
+    // shouldPlay is now false, pauses it immediately. No orphaned audio.
+    this.completeNativeFade();
     this.playRequest++;
     if (this.current) this.current.el.pause();
   }
@@ -290,6 +359,9 @@ export class NativeBackend {
 
   async seek(sample: number): Promise<void> {
     if (!this.current) return;
+    // A seek abandons the fade boundary: back to the outgoing track, the
+    // incoming element goes silent (its standby slot is left for disposal).
+    this.abortNativeFade();
     this.shouldPlay = false;
     this.playRequest++;
     this.current.el.currentTime = sample / this.rate;
@@ -340,6 +412,7 @@ export class NativeBackend {
   async close(): Promise<void> {
     this.shouldPlay = false;
     this.playRequest++;
+    this.abortNativeFade();
     this.disposeCurrent();
     this.disposeStandby();
     if (this.ctx) {

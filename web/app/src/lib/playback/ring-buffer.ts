@@ -11,6 +11,11 @@ export class RingBuffer {
   private readonly capacityFrames: number;
   private readAbs = 0;
   private writeAbs = 0;
+  /** Added to the reported playhead only (never affects where reads and
+   *  writes land). The crossfade ring swap uses this to continue the
+   *  outgoing ring's absolute frame count without disturbing the promoted
+   *  ring's physical layout. */
+  private reportedBase = 0;
   readonly channels: number;
 
   constructor(capacityFrames: number, channels: number) {
@@ -36,9 +41,11 @@ export class RingBuffer {
     return this.capacityFrames - this.availableFrames;
   }
 
-  /** Total frames consumed since the last reset (monotonic playhead). */
+  /** Total frames consumed since the last reset, plus the reported base
+   *  (see `continuePlayheadFrom`). Monotonic playhead in the album-clock
+   *  frame space. */
   get renderedFrames(): number {
-    return this.readAbs;
+    return this.readAbs + this.reportedBase;
   }
 
   /** Total frames written since the last reset. */
@@ -102,5 +109,17 @@ export class RingBuffer {
   reset(): void {
     this.readAbs = 0;
     this.writeAbs = 0;
+    this.reportedBase = 0;
+  }
+
+  /** Continues an absolute playhead count: adds `delta` (no-op when <= 0)
+   *  to the REPORTED playhead only. Reads, writes and availability are
+   *  untouched, so the physical ring layout stays exactly as the decoder
+   *  laid it out. Used by the crossfade ring swap: the promoted lane ring
+   *  reports frames in the outgoing ring's frame space, keeping the album
+   *  clock continuous across the transition. */
+  continuePlayheadFrom(delta: number): void {
+    if (delta <= 0) return;
+    this.reportedBase += delta;
   }
 }

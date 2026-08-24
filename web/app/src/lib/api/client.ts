@@ -30,6 +30,16 @@ export class ApiClient {
     this.token = opts.token;
   }
 
+  /** Public base URL (used by non-client fetchers, e.g. waveform planner). */
+  get baseUrl(): string {
+    return this.base;
+  }
+
+  /** Current bearer token override, if any (null = session cookie). */
+  getToken(): string | null {
+    return this.token?.() ?? null;
+  }
+
   async raw(path: string, init: RequestInit = {}, auth = true): Promise<Response> {
     const headers = new Headers(init.headers);
     const tok = this.token?.() ?? null;

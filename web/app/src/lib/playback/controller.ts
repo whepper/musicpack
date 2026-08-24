@@ -135,6 +135,8 @@ export interface ControllerOptions {
   backendFactory?: (kind: 'musepack' | 'native', events: HandlerSet) => Engine;
   /** Storage for cross-reload player persistence (defaults to localStorage). */
   storage?: { get: () => string | null; set: (value: string | null) => void };
+  /** Content-aware transition policy (Sweet Fades); see transition-profiles. */
+  planTransition?: PlayerPorts['planTransition'];
 }
 
 interface InternalControllerOptions extends ControllerOptions {
@@ -186,7 +188,9 @@ export class PlayerController {
     };
     this.core = new Player(
       queue as unknown as QueueModel,
-      o.portsOverride ? { ...ports, ...o.portsOverride } : ports,
+      o.portsOverride
+        ? { ...ports, ...o.portsOverride }
+        : { ...ports, planTransition: opts.planTransition },
       { initialVolume: opts.initialVolume, initialNormalize: opts.initialNormalize },
     );    // Mirror the core model into the UI-facing writable with QueueItem-typed
     // `current` (the web queue only ever holds QueueItems). The model stays

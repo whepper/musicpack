@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MusepackEngine } from '../../app/src/lib/playback/musepack-engine';
 import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
+import type { CrossfadeResult } from '../../player-core/src/engine';
 import type { WorkletReport } from '../../app/src/lib/playback/worklet-protocol';
 import type { PlaybackItem } from '../../player-core/src/types';
 
@@ -435,13 +436,26 @@ describe('MusepackEngine backpressure reports', () => {
 describe('MusepackEngine crossfade (M8 Phase B)', () => {
   interface XHarness {
     generation: number;
-    current: EngineHarness['current'] & { syntheticEosPending?: boolean };
-    standby: (EngineHarness['current'] & { syntheticEosPending?: boolean }) | null;
+    current: EngineHarness['current'] & { syntheticEosPending?: boolean; syntheticEosAt?: number };
+    standby: (EngineHarness['current'] & { syntheticEosPending?: boolean; syntheticEosAt?: number }) | null;
     node: { port: { postMessage: (m: Record<string, unknown>) => void } } | null;
     onWorkletMessage(message: WorkletReport): void;
     onWorkerMessage(handle: EngineHarness['current'], message: Record<string, unknown>): void;
-    xlaneReadyResolve: ((ok: boolean) => void) | null;
-    xfadeSwapResolve: (() => void) | null;
+    /** The live crossfade attempt (null when none is running). */
+    xfade: {
+      token: number;
+      phase: 'priming' | 'mixing';
+      fadeFrames: number;
+      needed: number;
+      filled: number;
+      q: Float32Array[];
+      awaitingAccepted: boolean;
+      decodeDone: boolean;
+      endSent: boolean;
+      readyResolve: ((ok: boolean) => void) | null;
+      swapResolve: ((ok: boolean) => void) | null;
+      swapFacts: { outgoingFrames: number; incomingFrames: number } | null;
+    } | null;
   }
 
   /** Worker stub that answers the close handshake so closeWorker resolves
@@ -514,11 +528,11 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
   async function runToSwap(
     engine: MusepackEngine,
     h: XHarness,
-  ): Promise<{ promise: Promise<EngineStreamInfo | null> }> {
+  ): Promise<{ promise: Promise<CrossfadeResult | null> }> {
     const promise = engine.beginCrossfade(item('/next.mpc'), 8);
-    await until(() => typeof h.xlaneReadyResolve === 'function');
+    await until(() => typeof h.xfade?.readyResolve === 'function');
     h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 999, token: 1, generation: 0 });
-    await until(() => typeof h.xfadeSwapResolve === 'function');
+    await until(() => typeof h.xfade?.swapResolve === 'function');
     return { promise };
   }
 
@@ -562,7 +576,10 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
         generation: 0,
       });
 
-      await expect(pending).resolves.toMatchObject({ rate: 44100 });
+      await expect(pending).resolves.toMatchObject({
+        info: { rate: 44100 },
+        overlapFrames: 352796,
+      });
       // Promotion happened exactly like advance(): the standby handle is
       // now current and the standby slot is empty.
       expect(h.current).toBe(incoming);
@@ -594,12 +611,12 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
       const { engine, h, eosSpy } = makeEngine();
       const incoming = h.standby!;
       const pendingPromise = engine.beginCrossfade(item('/next.mpc'), 8);
-      await until(() => typeof h.xlaneReadyResolve === 'function');
+      await until(() => typeof h.xfade?.readyResolve === 'function');
 
       // Incoming decode completes in the lane BEFORE promotion...
       h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
       h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 9, token: 1, generation: 0 });
-      await until(() => typeof h.xfadeSwapResolve === 'function');
+      await until(() => typeof h.xfade?.swapResolve === 'function');
       h.onWorkletMessage({ type: 'xfaded', frames: 3, outgoingFrames: 4, incomingFrames: 4, token: 1, generation: 0 });
 
       await expect(pendingPromise).resolves.toBeTruthy();
@@ -631,4 +648,179 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
       }
     },
   );
+
+describe('MusepackEngine crossfade lifecycle regressions', () => {
+  it(
+    'primes the whole fade window inside the sized lane ring (step 6)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h } = makeEngine();
+      // Give the standby a long track so the fade window (not the track
+      // length) is what bounds the readiness threshold.
+      const longInfo = { rate: 44100, channels: 2, version: 8, lengthSamples: 24 * 44100 };
+      h.standby!.info = longInfo;
+      const pending = engine.beginCrossfade(item('/next.mpc'), 12);
+      await until(() => h.xfade !== null && typeof h.xfade.readyResolve === 'function');
+      // 12 s fade at the default 44.1 kHz output rate: the readiness
+      // threshold is fadeFrames + margin, and it must fit inside the lane
+      // capacity (which grows beyond the main ring for long fades).
+      const xfade = h.xfade!;
+      const fadeFrames = Math.round(12 * 44100);
+      expect(xfade.fadeFrames).toBe(fadeFrames);
+      expect(xfade.needed).toBe(fadeFrames + 2048);
+      const { laneCapacityFrames } = await import(
+        '../../app/src/lib/playback/worklet-protocol'
+      );
+      expect(xfade.needed).toBeLessThan(laneCapacityFrames(44100, fadeFrames));
+      // Settle the attempt so no timers leak into the next test.
+      h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 9, token: xfade.token, generation: 0 });
+      await until(() => typeof h.xfade?.swapResolve === 'function');
+      h.onWorkletMessage({ type: 'xfaded', frames: 3, outgoingFrames: 4, incomingFrames: 4, token: xfade.token, generation: 0 });
+      await expect(pending).resolves.toBeTruthy();
+    },
+  );
+
+  it(
+    'delivers the NEXT boundary eos after a completed fade (BUG-1: no stale suppression)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy } = makeEngine();
+      const incoming = h.standby!;
+      const { promise } = await runToSwap(engine, h);
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 400000,
+        incomingFrames: 100000,
+        token: 1,
+        generation: 0,
+      });
+      await expect(promise).resolves.toBeTruthy();
+      expect(h.current).toBe(incoming);
+
+      // The promoted track plays to its natural decode end much later:
+      // its eos MUST reach the core (today it is swallowed by the stale
+      // suppression flag left behind by the successful fade).
+      h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
+      expect(eosSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it(
+    'cleans up when superseded by a standby replacement mid-fade (BUG-3a)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy, workletMessages } = makeEngine();
+      const { promise } = await runToSwap(engine, h);
+
+      // prepareNext replaced the standby slot while the fade was awaiting
+      // its swap: the attempt is dead and must resolve null, not promote.
+      h.standby = null;
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 4,
+        incomingFrames: 4,
+        token: 1,
+        generation: 0,
+      });
+
+      await expect(promise).resolves.toBeNull();
+      expect(workletMessages.some((m) => (m as Record<string, unknown>).type === 'xfade-cancel')).toBe(true);
+      // The still-current track keeps its normal lifecycle:
+      h.onWorkerMessage(h.current!, { type: 'eos', generation: 0 });
+      expect(eosSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it(
+    'cleans up when the generation moved during the swap wait (BUG-3b)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy, workletMessages } = makeEngine();
+      const { promise } = await runToSwap(engine, h);
+
+      // A seek/open bumped the generation; the stale xfaded resolves the
+      // await but the attempt must cancel cleanly.
+      (h as unknown as { generation: number }).generation = 1;
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 4,
+        incomingFrames: 4,
+        token: 1,
+        generation: 1,
+      });
+
+      await expect(promise).resolves.toBeNull();
+      expect(workletMessages.some((m) => (m as Record<string, unknown>).type === 'xfade-cancel')).toBe(true);
+      // No stale suppression: the current track's own later eos fires.
+      h.onWorkerMessage(h.current!, { type: 'eos', generation: 1 });
+      expect(eosSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it(
+    'refuses a second attempt while one is already armed/mixing (BUG-4)',
+    { timeout: 20000 },
+    async () => {
+      const { engine, h, workletMessages } = makeEngine();
+      const { promise } = await runToSwap(engine, h);
+
+      // A second trigger while the first is awaiting its swap must be
+      // refused immediately (one arm message only) instead of arming a
+      // competing attempt whose abort would kill the live fade. RED note:
+      // today the second attempt arms a second lane message and hangs in
+      // its readiness wait; only the arm-count assertion is checked here
+      // before finishing the first attempt.
+      engine.beginCrossfade(item('/other.mpc'), 8);
+      expect(workletMessages.filter((m) => (m as Record<string, unknown>).type === 'xfade')).toHaveLength(1);
+
+      // The first attempt completes unaffected.
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 4,
+        incomingFrames: 4,
+        token: 1,
+        generation: 0,
+      });
+    },
+  );
+
+  it(
+    'fires the synthetic eos at the compressed audible end, not the raw length (accounting)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h, eosSpy } = makeEngine();
+      const incoming = h.standby!;
+      const pendingPromise = engine.beginCrossfade(item('/next.mpc'), 8);
+      await until(() => typeof h.xfade?.readyResolve === 'function');
+
+      // Incoming decode completes inside the lane before promotion.
+      h.onWorkerMessage(incoming, { type: 'eos', generation: 0 });
+      h.onWorkletMessage({ type: 'xfadeReady', frames: 0, available: 9, token: 1, generation: 0 });
+      await until(() => typeof h.xfade?.swapResolve === 'function');
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 400000,
+        incomingFrames: 100000,
+        token: 1,
+        generation: 0,
+      });
+      await expect(pendingPromise).resolves.toBeTruthy();
+      expect(incoming.syntheticEosPending).toBe(true);
+
+      // lengthSamples = 441000; the audible end sits at
+      // 400000 + (441000 - 100000) = 741000 continuous frames. At 500000
+      // the old raw-length check fired far too early (B had barely begun).
+      h.onWorkletMessage({ type: 'rendered', frames: 500000, generation: 0 });
+      expect(eosSpy).not.toHaveBeenCalled();
+
+      h.onWorkletMessage({ type: 'rendered', frames: 741001, generation: 0 });
+      expect(eosSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+});
 });

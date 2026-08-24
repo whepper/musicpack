@@ -149,17 +149,32 @@ It applies only at natural track boundaries — never repeat-one, never a
 single-track repeat-all loop, never manual skips or seeks.
 
 - **Native lane** (FLAC etc.): the standby element overlaps the current one
-  with equal-power volume ramps (Phase A). Element timing is approximate.
+  with equal-power ramps on per-slot gain nodes (AudioParam-scheduled).
+  Element timing is approximate.
 - **Musepack lane** (Phase B): overlap-add mixing inside the PCM worklet.
   The next track's decoder is pumped into a dedicated crossfade lane ring;
   both lanes stream under per-lane credit backpressure while a cosine/sine
   ramp pair mixes them in the render callback. When the window elapses the
-  incoming ring becomes the output ring and its worker is promoted exactly
-  like the gapless handoff. The trigger fires when the remaining time of the
-  current track enters the fade window; because decode is paced by the ring,
+  incoming ring becomes the output ring — with its playhead rebased to the
+  outgoing count, so positions, seeking and end detection stay exact across
+  fades. The trigger fires when the remaining time of the current track
+  enters the planned overlap window; because decode is paced by the ring,
   short tracks may fall back to the natural gapless seam (the fade only
-  engages while the standby is still open — by construction for 8–12 s fades
-  on normal-length music).
+  engages while the standby is still open — by construction for 8–12 s
+  fades on normal-length music).
+- **Sweet Fades (content-aware planning)**: the app feeds the player a
+  transition policy derived from each track's waveform envelope. Recordings
+  that already separate themselves (trailing silence) keep true gapless
+  playback; consecutive album tracks joining at full energy are never faded
+  apart; a decayed outro gets an overlap that hugs its decay instead of a
+  blind fixed length; and an abrupt loud ending straight into a loud attack
+  is hard-cut rather than summed. The ⤡ setting acts as the maximum fade
+  length. Without envelope data the planner degrades to the legacy fixed
+  duration.
+- **Known limitation:** tracks shorter than the fade window, or seeks that
+  land within a second of a boundary, may still fall back to the natural
+  gapless seam instead of fading; rapid sequences of sub-fade-length tracks
+  can stall progression and remain under follow-up investigation.
 
 ## BS.1770 loudness normalization
 

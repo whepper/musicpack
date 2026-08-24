@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  RING_SECONDS,
+  XLANE_MAX_SECONDS,
+  laneCapacityFrames,
+} from '../../app/src/lib/playback/worklet-protocol';
 import type { WorkletReport } from '../../app/src/lib/playback/worklet-protocol';
 
 class FakePort {
@@ -181,6 +186,29 @@ describe('MusicPackPcmProcessor backpressure', () => {
   });
 });
 
+describe('lane ring sizing (M8 repair, step 6)', () => {
+  it('keeps the main-ring capacity for small fades', () => {
+    // 4 s fade at 48 kHz: wanted (5 s + margin) < base → base wins.
+    expect(laneCapacityFrames(48000, 4 * 48000)).toBe(Math.round(48000 * RING_SECONDS));
+  });
+
+  it('grows to hold a long fade plus margin and headroom', () => {
+    const cap = laneCapacityFrames(48000, 12 * 48000);
+    // The readiness threshold (fade + margin) must fit inside the ring with
+    // room to spare — that is the whole point of step 6.
+    const needed = 12 * 48000 + 2048;
+    expect(cap).toBeGreaterThan(needed);
+    expect(cap).toBeLessThanOrEqual(Math.round(48000 * XLANE_MAX_SECONDS));
+  });
+
+  it('clamps at XLANE_MAX_SECONDS even for the maximum clamped fade', () => {
+    const cap = laneCapacityFrames(48000, 15 * 48000);
+    expect(cap).toBe(Math.round(48000 * XLANE_MAX_SECONDS));
+    // Even at the cap the fade window itself fits.
+    expect(15 * 48000).toBeLessThan(cap);
+  });
+});
+
 describe('MusicPackPcmProcessor crossfade lane (M8 Phase B)', () => {
   function armFade(
     fadeFrames = 4,
@@ -237,6 +265,24 @@ describe('MusicPackPcmProcessor crossfade lane (M8 Phase B)', () => {
     const xfaded = port.messages.find((m) => m.type === 'xfaded');
     expect(xfaded).toMatchObject({ outgoingFrames: 4, incomingFrames: 3, token: 7 });
     expect(xfaded?.available).toBe(0); // ring swapped to the drained lane
+  });
+
+  it('keeps the absolute playhead continuous across the ring swap (BUG-2)', () => {
+    // Outgoing consumed 4 frames at the swap, lane consumed 3: the promoted
+    // ring must continue counting from 4 (the album clock), not restart at 3.
+    const { processor, port, go } = armFade(4);
+    sendX(port, 'xsamples', Float32Array.of(0.5, 0.5, 0.5), 7);
+    port.send({ type: 'samples', buffer: Float32Array.of(1, 1, 1, 1, 1, 1).buffer, generation: 1 });
+    sendX(port, 'xend', null, 7);
+    go();
+    // 4 frames mix; the swap itself runs at the top of the NEXT callback's
+    // mixing loop, so drive one more render tick past the window.
+    render(processor, 5);
+
+    const ring = (
+      processor as unknown as { ring: { renderedFrames: number; availableFrames: number; capacity: number } }
+    ).ring;
+    expect(ring.renderedFrames).toBe(4); // RED: today this is 3 (lane counter)
   });
 
   it('reports xfadeReady only when the whole incoming track is queued', () => {
@@ -307,10 +353,16 @@ describe('MusicPackPcmProcessor crossfade lane (M8 Phase B)', () => {
 
   it('defers the producer credit when a chunk only partially flushes', () => {
     const { processor, port } = armFade(2);
-    // Send more lane audio than fits the lane's 80-frame ring: the chunk
-    // must NOT be credited immediately (the old behavior double-credited
-    // and corrupted the producer's accounting).
-    sendX(port, 'xsamples', Float32Array.from({ length: 120 }, () => 1), 7);
+    // Step 6: the lane ring is sized by laneCapacityFrames (at the harness'
+    // tiny output rate that is XLANE-clamped, not the old fixed 8 s base).
+    const laneRing = (
+      processor as unknown as { xlane: { ring: { capacity: number }; creditOwed: boolean; pending: unknown } | null }
+    ).xlane!;
+    expect(laneRing.ring.capacity).toBe(laneCapacityFrames(10, 2));
+    // Send more lane audio than fits the sized ring: the chunk must NOT be
+    // credited immediately (the old behavior double-credited and corrupted
+    // the producer's accounting).
+    sendX(port, 'xsamples', Float32Array.from({ length: laneRing.ring.capacity + 40 }, () => 1), 7);
     expect(
       port.messages.filter((m) => m.type === 'accepted' && m.lane === 2),
     ).toHaveLength(0);
