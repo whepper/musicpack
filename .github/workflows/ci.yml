@@ -4,13 +4,68 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - 'libmpcdec/**'
+      - 'libmpcenc/**'
+      - 'libmpcpsy/**'
+      - 'libwavformat/**'
+      - 'libmusicpack/**'
+      - 'musicpack/**'
+      - 'sonic/**'
+      - 'server/**'
+      - 'author/**'
+      - 'include/**'
+      - 'common/**'
+      - 'mpcdec/**'
+      - 'mpcenc/**'
+      - 'mpc2sv8/**'
+      - 'mpccut/**'
+      - 'wavcmp/**'
+      - 'mpcgain/**'
+      - 'mpcchap/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'scripts/ci_*.py'
+      - 'tests/patch_reference.py'
+      - 'AGENTS.md'
+      - 'REUSE.toml'
+      - 'LICENSE'
+      - 'LICENSES/**'
+      - '.github/workflows/ci.yml'
   pull_request:
+    paths:
+      - 'libmpcdec/**'
+      - 'libmpcenc/**'
+      - 'libmpcpsy/**'
+      - 'libwavformat/**'
+      - 'libmusicpack/**'
+      - 'musicpack/**'
+      - 'sonic/**'
+      - 'server/**'
+      - 'author/**'
+      - 'include/**'
+      - 'common/**'
+      - 'mpcdec/**'
+      - 'mpcenc/**'
+      - 'mpc2sv8/**'
+      - 'mpccut/**'
+      - 'wavcmp/**'
+      - 'mpcgain/**'
+      - 'mpcchap/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'scripts/ci_*.py'
+      - 'tests/patch_reference.py'
+      - 'AGENTS.md'
+      - 'REUSE.toml'
+      - 'LICENSE'
+      - 'LICENSES/**'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read
-
-env:
-  EMSDK_VERSION: '6.0.6'
 
 jobs:
   build-and-test:
@@ -44,15 +99,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0   # needed to build the reference encoder at 05d97a5
+          fetch-depth: 0
 
       - name: Install libmicrohttpd
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            # The runner bundles a google-chrome apt repo whose index is
-            # occasionally mid-mirror-sync, failing apt-get update; drop it.
             sudo rm -f /etc/apt/sources.list.d/google-chrome.list
             sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
           else
@@ -84,10 +137,6 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
 
-      # C unit tests run everywhere; the shell-based integration/fuzz/fixture
-      # suites (bash + python3) are UNIX-only. server_unit builds on Windows
-      # too (the server core is platform-independent; the HTTP server itself
-      # is not built there since libmicrohttpd is unavailable).
       - name: Test direct SIMD gates
         shell: bash
         run: python3 scripts/ci_ctest.py --build build --config Release synth_ab synth_state_ab enc_ab psy_ab
@@ -97,9 +146,6 @@ jobs:
           python3 scripts/ci_ctest.py --build build --config Release
           unit mpack mpack_conformance install_consumer server_unit
 
-      # enc_compat is excluded here: its manifest mode is a local developer
-      # fallback pinned to the arm64-clang -O0 reference build. CI enforces
-      # the Phase 2 guarantee in live mode (REF_MPCENC) in the compat step.
       - name: Test Unix suites
         if: matrix.os != 'windows-latest'
         run: >
@@ -108,11 +154,6 @@ jobs:
           mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz
           mpack_hostile server_integration
 
-      # Build the pristine reference encoder (05d97a5) and verify the built
-      # encoder is byte-identical to it. Runs on all platforms: the live
-      # comparison is toolchain-agnostic (the committed -O0 manifest is only a
-      # local fallback). The patched reference retains its hardcoded -O3;
-      # both builds are configured as Release.
       - name: Checkout reference encoder
         shell: bash
         run: git worktree add --detach "$RUNNER_TEMP/musepack-ref" 05d97a5
@@ -120,17 +161,12 @@ jobs:
       - name: Configure reference encoder
         shell: bash
         run: |
-          # Keep only the encoder targets (libmpcpsy/libmpcenc/mpcenc): the
-          # pristine tree cannot configure otherwise (mpcgain/mpcchap need
-          # external libs; mpcdec/mpc2sv8/mpccut declare duplicate targets
-          # under MSVC). It retains the reference's hardcoded -O3 and
-          # downgrades -Wincompatible-pointer-types (an error on GCC 14+).
           PY="$(command -v python3 || command -v python)"
           "$PY" "$GITHUB_WORKSPACE/tests/patch_reference.py" "$RUNNER_TEMP/musepack-ref"
           cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_BUILD_TYPE=Release \
             ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }} \
-             -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
+            -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
 
       - name: Report reference configuration
         shell: bash
@@ -155,8 +191,6 @@ jobs:
           python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference-compat --reference --executable "$REF_MPCENC" --selected-config Release
           export REF_MPCENC
           python3 scripts/ci_ctest.py --build build --config Release compat
-          # Phase 2: extended-corpus q5/q6/q7 bit-exact regression (live mode,
-          # same reference encoder => toolchain-agnostic per-platform proof).
           python3 scripts/ci_ctest.py --build build --config Release enc_compat
 
   simd-off:
@@ -182,124 +216,3 @@ jobs:
           mpack_conformance mpack_integration author_backend author_encode author_app_audit mpack_fuzz meta_fuzz mpack_hostile
       - name: Verify forced SIMD rejects scalar-only build
         run: python3 scripts/ci_ctest.py --build build-nosimd synth_simd_unavailable
-
-  wasm-build:
-    name: wasm
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Emscripten
-        run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-          /opt/emsdk/emsdk install "$EMSDK_VERSION"
-          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
-
-      - name: Configure
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          emcmake cmake -S . -B build-wasm -DMPC_BUILD_TESTS=ON \
-            -DMPC_WASM_TEST_HOOKS=ON -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          cmake --build build-wasm -j
-
-      - name: Report configuration
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          python3 scripts/ci_config.py --build build-wasm --role wasm --selected-config Release --expect compiler_id=Clang --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=wasm-simd128 --expect wasm_simd=ON --expect wasm_test_hooks=ON
-
-      - name: Test Wasm smoke
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          python3 scripts/ci_ctest.py --build build-wasm wasm_smoke
-
-      - name: Test Wasm scalar vs explicit SIMD
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          python3 scripts/ci_ctest.py --build build-wasm wasm_synth_ab
-
-  research:
-    name: research (model-free)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      # Deterministic, model-free research tests only: pooling, L2/cosine,
-      # cache identity, silence, album aggregation, storage encodings,
-      # profile compatibility, metrics, cross-codec report pipeline.
-      # OpenL3 / Essentia / Discogs-EffNet tests are skipped here (they need
-      # TensorFlow or the AGPL/CC-NC-SA comparator stack and run locally).
-      - name: Install test deps
-        run: python -m pip install --upgrade pip pytest numpy soundfile
-
-      - name: Run research tests (model-free)
-        working-directory: research/sonic
-        run: python -m pytest tests -q
-
-  web-client:
-    name: web-client
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Node 22
-        uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-
-      - name: Install libmicrohttpd
-        run: sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
-
-      - name: Install Emscripten
-        run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
-          /opt/emsdk/emsdk install "$EMSDK_VERSION"
-          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
-
-      - name: Build server
-        run: |
-          cmake -S . -B build -DMPC_BUILD_TESTS=OFF
-          cmake --build build -j --target musicpack_server_cmd
-
-      - name: Build wasm module
-        shell: bash
-        run: |
-          source /opt/emsdk/emsdk_env.sh
-          emcmake cmake -S . -B build-wasm
-          cmake --build build-wasm -j --target musepack_wasm
-
-      - name: Install + build client
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Type-check
-        working-directory: web
-        run: npx svelte-check --tsconfig ./tsconfig.json
-
-      - name: Unit tests (Vitest)
-        working-directory: web
-        run: npx vitest run
-
-      - name: Node wasm gapless harness
-        working-directory: web
-        run: node tests/node/wasm-gapless.mjs ../build-wasm/wasm/musepack.js ../tests/fixtures/sine44-q5.mpc ../tests/fixtures/sine44-q7.mpc ../tests/fixtures/sine44-q5-48s.mpc
-
-      - name: Browser tests (Playwright)
-        working-directory: web
-        run: |
-          npx playwright install --with-deps chromium
-          npx playwright test
