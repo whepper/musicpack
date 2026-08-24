@@ -332,33 +332,43 @@ test('removing the playing queue item advances to the following track', async ({
   // Snapshot the queue AND the actual cursor: ~1 s fixture tracks may have
   // gaplessly advanced before pause landed, so "the playing item" is
   // items[idx], not necessarily items[0].
-  const { titles, idx } = await page.evaluate(() => {
+  const { ids, idx } = await page.evaluate(() => {
     const q = window.__musicpack?.queue.get();
-    return { titles: q?.items.map((i) => i.track.title) ?? [], idx: q?.index ?? -1 };
+    return { ids: q?.items.map((i) => i.id) ?? [], idx: q?.index ?? -1 };
   });
-  expect(titles.length).toBeGreaterThan(1);
+  expect(ids.length).toBeGreaterThan(1);
 
   // Remove the playing item through the queue store (the panel's ✕ button
   // calls exactly this). Driving it directly removes the open-panel/click
   // locator race that flaked on slow CI runners; the behavior under test is
   // the core's reaction to an external mutation.
+  const removedId = ids[idx];
   await page.evaluate(
     (i: number) => window.__musicpack?.queue.removeAt(i),
     idx,
   );
 
-  // The cursor clamps onto a neighbor and the controller loads it; the
-  // pause intent is preserved (no audio starts). Removing the current item
-  // never collapses the queue.
+  // The cursor moves off the removed item and the controller settles it;
+  // the pause intent is preserved (no audio starts). Whether the core has
+  // already loaded the neighbor when we observe is a load race — assert on
+  // item identity, not on which side of it we caught.
   await waitFor(
     page,
     async () => {
       const s = await page.evaluate(() => {
         const q = window.__musicpack?.queue.get();
         const m = window.__musicpack?.player.model.get();
-        return { n: q?.items.length ?? -1, idx: q?.index ?? -2, title: m?.current?.track.title ?? '' };
+        return {
+          n: q?.items.length ?? -1,
+          idsNow: q?.items.map((i) => i.id) ?? [],
+          curId: m?.current?.id ?? null,
+        };
       });
-      return s.n === titles.length - 1 && s.title === (s.idx === idx ? '' : titles[s.idx] ?? '');
+      return (
+        s.n === ids.length - 1 &&
+        !s.idsNow.includes(removedId) &&
+        s.curId !== removedId
+      );
     },
     { label: 'cursor moved off the removed item' },
   );
