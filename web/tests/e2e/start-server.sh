@@ -44,6 +44,9 @@ mpath = os.path.join(dst, "manifest.json")
 m = json.load(open(mpath, encoding="utf-8"))
 m["album"]["title"] = "Long Player"
 m["album"]["originalReleaseDate"] = "1986-06-16"
+# Four genres so the shelf card exercises the 3-pills + "+1" overflow while
+# the album detail page shows every pill (Phase 2B write-through).
+m["album"]["genres"] = ["Rock", "Electronic", "Synthwave", "Pop"]
 m["release"]["edition"] = "1986 Original CD"
 m["media"][0]["tracks"][0]["audio"]["sha256"] = sha
 m["media"][0]["tracks"][0]["duration"] = 48

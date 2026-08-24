@@ -12,7 +12,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import ErrorView from './ErrorView.svelte';
   import { formatDate, mediumLabel, yearOf } from '../format';
   import { tracksOfRelease } from '../state/queue';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   let { albumId, releaseParam }: { albumId: string; releaseParam?: string } = $props();
 
@@ -22,6 +22,13 @@ SPDX-License-Identifier: BSD-3-Clause
   let loading = $state(true);
   let selectedId = $state(-1);
   let viewerOpen = $state(false);
+  // Transient "✓ Added" confirmation for the album-level queue action; the
+  // timer is cleared on destroy so no state update fires post-unmount.
+  let albumAdded = $state(false);
+  let addedTimer: ReturnType<typeof setTimeout> | undefined;
+  onDestroy(() => {
+    if (addedTimer) clearTimeout(addedTimer);
+  });
 
   const currentTrackId = $derived($playerModel.current?.track.id);
 
@@ -84,6 +91,12 @@ SPDX-License-Identifier: BSD-3-Clause
     if (!rel || !detail) return;
     const artist = detail.album.artists[0]?.name ?? '';
     queue.addAlbum(rel, detail.album.title, artist);
+    albumAdded = true;
+    if (addedTimer) clearTimeout(addedTimer);
+    addedTimer = setTimeout(() => {
+      albumAdded = false;
+      addedTimer = undefined;
+    }, 2500);
   }
 
   function playFrom(index: number): void {
@@ -128,10 +141,14 @@ SPDX-License-Identifier: BSD-3-Clause
           {#if rel.label} · {rel.label}{/if}
           {#if rel.catalogueNumber} · {rel.catalogueNumber}{/if}
         </p>
-        <div style="display:flex;gap:var(--space-3);margin-top:var(--space-4)">
+        <div class="hero-actions">
           <button class="btn" onclick={playAlbum}>▶ Play album</button>
           <button class="btn ghost" onclick={shuffleAlbum}>⤨ Shuffle</button>
-          <button class="btn ghost" onclick={addToQueue}>+ Add to Queue</button>
+          <button
+            class="btn ghost album-add"
+            aria-label={albumAdded ? 'Album added to queue' : 'Add album to queue'}
+            onclick={addToQueue}
+          >{albumAdded ? '✓ Added' : '+ Add to Queue'}</button>
           <button class="btn ghost" onclick={() => (viewerOpen = true)}>View artwork</button>
         </div>
       </div>

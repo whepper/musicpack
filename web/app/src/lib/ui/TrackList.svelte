@@ -8,6 +8,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import { fmtTime, mediumLabel, codecLabel } from '../format';
   import { queue } from '../bootstrap';
   import { itemForTrack } from '../state/queue';
+  import { onDestroy } from 'svelte';
 
   let {
     release,
@@ -20,6 +21,13 @@ SPDX-License-Identifier: BSD-3-Clause
   } = $props();
 
   let addedSet = $state<Set<number>>(new Set());
+  // Pending "✓ added" revert timers, cleared on destroy so no state update
+  // ever fires after the component is gone.
+  const timers = new Map<number, ReturnType<typeof setTimeout>>();
+  onDestroy(() => {
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+  });
 
   const discs = $derived([...release.media].sort((a, b) => a.disc - b.disc));
   // Flattened queue index of the first track of each disc, so clicking a
@@ -39,9 +47,15 @@ SPDX-License-Identifier: BSD-3-Clause
     const artist = release.album.artists[0]?.name ?? '';
     queue.addItem(itemForTrack(release, track, release.album.title, artist));
     addedSet = new Set([...addedSet, track.id]);
-    setTimeout(() => {
-      addedSet = new Set([...addedSet].filter((id) => id !== track.id));
-    }, 1200);
+    const prior = timers.get(track.id);
+    if (prior) clearTimeout(prior);
+    timers.set(
+      track.id,
+      setTimeout(() => {
+        timers.delete(track.id);
+        addedSet = new Set([...addedSet].filter((id) => id !== track.id));
+      }, 2500),
+    );
   }
 </script>
 
@@ -53,9 +67,9 @@ SPDX-License-Identifier: BSD-3-Clause
         {#if disc.title}<span class="muted">— {disc.title}</span>{/if}
       </h3>
     {/if}
-    <div role="list" aria-label={`Disc ${disc.disc} tracks`}>
+    <ul class="disc-tracks" aria-label={`Disc ${disc.disc} tracks`}>
       {#each disc.tracks as track, ti (track.id)}
-        <div
+        <li
           class="track"
           class:now-playing={track.id === currentTrackId}
           aria-current={track.id === currentTrackId ? 'true' : undefined}
@@ -78,8 +92,8 @@ SPDX-License-Identifier: BSD-3-Clause
             aria-label={`Add ${track.title} to queue`}
             onclick={() => addTrack(track)}
           >{addedSet.has(track.id) ? '✓' : '+'}</button>
-        </div>
+        </li>
       {/each}
-    </div>
+    </ul>
   {/each}
 </div>

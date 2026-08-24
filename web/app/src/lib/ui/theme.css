@@ -294,6 +294,14 @@ h3 {
 
 /* ---- album page --------------------------------------------------------- */
 
+/* Hero action row: wraps instead of overflowing on narrow viewports. */
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
 .album-hero {
   display: grid;
   grid-template-columns: minmax(200px, 300px) 1fr;
@@ -416,6 +424,13 @@ h3 {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-2);
   border-bottom: 1px solid var(--hairline);
+}
+
+/* Semantic list container for a disc's tracks (native list semantics). */
+.disc-tracks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .track:hover {
