@@ -139,6 +139,10 @@ describe('MusepackEngine backpressure reports', () => {
     expect(postMessage.mock.calls.map(([message]) => message)).toEqual([
       { type: 'pause', generation: 0 },
       { type: 'play', generation: 0 },
+      // M8 repair: an underrun also proves any outstanding decode request
+      // is gone, so the credit is released and a fresh play is posted
+      // instead of silently blocking the pump forever.
+      { type: 'play', generation: 0 },
     ]);
     expect(onBuffering).toHaveBeenCalledOnce();
   });
@@ -650,6 +654,51 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
   );
 
 describe('MusepackEngine crossfade lifecycle regressions', () => {
+  it(
+    'recovers the decode pump when an underrun follows a lost play (short-track stall)',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h } = makeEngine();
+      // A 'play' is outstanding (credit held) when the ring starves — the
+      // response was consumed by promotion/generation churn. The underrun
+      // proves the outstanding request is gone; decode MUST resume.
+      (engine as any).pullInFlight = true;
+      (engine as any).pumpingRequested = true;
+      const worker = (engine as any).current.worker;
+      const before = worker.postMessage.mock.calls.length;
+      h.onWorkletMessage({ type: 'underrun', frames: 0, generation: 0 });
+      // The credit was released and IMMEDIATELY re-acquired by the fresh
+      // recovery play (resumePumpingIfRequested posts and holds it).
+      expect((engine as any).pullInFlight).toBe(true);
+      const plays = (
+        worker.postMessage.mock.calls.slice(before) as Array<[Record<string, unknown>]>
+      ).filter(([m]) => m.type === 'play');      expect(plays.length).toBe(1);
+    },
+  );
+
+  it(
+    'clears the demand-pump credit when a crossfade promotes over an in-flight play',
+    { timeout: 15000 },
+    async () => {
+      const { engine, h } = makeEngine();
+      (engine as any).pullInFlight = true;
+      const incoming = h.standby!;
+      const { promise } = await runToSwap(engine, h);
+      h.onWorkletMessage({
+        type: 'xfaded',
+        frames: 3,
+        outgoingFrames: 400000,
+        incomingFrames: 100000,
+        token: 1,
+        generation: 0,
+      });
+      await expect(promise).resolves.toBeTruthy();
+      // Promotion changed the current handle: the old lane's outstanding
+      // credit is meaningless and must not block the new track's pump.
+      expect((engine as any).pullInFlight).toBe(false);
+    },
+  );
+
   it(
     'primes the whole fade window inside the sized lane ring (step 6)',
     { timeout: 15000 },

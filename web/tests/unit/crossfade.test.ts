@@ -27,6 +27,11 @@ function item(n: number): PlaybackItem {
   };
 }
 
+/** Item with an explicit decoded length in seconds (short-track tests). */
+function mk(n: number, secs: number): PlaybackItem {
+  return { ...item(n), durationHintSeconds: secs };
+}
+
 interface Harness {
   handlers: {
     primed(): void;
@@ -53,26 +58,37 @@ function makePlayer(opts: {
   planTransition?: ConstructorParameters<typeof Player>[1]['planTransition'];
 }): { player: Player; h: Harness; queue: ReturnType<typeof createQueueModel> } {
   const queue = createQueueModel({ rng: () => 0.5 });
+  /** Exact decoded length the fake engine reports for an item. */
+  const infoFor = (it: PlaybackItem) => ({
+    rate: RATE,
+    channels: 2,
+    version: 0,
+    lengthSamples: Math.floor(((it.durationHintSeconds ?? 30) as number) * RATE),
+  });
   const h: Harness = {
     handlers: {} as Harness['handlers'],
     // NOTE: `??` would treat null as absent — but null means "the engine
     // DECLINED the fade" and must be returned as-is.
-    beginCrossfade: vi.fn(async (): Promise<CrossfadeResult | null> => {
-      if (opts.deferredFade) {
-        if (!h.resolveFade) {
-          return new Promise<CrossfadeResult | null>((resolve) => {
-            h.resolveFade = (r) => {
-              h.resolveFade = null;
-              resolve(r);
-            };
-          });
+    beginCrossfade: vi.fn(
+      async (it: PlaybackItem, _seconds: number): Promise<CrossfadeResult | null> => {
+        if (opts.deferredFade) {
+          if (!h.resolveFade) {
+            return new Promise<CrossfadeResult | null>((resolve) => {
+              h.resolveFade = (r) => {
+                h.resolveFade = null;
+                resolve(r);
+              };
+            });
+          }
+          return null;
         }
-        return null;
-      }
-      return opts.fadeResult === undefined
-        ? { ...FADE_OK, overlapFrames: opts.overlapFrames ?? 0 }
-        : opts.fadeResult;
-    }),
+        if (opts.fadeResult !== undefined) return opts.fadeResult;
+        return {
+          info: infoFor(it),
+          overlapFrames: opts.overlapFrames ?? 0,
+        };
+      },
+    ),
     rendered: 0,
   };
   const player = new Player(queue as never, {
@@ -86,9 +102,9 @@ function makePlayer(opts: {
           crossfade: opts.crossfadeCapable,
         },
         init: async () => undefined,
-        open: async () => ({ rate: RATE, channels: 2, version: 0, lengthSamples: LEN }),
-        prepareNext: async () => ({ rate: RATE, channels: 2, version: 0, lengthSamples: LEN }),
-        advance: async () => ({ rate: RATE, channels: 2, version: 0, lengthSamples: LEN }),
+        open: async (it: PlaybackItem) => infoFor(it),
+        prepareNext: async (it: PlaybackItem) => infoFor(it),
+        advance: async () => infoFor(queue.current() ?? { ...item(0), durationHintSeconds: 30 }),
         play: async () => undefined,
         pause: async () => undefined,
         seekSample: async () => undefined,
@@ -378,5 +394,60 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
     expect(h.beginCrossfade).not.toHaveBeenCalled();
     // Reload semantics: same item stays current through a fresh load.
     expect(player.model.get().current?.id).toBe('t1');
+  });
+
+  it('progresses through short tracks into a normal track without stalling', async () => {
+    const { player, h } = makePlayer({ crossfadeCapable: true });
+    await player.playSequence([mk(1, 48), mk(2, 1), mk(3, 1), mk(4, 48)], 'AL', 'A');
+    player.setCrossfade(4);
+    await primeAndPlay(h);
+
+    // Boundary 1 (normal -> short): positional trigger near the opener end.
+    h.rendered = 46.5 * RATE;
+    h.handlers.tick();
+    await flush();
+    expect(h.beginCrossfade).toHaveBeenCalled();
+    expect(player.model.get().current?.id).toBe('t2');
+
+    // Boundaries 2 and 3 (short -> short -> normal): each decode-EOS lands
+    // while audio remains, so the last-chance fade advances exactly one
+    // track per EOS — never zero, never two.
+    for (const id of ['t3', 't4']) {
+      h.handlers.eos();
+      await flush();
+      expect(player.model.get().current?.id).toBe(id);
+    }
+
+    // Termination: the final track's EOS still ends the queue cleanly.
+    h.rendered = 99 * RATE; // past the 98 s compressed total
+    h.handlers.eos();
+    await flush();
+    h.handlers.tick();
+    await flush();
+    expect(player.model.get().state).toBe('ended');
+  });
+
+  it('handles several consecutive short tracks with a fade at every boundary', async () => {
+    const { player, h } = makePlayer({ crossfadeCapable: true });
+    await player.playSequence([mk(1, 1), mk(2, 1), mk(3, 1), mk(4, 1)], 'AL', 'A');
+    player.setCrossfade(12); // window far longer than any track
+    await primeAndPlay(h);
+
+    // One logical advancement per decode-EOS, across every boundary,
+    // including the final termination.
+    for (const id of ['t2', 't3', 't4']) {
+      h.handlers.eos();
+      await flush();
+      expect(player.model.get().current?.id).toBe(id);
+    }
+    const calls = h.beginCrossfade.mock.calls.length;
+    expect(calls).toBeGreaterThanOrEqual(2); // faded, not merely gapless
+
+    h.rendered = 10 * RATE; // past the 4 s total
+    h.handlers.eos();
+    await flush();
+    h.handlers.tick();
+    await flush();
+    expect(player.model.get().state).toBe('ended');
   });
 });

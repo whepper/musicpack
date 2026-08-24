@@ -155,6 +155,14 @@ export class MusepackEngine implements Engine {
       channelCountMode: 'explicit',
     });
     this.node.connect(this.gain);
+    // A crashed processor stops receiving process() calls entirely — audio
+    // goes silent and every counter freezes. Surface it as a player error
+    // instead of an unexplainable silent hang.
+    this.node.onprocessorerror = () => {
+      const message = 'Audio worklet processor crashed.';
+      this.h.error(message);
+      this.emitNamed('error');
+    };
     this.node.port.onmessage = (ev: MessageEvent<WorkletReport>) => {
       this.onWorkletMessage(ev.data);
     };
@@ -317,6 +325,11 @@ export class MusepackEngine implements Engine {
         this.h.buffering();
         this.emitNamed('buffering');
         this.backpressured = false;
+        // A starved output also proves any outstanding decode request is
+        // lost (its response can no longer arrive meaningfully). Release
+        // the credit so pumping can actually resume — otherwise the ring
+        // stays empty forever and playback freezes silently.
+        this.pullInFlight = false;
         this.resumePumpingIfRequested();
         break;
       case 'accepted':
@@ -535,6 +548,9 @@ export class MusepackEngine implements Engine {
       return null;
     }
     this.current = promoted;
+    // Changing the current handle invalidates any outstanding demand credit
+    // (same invariant as the crossfade promotion above).
+    this.pullInFlight = false;
     this.node?.port.postMessage({
       type: 'track',
       sourceRate: promotedSourceInfo.rate,
@@ -649,6 +665,10 @@ export class MusepackEngine implements Engine {
       ++this.standbyRequest;
       this.standby = null;
       this.current = incoming;
+      // Promotion invalidates the outgoing lane's outstanding demand credit:
+      // its worker is about to be closed, so a held credit would block every
+      // future resumePumping for the new current track.
+      this.pullInFlight = false;
       attempt.awaitingAccepted = false;
       for (const samples of attempt.q) {
         this.node.port.postMessage(

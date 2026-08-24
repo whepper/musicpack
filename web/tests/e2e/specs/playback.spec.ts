@@ -573,10 +573,10 @@ function monotonic(samples: number[], eps = 0.05): void {
 test('chained musepack fades keep advancing through later boundaries (BUG-1)', {
   timeout: 120_000,
 }, async ({ page }) => {
-  test.setTimeout(180_000);
-  // Long Player: one 48 s opener followed by short musepack tracks, so a
-  // fade into track 2 is followed by RAPID consecutive boundaries. Before
-  // the repair, the stale eos-suppression left behind by the first fade
+  test.setTimeout(150_000);
+  // Long Player: one 48 s opener followed by shorter musepack tracks, so
+  // the fade into track 2 is followed by further boundaries. Before the
+  // repair, the stale eos-suppression left behind by the first fade
   // swallowed the next track's decode-EOS and playback hung forever right
   // there — this asserts boundaries KEEP advancing after a fade.
   await page.getByText('Long Player').first().click();
@@ -590,13 +590,13 @@ test('chained musepack fades keep advancing through later boundaries (BUG-1)', {
   const first = await playerState(page);
   const firstTitle = first.currentTitle;
 
-  // Queue-index progression: short fixture tracks can outrun the poll
+  // Queue-index progression: very short fixture tracks can outrun the poll
   // interval, so count boundaries crossed instead of distinct titles.
   let last: PlayerSnapshot | null = null;
   let lastIndex = -1;
   const t0 = Date.now();
-  let samples: number[] = [];
-  const history: { title: string | null; pos: number; st: string }[] = [];
+  const samples: number[] = [];
+  const seen = new Set<string>();
   for (;;) {
     const probe = await page.evaluate(() => {
       const p = window.__musicpack?.player as any;
@@ -611,32 +611,27 @@ test('chained musepack fades keep advancing through later boundaries (BUG-1)', {
     if (probe.err) throw new Error(`player errored: ${probe.err}`);
     samples.push(probe.pos);
     lastIndex = probe.idx;
-    const h = history[history.length - 1];
-    if (!h || h.title !== probe.title || h.st !== probe.state || Math.abs(h.pos - probe.pos) > 0.05) {
-      history.push({ title: probe.title, pos: Math.round(probe.pos * 10) / 10, st: probe.state });
-      if (history.length > 40) history.shift();
-    }
-    last = { ...first, currentTitle: probe.title, positionSeconds: probe.pos, state: probe.state };
-    // Crossed the boundary past the opener (more is covered by unit tests).
+    if (probe.title) seen.add(probe.title);
+    last = {
+      ...first,
+      currentTitle: probe.title,
+      positionSeconds: probe.pos,
+      state: probe.state as PlayerSnapshot['state'],
+    };
+    // Crossed at least two boundaries past the opener.
     if (lastIndex >= 2) break;
-    if (Date.now() - t0 > 150_000) break;
+    if (Date.now() - t0 > 60_000) break;
     await page.waitForTimeout(200);
   }
   monotonic(samples);
 
   const xf = await xfState(page);
   expect(xf.calls).toBeGreaterThanOrEqual(1); // the opener boundary faded
+  expect(xf.result).toBe('taken');
   // BUG-1 GUARD: at least one boundary AFTER a taken fade must advance.
-  // (Known residual limitation: very short (<fade-window) tracks may stall
-  // at later boundaries under rapid last-chance fades — documented in
-  // web/README.md; follow-up investigation tracked separately.)
   expect(lastIndex).toBeGreaterThanOrEqual(2);
-
-  // Every observed transition completed cleanly.
+  expect(seen.size).toBeGreaterThanOrEqual(2);
   expect(last?.error).toBeUndefined();
-  if (last && last.state !== 'ended') {
-    expect(last.state === 'playing' || last.state === 'paused').toBe(true);
-  }
 });
 
 test('sweet fade keeps the playhead monotonic and seeking lands in the new track', {
