@@ -44,14 +44,61 @@ jobs:
             fi
             printf '%s\n' "$files"
             match() { printf '%s\n' "$files" | grep -Eq "$1"; }
-            if match '^(libmpcdec|libmpcenc|libmpcpsy|libwavformat|common|include|mpcdec|mpcenc|mpc2sv8|mpccut|wavcmp|mpcgain|mpcchap)/' || match '^tests/(codec|fixtures|fuzz|patch_reference\.py)'; then codec=true; fi
-            if match '^(libmusicpack|musicpack)/' || match '^tests/(mpack|integration|mpack_)'; then core=true; fi
-            if match '^libmusicpack/' || match '^server/' || match '^tests/server_'; then server=true; fi
-            if match '^libmusicpack/' || match '^author/' || match '^tests/(author_|mpack_integration)'; then author=true; fi
-            if match '^(libmpcdec|common|include|wasm)/' || match '^tests/(wasm|fixtures)'; then wasm=true; fi
-            if match '^web/' || match '^tests/fixtures/' || match '^(libmpcdec|common|include|wasm|server|libmusicpack)/'; then web=true; fi
-            if match '^research/'; then research=true; fi
-            if match '^(CMakeLists\.txt|[^/]+/CMakeLists\.txt|scripts/ci_|\.github/workflows/)'; then
+
+            # Codec: Musepack codec sources and codec-specific test infrastructure.
+            if match '^(libmpcdec|libmpcenc|libmpcpsy|libwavformat|mpcdec|mpcenc|mpc2sv8|mpccut|wavcmp|mpcgain|mpcchap)/' \
+              || match '^common/' \
+              || match '^include/(mpc|musepack)/' \
+              || match '^tests/(codec|fixtures|fuzz|patch_reference\.py)'; then
+              codec=true
+            fi
+
+            # MusicPack core: package model, manifest, CLI and package-level tests.
+            if match '^(libmusicpack|musicpack)/' \
+              || match '^tests/(mpack|integration|mpack_)'; then
+              core=true
+            fi
+
+            # Server consumes the MusicPack core and has its own integration tests.
+            if match '^libmusicpack/' \
+              || match '^server/' \
+              || match '^tests/server_'; then
+              server=true
+            fi
+
+            # Author consumes the MusicPack core and owns its application/backend.
+            if match '^libmusicpack/' \
+              || match '^author/' \
+              || match '^tests/(author_|mpack_integration)'; then
+              author=true
+            fi
+
+            # WASM is the decoder-facing build; do not treat arbitrary common/include
+            # or test changes as WASM changes unless they affect its actual inputs.
+            if match '^libmpcdec/' \
+              || match '^common/' \
+              || match '^include/(mpc|musepack)/' \
+              || match '^wasm/' \
+              || match '^tests/wasm/'; then
+              wasm=true
+            fi
+
+            # Web/player consumes the browser-facing WASM and server stack.
+            if match '^web/' \
+              || match '^tests/fixtures/' \
+              || match '^(libmpcdec|common|wasm|server|libmusicpack)/'; then
+              web=true
+            fi
+
+            if match '^research/'; then
+              research=true
+            fi
+
+            # Only root build/CI infrastructure changes fan out to every domain.
+            # Component-level CMakeLists.txt files remain scoped to their component.
+            if match '^CMakeLists\.txt$' \
+              || match '^scripts/ci_[^/]*$' \
+              || match '^\.github/workflows/'; then
               codec=true; core=true; server=true; author=true; wasm=true; web=true; research=true
             fi
           fi
