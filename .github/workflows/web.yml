@@ -1,36 +1,7 @@
 name: Web CI
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'web/**'
-      - 'server/**'
-      - 'libmusicpack/**'
-      - 'libmpcdec/**'
-      - 'common/**'
-      - 'include/**'
-      - 'wasm/**'
-      - 'tests/fixtures/**'
-      - 'CMakeLists.txt'
-      - '**/CMakeLists.txt'
-      - 'scripts/ci_*.py'
-      - '.github/workflows/web.yml'
-  pull_request:
-    paths:
-      - 'web/**'
-      - 'server/**'
-      - 'libmusicpack/**'
-      - 'libmpcdec/**'
-      - 'common/**'
-      - 'include/**'
-      - 'wasm/**'
-      - 'tests/fixtures/**'
-      - 'CMakeLists.txt'
-      - '**/CMakeLists.txt'
-      - 'scripts/ci_*.py'
-      - '.github/workflows/web.yml'
+  workflow_call:
 
 permissions:
   contents: read
@@ -39,57 +10,61 @@ env:
   EMSDK_VERSION: '6.0.6'
 
 jobs:
+  player-core:
+    name: player-core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Player Core unit tests
+        working-directory: web
+        run: npx vitest run tests/unit
+
   web-client:
     name: web-client
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install Node 22
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
-
       - name: Install libmicrohttpd
         run: sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
-
       - name: Install Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
           /opt/emsdk/emsdk install "$EMSDK_VERSION"
           /opt/emsdk/emsdk activate "$EMSDK_VERSION"
-
       - name: Build server
         run: |
           cmake -S . -B build -DMPC_BUILD_TESTS=OFF
           cmake --build build -j --target musicpack_server_cmd
-
       - name: Build wasm module
         shell: bash
         run: |
           source /opt/emsdk/emsdk_env.sh
           emcmake cmake -S . -B build-wasm
           cmake --build build-wasm -j --target musepack_wasm
-
       - name: Install + build client
         working-directory: web
         run: |
           npm ci
           npm run build
-
       - name: Type-check
         working-directory: web
         run: npx svelte-check --tsconfig ./tsconfig.json
-
-      - name: Unit tests (Vitest)
+      - name: Unit tests
         working-directory: web
         run: npx vitest run
-
       - name: Node wasm gapless harness
         working-directory: web
         run: node tests/node/wasm-gapless.mjs ../build-wasm/wasm/musepack.js ../tests/fixtures/sine44-q5.mpc ../tests/fixtures/sine44-q7.mpc ../tests/fixtures/sine44-q5-48s.mpc
-
-      - name: Browser tests (Playwright)
+      - name: Browser tests
         working-directory: web
         run: |
           npx playwright install --with-deps chromium
