@@ -1,0 +1,33 @@
+name: MusicPack Core CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: musicpack-core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install libmicrohttpd
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build -DMPC_BUILD_TESTS=ON -DMPC_BUILD_MPCGAIN=OFF
+          -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release -j
+      - name: Report configuration
+        run: >
+          python3 scripts/ci_config.py --build build --role native --selected-config Release
+          --expect compiler_id=GNU --expect selected_configuration=Release
+      - name: Test package and core suites
+        run: >
+          python3 scripts/ci_ctest.py --build build --config Release
+          unit mpack mpack_conformance install_consumer api integration
+          mpack_integration mpack_fuzz meta_fuzz mpack_hostile
