@@ -1,16 +1,7 @@
 name: Research CI
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'research/**'
-      - '.github/workflows/research.yml'
-  pull_request:
-    paths:
-      - 'research/**'
-      - '.github/workflows/research.yml'
+  workflow_call:
 
 permissions:
   contents: read
@@ -21,14 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-
       - name: Install test deps
         run: python -m pip install --upgrade pip pytest numpy soundfile
-
       - name: Run research tests (model-free)
         working-directory: research/sonic
         run: python -m pytest tests -q

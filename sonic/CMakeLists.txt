@@ -36,7 +36,7 @@ if(MPC_BUILD_TESTS)
       $<TARGET_FILE:mpcenc>)
   if(WIN32)
     set_tests_properties(sonic_analyzer PROPERTIES
-        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$ENV{PATH}")
   endif()
 endif()
 
