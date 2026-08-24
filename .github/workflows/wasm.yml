@@ -1,0 +1,77 @@
+name: WASM CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'libmpcdec/**'
+      - 'common/**'
+      - 'include/**'
+      - 'wasm/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'scripts/ci_*.py'
+      - '.github/workflows/wasm.yml'
+  pull_request:
+    paths:
+      - 'libmpcdec/**'
+      - 'common/**'
+      - 'include/**'
+      - 'wasm/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - '**/CMakeLists.txt'
+      - 'scripts/ci_*.py'
+      - '.github/workflows/wasm.yml'
+
+permissions:
+  contents: read
+
+env:
+  EMSDK_VERSION: '6.0.6'
+
+jobs:
+  wasm-build:
+    name: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+          /opt/emsdk/emsdk install "$EMSDK_VERSION"
+          /opt/emsdk/emsdk activate "$EMSDK_VERSION"
+
+      - name: Configure
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-wasm -DMPC_BUILD_TESTS=ON \
+            -DMPC_WASM_TEST_HOOKS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          cmake --build build-wasm -j
+
+      - name: Report configuration
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          python3 scripts/ci_config.py --build build-wasm --role wasm --selected-config Release --expect compiler_id=Clang --expect selected_configuration=Release --expect simd_option=ON --expect decoder_simd_enabled=TRUE --expect decoder_simd_backend=wasm-simd128 --expect wasm_simd=ON --expect wasm_test_hooks=ON
+
+      - name: Test Wasm smoke
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          python3 scripts/ci_ctest.py --build build-wasm wasm_smoke
+
+      - name: Test Wasm scalar vs explicit SIMD
+        shell: bash
+        run: |
+          source /opt/emsdk/emsdk_env.sh
+          python3 scripts/ci_ctest.py --build build-wasm wasm_synth_ab
