@@ -10,6 +10,14 @@ permissions:
   contents: read
 
 jobs:
+  router-test:
+    name: Router regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test CI router
+        run: python3 scripts/ci_router_test.py
+
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -21,6 +29,7 @@ jobs:
       wasm: ${{ steps.detect.outputs.wasm }}
       web: ${{ steps.detect.outputs.web }}
       research: ${{ steps.detect.outputs.research }}
+      unknown: ${{ steps.detect.outputs.unknown }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -30,85 +39,24 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
-          codec=false; core=false; server=false; author=false; wasm=false; web=false; research=false
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            codec=true; core=true; server=true; author=true; wasm=true; web=true; research=true
-          else
-            if [ "$EVENT_NAME" = "pull_request" ]; then
-              files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-            else
-              files="$(git diff --name-only "$BEFORE" "$HEAD_SHA")"
-            fi
-            printf '%s\n' "$files"
-            match() { printf '%s\n' "$files" | grep -Eq "$1"; }
-
-            # Codec: Musepack codec sources and codec-specific test infrastructure.
-            if match '^(libmpcdec|libmpcenc|libmpcpsy|libwavformat|mpcdec|mpcenc|mpc2sv8|mpccut|wavcmp|mpcgain|mpcchap)/' \
-              || match '^common/' \
-              || match '^include/(mpc|musepack)/' \
-              || match '^tests/(codec|fixtures|fuzz|patch_reference\.py)'; then
-              codec=true
-            fi
-
-            # MusicPack core: package model, manifest, CLI and package-level tests.
-            if match '^(libmusicpack|musicpack)/' \
-              || match '^tests/(mpack|integration|mpack_)'; then
-              core=true
-            fi
-
-            # Server consumes the MusicPack core and has its own integration tests.
-            if match '^libmusicpack/' \
-              || match '^server/' \
-              || match '^tests/server_'; then
-              server=true
-            fi
-
-            # Author consumes the MusicPack core and owns its application/backend.
-            if match '^libmusicpack/' \
-              || match '^author/' \
-              || match '^tests/(author_|mpack_integration)'; then
-              author=true
-            fi
-
-            # WASM is the decoder-facing build; do not treat arbitrary common/include
-            # or test changes as WASM changes unless they affect its actual inputs.
-            if match '^libmpcdec/' \
-              || match '^common/' \
-              || match '^include/(mpc|musepack)/' \
-              || match '^wasm/' \
-              || match '^tests/wasm/'; then
-              wasm=true
-            fi
-
-            # Web/player consumes the browser-facing WASM and server stack.
-            if match '^web/' \
-              || match '^tests/fixtures/' \
-              || match '^(libmpcdec|common|wasm|server|libmusicpack)/'; then
-              web=true
-            fi
-
-            if match '^research/'; then
-              research=true
-            fi
-
-            # Only root build/CI infrastructure changes fan out to every domain.
-            # Component-level CMakeLists.txt files remain scoped to their component.
-            if match '^CMakeLists\.txt$' \
-              || match '^scripts/ci_[^/]*$' \
-              || match '^\.github/workflows/'; then
-              codec=true; core=true; server=true; author=true; wasm=true; web=true; research=true
-            fi
+            printf 'codec=true\ncore=true\nserver=true\nauthor=true\nwasm=true\nweb=true\nresearch=true\nunknown=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "codec=$codec" >> "$GITHUB_OUTPUT"
-          echo "core=$core" >> "$GITHUB_OUTPUT"
-          echo "server=$server" >> "$GITHUB_OUTPUT"
-          echo "author=$author" >> "$GITHUB_OUTPUT"
-          echo "wasm=$wasm" >> "$GITHUB_OUTPUT"
-          echo "web=$web" >> "$GITHUB_OUTPUT"
-          echo "research=$research" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA" > /tmp/changed-files
+          else
+            git diff --name-only "$BEFORE" "$HEAD_SHA" > /tmp/changed-files
+          fi
+
+          cat /tmp/changed-files
+          python3 scripts/ci_router.py < /tmp/changed-files | tee /tmp/router-output
+          grep -E '^(codec|core|server|author|wasm|web|research|unknown)=' /tmp/router-output >> "$GITHUB_OUTPUT"
 
   codec:
     needs: changes

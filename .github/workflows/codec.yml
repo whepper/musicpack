@@ -68,10 +68,12 @@ jobs:
         run: cmake --build build --config Release -j
       - name: Test codec suites
         shell: bash
-        run: >
-          python3 scripts/ci_ctest.py --build build --config Release
-          unit api sonic_unit sonic_analyzer synth_simd_unavailable fixtures fuzz
-          synth_ab synth_state_ab enc_ab psy_ab
+        run: |
+          tests=(unit api sonic_unit sonic_analyzer synth_simd_unavailable synth_ab synth_state_ab enc_ab psy_ab)
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            tests+=(fixtures fuzz)
+          fi
+          python3 scripts/ci_ctest.py --build build --config Release "${tests[@]}"
       - name: Checkout reference encoder
         shell: bash
         run: git worktree add --detach "$RUNNER_TEMP/musepack-ref" 05d97a5

@@ -31,6 +31,14 @@ if(MPC_BUILD_TESTS)
   target_link_libraries(mpc_sonic_analyzer_tests PRIVATE sonic_core musicpack musepack)
   if(UNIX AND NOT APPLE)
     target_link_libraries(mpc_sonic_analyzer_tests PRIVATE m)
+  elseif(MSVC)
+    # test_sonic.c pins the large resampler reference table and currently
+    # allocates it on the test function's stack. MSVC's default 1 MiB stack is
+    # insufficient (the two double arrays alone are several MiB), while the
+    # same test is below the default Linux stack limit. Give this test an
+    # appropriately sized Windows stack rather than making the CTest result
+    # depend on the platform's linker default.
+    target_link_options(mpc_sonic_analyzer_tests PRIVATE /STACK:8388608)
   endif()
   add_test(NAME sonic_analyzer COMMAND mpc_sonic_analyzer_tests
       $<TARGET_FILE:mpcenc>)
