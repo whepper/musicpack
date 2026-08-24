@@ -20,12 +20,16 @@ def check(name: str, expected: set[str], *paths: str) -> None:
 
 
 check("docs", set(), "docs/ci.md")
+check("root-readme", set(), "README.md")
 check("web", {"web"}, "web/src/App.ts")
 check("player-core", {"web"}, "web/player-core/src/player.ts")
 check("encoder", {"codec"}, "libmpcenc/src/encoder.c")
 check("decoder", {"codec", "wasm", "web"}, "libmpcdec/src/decoder.c")
+check("decoder-cmake", {"codec", "wasm", "web"}, "libmpcdec/CMakeLists.txt")
 check("musicpack-core", {"core", "server", "author", "web"}, "libmusicpack/src/package.c")
+check("musicpack-cmake", {"core", "server", "author", "web"}, "libmusicpack/CMakeLists.txt")
 check("server", {"server", "web"}, "server/src/api.c")
+check("server-cmake", {"server", "web"}, "server/CMakeLists.txt")
 check("author", {"author"}, "author/app/src/main.ts")
 check("research", {"research"}, "research/test_sonic.py")
 check("sonic", {"core"}, "sonic/frontend.c")
