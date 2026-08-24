@@ -1,0 +1,129 @@
+name: Codec CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.label || format('{0} ({1})', matrix.os, matrix.compiler) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cmake_compiler: gcc
+            compiler_id: GNU
+            decoder_backend: sse2
+          - os: ubuntu-latest
+            compiler: clang
+            cmake_compiler: clang
+            compiler_id: Clang
+            decoder_backend: sse2
+          - os: macos-14
+            compiler: clang
+            cmake_compiler: clang
+            label: macos-arm64
+            compiler_id: AppleClang
+            decoder_backend: neon
+          - os: windows-latest
+            compiler: msvc
+            cmake_compiler: ''
+            compiler_id: MSVC
+            decoder_backend: sse2
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install libmicrohttpd
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+            sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
+          else
+            brew install libmicrohttpd
+          fi
+      - name: Configure
+        run: >
+          cmake -S . -B build -DMPC_BUILD_TESTS=ON -DMPC_BUILD_MPCGAIN=OFF
+          -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
+          ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }}
+      - name: Assert macOS ARM64 runner
+        if: matrix.label == 'macos-arm64'
+        shell: bash
+        run: test "$(uname -m)" = arm64
+      - name: Report configuration
+        shell: bash
+        run: >
+          python3 scripts/ci_config.py --build build --role native --selected-config Release
+          --expect compiler_id=${{ matrix.compiler_id }} --expect selected_configuration=Release
+          --expect simd_option=ON --expect decoder_simd_enabled=TRUE
+          --expect decoder_simd_backend=${{ matrix.decoder_backend }}
+      - name: Build
+        run: cmake --build build --config Release -j
+      - name: Test codec suites
+        shell: bash
+        run: >
+          python3 scripts/ci_ctest.py --build build --config Release
+          unit api sonic_unit sonic_analyzer synth_simd_unavailable fixtures fuzz
+          synth_ab synth_state_ab enc_ab psy_ab
+      - name: Checkout reference encoder
+        shell: bash
+        run: git worktree add --detach "$RUNNER_TEMP/musepack-ref" 05d97a5
+      - name: Configure reference encoder
+        shell: bash
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" "$GITHUB_WORKSPACE/tests/patch_reference.py" "$RUNNER_TEMP/musepack-ref"
+          cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
+            ${{ matrix.cmake_compiler && format('-DCMAKE_C_COMPILER={0}', matrix.cmake_compiler) || '' }} \
+            -S "$RUNNER_TEMP/musepack-ref" -B "$RUNNER_TEMP/ref-build"
+      - name: Report reference configuration
+        shell: bash
+        run: >
+          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference --reference
+          --selected-config Release --expect compiler_id=${{ matrix.compiler_id }}
+          --expect selected_configuration=Release
+      - name: Build reference encoder
+        shell: bash
+        run: cmake --build "$RUNNER_TEMP/ref-build" --config Release -j --target mpcenc
+      - name: Test encoder compatibility
+        shell: bash
+        run: |
+          EXE=mpcenc
+          [ "$RUNNER_OS" = "Windows" ] && EXE=mpcenc.exe
+          REF_MPCENC="$(python3 scripts/ci_find_executable.py "$RUNNER_TEMP/ref-build" "$EXE")"
+          DUT_MPCENC="$(python3 scripts/ci_find_executable.py build "$EXE")"
+          [ -x "$REF_MPCENC" ] || { echo "reference mpcenc not found"; exit 1; }
+          python3 scripts/ci_config.py --build build --role native-compat --executable "$DUT_MPCENC" --selected-config Release --compare-build "$RUNNER_TEMP/ref-build" --compare-field compiler --compare-field compiler_id --compare-field compiler_version
+          python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference-compat --reference --executable "$REF_MPCENC" --selected-config Release
+          export REF_MPCENC
+          python3 scripts/ci_ctest.py --build build --config Release compat enc_compat
+
+  simd-off:
+    name: linux scalar-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure and build
+        run: >
+          cmake -S . -B build-nosimd -DMPC_BUILD_TESTS=ON -DMPC_BUILD_MPCGAIN=OFF
+          -DMPC_BUILD_MPCCHAP=OFF -DMPC_ENABLE_SIMD=OFF -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-nosimd -j
+      - name: Report configuration
+        run: >
+          python3 scripts/ci_config.py --build build-nosimd --role scalar-only --selected-config Release
+          --expect compiler_id=GNU --expect selected_configuration=Release --expect simd_option=OFF
+          --expect decoder_simd_enabled=FALSE --expect decoder_simd_backend=scalar
+      - name: Test scalar-only codec suites
+        run: >
+          python3 scripts/ci_ctest.py --build build-nosimd
+          unit api sonic_unit sonic_analyzer fixtures fuzz
+      - name: Verify forced SIMD rejects scalar-only build
+        run: python3 scripts/ci_ctest.py --build build-nosimd synth_simd_unavailable
