@@ -1,5 +1,6 @@
 name: Codec CI
 
+# Reusable codec validation: the expensive native matrix and bit-exact reference check.
 on:
   workflow_call:
 
@@ -88,8 +89,7 @@ jobs:
         shell: bash
         run: >
           python3 scripts/ci_config.py --build "$RUNNER_TEMP/ref-build" --role reference --reference
-          --selected-config Release --expect compiler_id=${{ matrix.compiler_id }}
-          --expect selected_configuration=Release
+          --expect compiler_id=${{ matrix.compiler_id }} --expect selected_configuration=Release
       - name: Build reference encoder
         shell: bash
         run: cmake --build "$RUNNER_TEMP/ref-build" --config Release -j --target mpcenc
