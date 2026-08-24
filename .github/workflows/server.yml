@@ -1,0 +1,26 @@
+name: Server CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install libmicrohttpd
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build -DMPC_BUILD_TESTS=ON -DMPC_BUILD_MPCGAIN=OFF
+          -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
+      - name: Build server
+        run: cmake --build build --config Release -j --target musicpack_server_cmd
+      - name: Test server
+        run: python3 scripts/ci_ctest.py --build build --config Release server_unit server_integration
