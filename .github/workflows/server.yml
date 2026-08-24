@@ -20,7 +20,7 @@ jobs:
         run: >
           cmake -S . -B build -DMPC_BUILD_TESTS=ON -DMPC_BUILD_MPCGAIN=OFF
           -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
-      - name: Build server
-        run: cmake --build build --config Release -j --target musicpack_server_cmd
+      - name: Build server and tests
+        run: cmake --build build --config Release -j --target musicpack_server_cmd mpc_server_tests
       - name: Test server
         run: python3 scripts/ci_ctest.py --build build --config Release server_unit server_integration
