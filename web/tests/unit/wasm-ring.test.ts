@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, type TestContext } from 'vitest';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,7 +66,8 @@ async function decode(Module: Record<string, any>, file: string) {
 }
 
 describe('wasm + ring (gapless feed)', () => {
-  it('needs the wasm module built (skip otherwise)', () => {
+  it('needs the wasm module built (skip otherwise)', (ctx: TestContext) => {
+    if (!fixtureA || !fixtureB) ctx.skip();
     expect(fixtureA).toBeTruthy();
     expect(fixtureB).toBeTruthy();
   });

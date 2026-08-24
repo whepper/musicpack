@@ -124,7 +124,9 @@ test('queue holds the album in order and removes items', async ({ page }) => {
   // frozen position.
   const res = await page.evaluate(() => {
     const q = window.__musicpack?.queue.get();
-    const containers = [...document.querySelectorAll('#main .queue-item')];
+    // Rows may render in the /queue route or in the drawer overlay (outside
+    // #main) since album play actions no longer redirect; match either.
+    const containers = [...document.querySelectorAll('.queue-item')];
     return {
       idx: q?.index ?? -1,
       markedIdx: containers.findIndex((el) => el.getAttribute('aria-current') === 'true'),
@@ -244,7 +246,7 @@ test('album seek past the current track switches to a later track', async ({ pag
 
 test('clicking a disc-2 track selects the correct flattened queue index', async ({ page }) => {
   await page.getByText('Two Disc Extravaganza').click();
-  await page.getByRole('button', { name: 'Side Two One' }).click();
+  await page.locator('button.track-play', { hasText: 'Side Two One' }).click();
   // playAlbum sets the queue index synchronously, so capture it immediately
   // (the ~1 s fixture tracks may advance before the state read).
   const state = await page.evaluate(() => {
