@@ -40,7 +40,7 @@ check("ci-script", set(router.ALL), "scripts/ci_config.py")
 check("workflow", set(router.ALL), ".github/workflows/web.yml")
 check("bench", {"codec"}, "bench/run_bench.sh")
 check("decoder-plus-web", {"codec", "wasm", "web"}, "libmpcdec/src/decoder.c", "web/src/App.ts")
-check("core-plus-research", {"core", "research"}, "libmusicpack/src/package.c", "research/test_sonic.py")
+check("core-plus-research", {"core", "server", "author", "web", "research"}, "libmusicpack/src/package.c", "research/test_sonic.py")
 check("unknown-top-level", set(router.ALL), "new-component/foo.c")
 check("unknown-root-build-file", set(router.ALL), "toolchain.toml")
 
