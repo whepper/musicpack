@@ -51,6 +51,8 @@ export interface PackageAssetRecord {
   size: number;
   trackId?: number;
   representationId?: number;
+  /** Artwork asset id (kind === 'artwork'). */
+  artworkId?: number;
 }
 
 export interface InstalledPackage {

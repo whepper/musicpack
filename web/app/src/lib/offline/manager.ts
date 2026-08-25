@@ -16,6 +16,7 @@ import { idbCatalog, opfsFileStore } from './browser-stores';
 import type { CatalogStore, FileStore } from './stores';
 import type { ReleaseDetail } from '../api/types';
 import type { PackageUiState } from './availability';
+import { auditAll, applyAudit } from './audit';
 
 /** Feature detection (plan §3 graceful degradation): without OPFS the
  *  offline subsystem stays disabled and the app behaves exactly as an
@@ -60,6 +61,7 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
         onProgress: (p) => progress.set([p, ...progress.get().filter((x) => x.releaseId !== p.releaseId)]),
       })
     : null;
+  let persistRequested = false;
 
   /** Per-release UI state, kept out of the domain record shape on purpose:
    *  this is presentation state derived from catalog + live activity. */
@@ -87,8 +89,9 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
     }
   }
 
-  /** Boot-time initialization: hydrate availability + sweep orphaned
-   *  staging subtrees from interrupted installs. Safe to call always. */
+  /** Boot-time initialization: hydrate availability, sweep orphaned
+   *  staging subtrees from interrupted installs, and audit committed
+   *  packages against on-disk reality (browser eviction detection). */
   async function init(): Promise<void> {
     if (!enabled || !installer || !stores) return;
     try {
@@ -96,6 +99,18 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
       // Orphan sweep: staging subtrees with no live install are garbage.
       for (const installId of await stores.fileStore.listStaging()) {
         await stores.fileStore.removeStaging(installId);
+      }
+      // Audit: reconcile catalog vs files; damaged assets leave the record
+      // so availability can never point at vanished bytes.
+      for (const result of await auditAll(stores.catalog, stores.fileStore)) {
+        if (result.verdict === 'damaged') {
+          const pkg = await stores.catalog.getPackage(result.releaseId);
+          if (pkg) {
+            const updated = applyAudit(pkg, result, Date.now());
+            await stores.catalog.putPackage(updated);
+            availability.remember(updated);
+          }
+        }
       }
       for (const releaseId of [...(await stores.catalog.allPackages()).map((p) => p.releaseId)]) {
         await refreshState(releaseId);
@@ -109,6 +124,11 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
     if (!installer || !stores) return;
     const releaseId = releaseDetail.id;
     setState(releaseId, { state: 'downloading', percent: 0 });
+    // First-install persistence request (best effort, once per session).
+    if (!persistRequested) {
+      persistRequested = true;
+      void import('./audit').then((m) => m.requestPersistence()).catch(() => {});
+    }
     const handle = installer.install(releaseDetail);
     void handle.done.then((outcome) => {
       progress.set(progress.get().filter((p) => p.releaseId !== releaseId));
@@ -188,6 +208,9 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
     checkForUpdate,
     packageFor: (releaseId: number): Promise<InstalledPackage | null> =>
       stores ? stores.catalog.getPackage(releaseId) : Promise.resolve(null),
+    /** Storage accounting for the future settings panel (§11). */
+    storageUsage: () =>
+      import('./audit').then((m) => m.storageUsage()),
   };
 }
 
