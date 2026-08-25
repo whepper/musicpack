@@ -103,6 +103,28 @@ m["release"]["country"] = "GB"
 json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
 PY
 
+# A representation-bearing album ("Shapeshifter"): track 1 carries a real
+# 8 s FLAC alternate so the Phase 4 selection specs can flip a track
+# between Musepack and native playback and still cross the boundary into
+# the following Musepack track within test time.
+"$PY" - "$ROOT/tests/reference/test-musicpack-album.mpack" "$LIB/Shapeshifter.mpack" \
+    "$ROOT/tests/fixtures/sine44-8s.flac" <<'PY'
+import hashlib, json, os, shutil, sys
+ref, dst, flac = sys.argv[1], sys.argv[2], sys.argv[3]
+shutil.copytree(ref, dst)
+alt_rel = "audio/01 - Alphaville - Big in Japan.flac"
+alt_abs = os.path.join(dst, *alt_rel.split("/"))
+shutil.copy(flac, alt_abs)
+sha = hashlib.sha256(open(alt_abs, "rb").read()).hexdigest()
+mpath = os.path.join(dst, "manifest.json")
+m = json.load(open(mpath, encoding="utf-8"))
+m["album"]["title"] = "Shapeshifter"
+m["media"][0]["tracks"][0]["representations"] = [
+    {"path": alt_rel, "sha256": sha, "label": "FLAC", "codec": "flac"},
+]
+json.dump(m, open(mpath, "w", encoding="utf-8"), indent=1)
+PY
+
 "$SERVER_BIN" verify --library "$LIB" --database "$DB" >/dev/null 2>&1
 
 cat > "$E2E/.server-env.json" <<JSON
