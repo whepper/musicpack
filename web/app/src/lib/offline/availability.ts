@@ -80,6 +80,12 @@ export function createAvailability(catalog: CatalogStore) {
     return installed.get(releaseId) ?? null;
   }
 
+  /** True when at least one installed package exists (offline-session
+   *  eligibility). */
+  function hasInstalled(): boolean {
+    return installed.size > 0;
+  }
+
   function forget(releaseId: number): void {
     installed.delete(releaseId);
   }
@@ -94,6 +100,7 @@ export function createAvailability(catalog: CatalogStore) {
     allows,
     localKeyFor,
     packageFor,
+    hasInstalled,
     forget,
     remember,
     /** Test/dev seam: drop all in-memory state (does not touch storage). */

@@ -3,8 +3,23 @@
 
 import { writable } from '../store';
 import { ApiClient } from '../api/client';
+import { NetworkError } from '../api/errors';
 
-export type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
+export type AuthState = 'checking' | 'authenticated' | 'unauthenticated' | 'offline';
+
+/** Injected offline-content probe: true when the catalog holds at least
+ *  one installed package (set by bootstrap; avoids an import cycle). */
+let offlineContentProbe: () => boolean = () => false;
+export function setOfflineContentProbe(probe: () => boolean): void {
+  offlineContentProbe = probe;
+}
+function hasOfflineContent(): boolean {
+  try {
+    return offlineContentProbe();
+  } catch {
+    return false;
+  }
+}
 
 export interface SessionModel {
   state: AuthState;
@@ -24,6 +39,16 @@ function createSessionStore(api: ApiClient) {
         await api.session();
         store.set({ state: 'authenticated' });
       } catch (e) {
+        // Offline boot (plan §8): a NETWORK failure is not a signed-out
+        // state. If the browser holds offline content, enter 'offline'
+        // mode so installed packages remain usable; only an actual 401
+        // forces sign-in again. (navigator.onLine is unreliable across
+        // platforms — Playwright's setOffline keeps it true — so it is
+        // deliberately NOT consulted.)
+        if (e instanceof NetworkError && hasOfflineContent()) {
+          store.set({ state: 'offline' });
+          return;
+        }
         store.set({
           state: 'unauthenticated',
           message:

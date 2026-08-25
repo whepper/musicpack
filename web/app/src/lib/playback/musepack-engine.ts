@@ -193,7 +193,8 @@ export class MusepackEngine implements Engine {
       this.onWorkerMessage(h, ev.data);
     };
     worker.onerror = (ev: ErrorEvent) => {
-      this.h.error('Decoder worker failed.');
+      const detail = ev.message ? ` (${ev.message})` : '';
+      this.h.error(`Decoder worker failed${detail}.`);
       this.emitNamed('error');
       void ev;
     };

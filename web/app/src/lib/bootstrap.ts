@@ -4,7 +4,7 @@
 // Application composition root: wires the API client, session, stores,
 // playback controller and router into singletons the Svelte components use.
 import { ApiClient } from './api/client';
-import { bindSession, type SessionStore } from './auth/session';
+import { bindSession, setOfflineContentProbe, type SessionStore } from './auth/session';
 import { browserCanPlay } from './playback/capability';
 import { createLibraryStore, type LibraryStore } from './state/library';
 import { createAudioPreferenceStore } from './state/preferences';
@@ -72,6 +72,9 @@ export const player = new PlayerController(queue, {
 });
 // Offline subsystem boot: hydrate availability + sweep orphaned staging.
 void offline.init();
+// Offline session probe: lets the boot path distinguish "signed out" from
+// "network gone but installed content available" (AuthState 'offline').
+setOfflineContentProbe(() => offline.availability.hasInstalled());
 // Prefetch boundary profiles for the current and next item as playback
 // advances so plans are content-aware by the time a boundary approaches.
 player.on((event) => {
@@ -89,14 +92,17 @@ export const router: Router = createRouter();
 // Stop playback and dispose the backend when the session ends (sign-out or
 // expiry), so audio and Media Session state never leak across the auth
 // boundary. The controller rebuilds its backend on the next play.
+// 'offline' is a degraded-authenticated state: installed content stays
+// playable, so playback is NOT torn down on entering it.
 {
   let wasAuthenticated = false;
   session.subscribe((m) => {
-    if (wasAuthenticated && m.state !== 'authenticated') {
+    const usable = m.state === 'authenticated' || m.state === 'offline';
+    if (wasAuthenticated && !usable) {
       void player.teardown();
       queue.clear();
     }
-    wasAuthenticated = m.state === 'authenticated';
+    wasAuthenticated = usable;
   });
 }
 
@@ -109,6 +115,7 @@ export interface MusicPackDebug {
   player: PlayerController;
   router: Router;
   audioPreference: ReturnType<typeof createAudioPreferenceStore>;
+  offline: ReturnType<typeof createOfflineManager>;
 }
 
 declare global {
@@ -118,5 +125,5 @@ declare global {
 }
 
 export function exposeDebug(): void {
-  window.__musicpack = { api, session, library, queue, player, router, audioPreference };
+  window.__musicpack = { api, session, library, queue, player, router, audioPreference, offline };
 }
