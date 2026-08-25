@@ -12,9 +12,12 @@
 
 /** Where an engine obtains the bytes of one item. `http-range` is the
  *  demand-driven Musepack source (URL + total size); `stream` covers
- *  element/native playback where size is unknown or irrelevant. */
+ *  element/native playback where size is unknown or irrelevant;
+ *  `local-file` addresses an offline-downloaded asset held in
+ *  application-managed browser storage (`url` = the stable file key).
+ *  Engines resolve each kind at their own boundary; the core never does. */
 export interface PlaybackSource {
-  kind: 'http-range' | 'stream';
+  kind: 'http-range' | 'stream' | 'local-file';
   url: string;
   byteSize?: number;
 }

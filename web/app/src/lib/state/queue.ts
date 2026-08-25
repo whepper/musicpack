@@ -10,8 +10,9 @@
 // view; the `track` field remains until the orchestrator extraction (M4)
 // moves all readers onto the core shape.
 
-import { createQueueModel, type QueueModel } from '../../../../player-core/src/queue';import type { PlaybackItem } from '../../../../player-core/src/types';
-import type { AlbumLoudness, ReleaseDetail, Track } from '../api/types';
+import { createQueueModel, type QueueModel } from '../../../../player-core/src/queue';
+import type { PlaybackItem } from '../../../../player-core/src/types';
+import type { AlbumLoudness, ReleaseDetail, RepresentationRef, Track } from '../api/types';
 import {
   acceptAll,
   resolveAudio,
@@ -30,10 +31,12 @@ export interface QueueItem extends PlaybackItem {
 
 /** Everything itemForTrack() needs to resolve audio: the active preference
  *  plus the host playability predicate. Omitted entirely ⇒ pre-Phase-4
- *  behavior, byte-identical. */
+ *  behavior, byte-identical. `offline` adds the D1 local-first source rule
+ *  (installed candidates resolve to local-file sources). */
 export interface SelectionContext {
   preference?: AudioPreference;
   canPlay?: CanPlay;
+  offline?: OfflineContext;
 }
 
 export interface QueueState {
@@ -51,6 +54,32 @@ export function tracksOfRelease(release: ReleaseDetail): Track[] {
     }
   }
   return out;
+}
+
+/** Optional offline context (D1 local-first): when provided, itemForTrack()
+ *  consults it AFTER representation selection so the chosen candidate can
+ *  be served from the committed download catalog instead of the network.
+ *  Omitted entirely ⇒ online-only behavior, byte-identical. */
+export interface OfflineContext {
+  /** Local file key for a locally-held candidate, or null. */
+  localKeyFor(trackId: number, candidate: { kind: 'primary' } | { kind: 'representation'; id: number }): string | null;
+}
+
+function buildSource(
+  track: Track,
+  rep: RepresentationRef | null,
+  offline?: OfflineContext,
+): PlaybackItem['source'] {
+  const url = rep ? rep.url : track.audio.url;
+  const byteSize = rep ? rep.size : track.audio.size;
+  if (offline) {
+    const key = offline.localKeyFor(
+      track.id,
+      rep ? { kind: 'representation', id: rep.id } : { kind: 'primary' },
+    );
+    if (key !== null) return { kind: 'local-file', url: key, byteSize };
+  }
+  return { kind: 'http-range', url, byteSize };
 }
 
 /** Builds a single web QueueItem for one track of a release. Shared by the
@@ -72,13 +101,7 @@ export function itemForTrack(
     // core PlaybackItem fields (identity, source, policy metadata)
     id: rep ? `t${track.id}r${rep.id}` : `t${track.id}`,
     trackId: track.id,
-    source: rep
-      ? { kind: 'http-range' as const, url: rep.url, byteSize: rep.size }
-      : {
-          kind: 'http-range' as const,
-          url: track.audio.url,
-          byteSize: track.audio.size,
-        },
+    source: buildSource(track, rep, sel?.offline),
     durationHintSeconds: track.duration,
     title: track.title,
     artist,
