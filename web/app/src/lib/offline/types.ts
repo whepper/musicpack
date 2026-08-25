@@ -64,6 +64,9 @@ export interface InstalledPackage {
   /** The release JSON snapshot at install time (offline library surface). */
   releaseDetail: ReleaseDetail;
   error?: string;
+  /** Set by an update check when online hashes differ from the committed
+   *  record (decision D2: flag only; the user chooses replacement). */
+  stale?: boolean;
 }
 
 /** Progress reported during download (bytes of the current plan). */

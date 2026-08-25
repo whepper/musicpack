@@ -20,7 +20,7 @@ export const SNAPSHOT_VERSION = 2;
 /** The version the web client originally shipped. */
 export const SNAPSHOT_VERSION_V1 = 1;
 
-interface SnapshotItemBase {
+export interface SnapshotItemBase {
   /** Minimal identity contract for restoration; hosts may persist richer
    *  item shapes verbatim (the web persists QueueItems). */
   track?: { id?: number; audio?: { url?: string } };

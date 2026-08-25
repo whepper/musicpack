@@ -16,17 +16,33 @@ import {
 import { PlayerController } from './playback/controller';
 import { createTransitionPlanner } from './playback/transition-profiles';
 import { createRouter, type Router } from './router';
+import { createOfflineManager } from './offline/manager';
+import { offlineAwareStorage } from './offline/snapshot-storage';
 
 export const api = new ApiClient({});
 export const session: SessionStore = bindSession(api);
 export const library: LibraryStore = createLibraryStore(api);
 // Representation preference (Phase 4): persisted web-app setting; selection
-// happens only at itemForTrack() construction time. No UI yet — set it via
-// the debug hook or console; playback picks it up on the next built item.
+// happens only at itemForTrack() construction time.
 export const audioPreference = createAudioPreferenceStore();
+// Offline downloads (D1 local-first): the manager owns catalog/storage
+// lifecycle; itemForTrack() applies the local-first source rule through
+// SelectionContext.offline AFTER resolveAudio() has chosen the candidate.
+// canPlay remains pure browser capability — the two concerns compose at
+// this single composition point without a second selection policy.
+export const offline = createOfflineManager();
 /** The one SelectionContext source both item-construction paths share. */
 export function currentSelection(): SelectionContext {
-  return { preference: audioPreference.get(), canPlay: browserCanPlay };
+  return {
+    preference: audioPreference.get(),
+    canPlay: browserCanPlay,
+    offline: offline.enabled
+      ? {
+          localKeyFor: (trackId, candidate) =>
+            offline.availability.localKeyFor(trackId, candidate),
+        }
+      : undefined,
+  };
 }
 export const queue: QueueStore = createQueueStore({ selection: currentSelection });
 // Content-aware transitions: profiles come from the tracks' waveform
@@ -38,7 +54,24 @@ const transitionPlanner = createTransitionPlanner({
 export const player = new PlayerController(queue, {
   planTransition: (query) => transitionPlanner.plan(query),
   selection: currentSelection,
+  // Restored sessions play installed content locally (D1) without the
+  // core learning anything about offline state.
+  storage: offline.enabled
+    ? offlineAwareStorage(
+        {
+          get: () => (typeof localStorage === 'undefined' ? null : localStorage.getItem('musicpack.player.v1')),
+          set: (v) => {
+            if (typeof localStorage === 'undefined') return;
+            if (v === null) localStorage.removeItem('musicpack.player.v1');
+            else localStorage.setItem('musicpack.player.v1', v);
+          },
+        },
+        { localKeyFor: (trackId, candidate) => offline.availability.localKeyFor(trackId, candidate) },
+      )
+    : undefined,
 });
+// Offline subsystem boot: hydrate availability + sweep orphaned staging.
+void offline.init();
 // Prefetch boundary profiles for the current and next item as playback
 // advances so plans are content-aware by the time a boundary approaches.
 player.on((event) => {
