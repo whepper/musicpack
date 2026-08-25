@@ -286,6 +286,9 @@ representations_of_track(mp_library *lib, long long track_id)
         mp_json *codec;
         mp_json_int(o, "id", refs[i].id);
         mp_json_int(o, "size", refs[i].file_size);
+        /* Content hash (same value the byte endpoint exposes as its strong
+           ETag): lets clients verify downloaded bytes without a HEAD. */
+        mp_json_str_opt(o, "sha256", refs[i].sha256);
         snprintf(url, sizeof url,
                  "/api/%s/tracks/%lld/representations/%lld/audio",
                  API_VERSION, track_id, refs[i].id);
@@ -1077,15 +1080,15 @@ track_object(mp_library *lib, sqlite3_stmt *t)
             mp_json_free(reps);
     }
     /* Waveform column offsets depend on the caller's SELECT. The detail-style
-       SELECT in handle_release_detail has 22 columns (0..21); the compact
-       SELECT in handle_tracks has 27 columns (0..26) and pushes the
-       waveform block to indices 22..26. We detect by looking at the
-       SELECTed column count: if column 22 is non-NULL and there are
-       >=23 columns, treat it as the handle_tracks layout; otherwise fall
-       back to the handle_release_detail layout (17..21). The fields the
-       code actually reads are identical in both. */
+       SELECT in handle_release_detail has 23 columns (0..22, including the
+       waveform sha256 appended for offline integrity); the compact SELECT in
+       handle_tracks has 27 columns (0..26) and pushes the waveform block to
+       indices 22..26. We detect by looking at the SELECTed column count:
+       if column 22 is non-NULL and there are >=27 columns, treat it as the
+       handle_tracks layout; otherwise it is the detail layout (17..21).
+       The fields the code actually reads are identical in both. */
     {
-        int wave_idx = sqlite3_column_count(t) >= 23 ? 22 : 17;
+        int wave_idx = sqlite3_column_count(t) >= 27 ? 22 : 17;
         if (sqlite3_column_type(t, wave_idx) != SQLITE_NULL) {
             mp_json *wf = mp_json_obj();
             char wurl[64];
@@ -1094,6 +1097,10 @@ track_object(mp_library *lib, sqlite3_stmt *t)
             mp_json_str(wf, "encoding", col_text(t, wave_idx + 2));
             mp_json_int(wf, "floorDb", sqlite3_column_int(t, wave_idx + 3));
             mp_json_int(wf, "points", sqlite3_column_int64(t, wave_idx + 4));
+            /* Content hash (strong ETag of the waveform endpoint); present
+               only when the caller's SELECT carries it (detail layout). */
+            if (wave_idx == 17)
+                mp_json_str_opt(wf, "sha256", col_text(t, 22));
             snprintf(wurl, sizeof wurl, "/api/%s/tracks/%lld/waveform",
                      API_VERSION, sqlite3_column_int64(t, 0));
             mp_json_str(wf, "url", wurl);
@@ -1253,7 +1260,8 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
                     "  a.codec, a.mime_type, a.stream_version, a.sample_rate,"
                     "  a.channels, a.id, a.file_size, a.sha256,"
                     "  t.has_duration, t.duration,"
-                    "  w.version, w.interval_ms, w.encoding, w.floor_db, w.points"
+                    "  w.version, w.interval_ms, w.encoding, w.floor_db, w.points,"
+                    "  w.sha256"
                     " FROM tracks t"
                     " JOIN audio_objects a ON a.track_id = t.id"
                     " LEFT JOIN track_waveforms w ON w.track_id = t.id"
@@ -1276,7 +1284,7 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
         sqlite3_stmt *a;
         mp_json *art = mp_json_arr(), *other = mp_json_arr();
         if (sqlite3_prepare_v2(db,
-                "SELECT a.id, a.kind, a.role, a.mime_type FROM assets a"
+                "SELECT a.id, a.kind, a.role, a.mime_type, a.sha256 FROM assets a"
                 " WHERE a.release_id = ?1 ORDER BY a.id", -1, &a, 0)
             == SQLITE_OK) {
             char url[64];
@@ -1288,6 +1296,7 @@ handle_release_detail(mp_library *lib, long long id, unsigned int *st)
                 mp_json_str(it, "kind", kind);
                 mp_json_str_opt(it, "role", col_text(a, 2));
                 mp_json_str(it, "mimeType", col_text(a, 3));
+                mp_json_str_opt(it, "sha256", col_text(a, 4));
                 snprintf(url, sizeof url, "/api/%s/assets/%lld",
                          API_VERSION, sqlite3_column_int64(a, 0));
                 mp_json_str(it, "url", url);

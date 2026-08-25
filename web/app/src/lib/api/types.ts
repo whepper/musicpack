@@ -15,6 +15,8 @@ export interface ArtworkRef {
   mimeType?: string;
   kind?: string;
   role?: string;
+  /** Manifest content hash (additive; strong ETag of the asset endpoint). */
+  sha256?: string;
 }
 
 export interface AlbumSummary {
@@ -98,6 +100,8 @@ export interface WaveformRef {
   encoding: string;
   floorDb: number;
   points: number;
+  /** Manifest content hash (additive; strong ETag of the waveform endpoint). */
+  sha256?: string;
   url: string;
 }
 
@@ -124,6 +128,8 @@ export interface Track {
 export interface RepresentationRef {
   id: number;
   size: number;
+  /** Manifest content hash (additive; strong ETag of the variant endpoint). */
+  sha256?: string;
   url: string;
   codec: CodecInfo;
   label?: string;
@@ -141,6 +147,8 @@ export interface AssetRef {
   kind: string;
   role?: string;
   mimeType: string;
+  /** Manifest content hash (additive; strong ETag of the asset endpoint). */
+  sha256?: string;
   url: string;
 }
 

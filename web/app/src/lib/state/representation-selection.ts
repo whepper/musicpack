@@ -30,8 +30,18 @@ export type AudioPreference =
 export const LOSSLESS_CODECS: readonly string[] = ['flac', 'wav', 'aiff'];
 
 /** Host-injected playability. Receives the same shape chooseBackend judges:
- *  codec strings for musepack, MIME for browser-native probing. */
-export type CanPlay = (c: { codec?: string; mimeType?: string }) => boolean;
+ *  codec strings for musepack, MIME for browser-native probing — plus the
+ *  candidate's source identity when the caller is judging a specific audio
+ *  object (primary vs one representation). Offline hosts compose local
+ *  availability into their predicate using that identity; online-only
+ *  hosts ignore it. Optional, so existing predicates keep compiling. */
+export type CanPlay = (c: {
+  codec?: string;
+  mimeType?: string;
+  /** Which audio object is being judged: omitted = "a primary" (legacy
+   *  callers); 'representation' carries the manifest row id. */
+  source?: { kind: 'primary' } | { kind: 'representation'; id: number };
+}) => boolean;
 
 /** Accepts everything: used when no availability information exists so that
  *  resolution reduces to manifest order + primary preference only. */
@@ -52,7 +62,15 @@ function playableInOrder(
 ): RepresentationRef | null {
   // Manifest position order (the API preserves it) is THE tie-break.
   for (const rep of candidates) {
-    if (canPlay({ codec: rep.codec?.codec, mimeType: rep.codec?.mimeType })) return rep;
+    if (
+      canPlay({
+        codec: rep.codec?.codec,
+        mimeType: rep.codec?.mimeType,
+        source: { kind: 'representation', id: rep.id },
+      })
+    ) {
+      return rep;
+    }
   }
   return null;
 }
@@ -102,6 +120,7 @@ export function resolveAudio(
   const primaryPlayable = canPlay({
     codec: track.codec?.codec,
     mimeType: track.codec?.mimeType,
+    source: { kind: 'primary' },
   });
 
   let chosen: RepresentationRef | null = null;
@@ -112,7 +131,11 @@ export function resolveAudio(
     const match = candidates.find((r) => r.id === valid.id);
     if (
       match &&
-      canPlay({ codec: match.codec?.codec, mimeType: match.codec?.mimeType })
+      canPlay({
+        codec: match.codec?.codec,
+        mimeType: match.codec?.mimeType,
+        source: { kind: 'representation', id: match.id },
+      })
     ) {
       chosen = match;
     }

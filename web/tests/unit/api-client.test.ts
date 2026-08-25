@@ -84,4 +84,56 @@ describe('ApiClient', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ token: 'mpk_secret' });
   });
+
+  it('surfaces content hashes on representations, waveforms and assets (offline integrity)', async () => {
+    const sha = 'a'.repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: 7,
+        album: { id: 1, title: 'X', artists: [] },
+        media: [
+          {
+            disc: 1,
+            tracks: [
+              {
+                id: 55,
+                number: 1,
+                title: 'T',
+                artists: [],
+                codec: { codec: 'musepack-sv8', mimeType: 'audio/musepack' },
+                audio: { id: 90, size: 10, sha256: sha, url: '/api/v1/tracks/55/audio' },
+                representations: [
+                  {
+                    id: 91,
+                    size: 20,
+                    sha256: sha,
+                    url: '/api/v1/tracks/55/representations/91/audio',
+                    codec: { codec: 'flac', mimeType: 'audio/flac' },
+                  },
+                ],
+                waveform: {
+                  version: 1,
+                  intervalMs: 100,
+                  encoding: 'peak-rms-u8',
+                  floorDb: -60,
+                  points: 4,
+                  sha256: sha,
+                  url: '/api/v1/tracks/55/waveform',
+                },
+              },
+            ],
+          },
+        ],
+        artwork: [{ id: 7, kind: 'artwork', mimeType: 'image/jpeg', sha256: sha, url: '/api/v1/assets/7' }],
+        assets: [],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ApiClient();
+    const rel = await api.release(7);
+    const track = rel.media[0]!.tracks[0]!;
+    expect(track.representations?.[0]?.sha256).toBe(sha);
+    expect(track.waveform?.sha256).toBe(sha);
+    expect(rel.artwork[0]?.sha256).toBe(sha);
+  });
 });

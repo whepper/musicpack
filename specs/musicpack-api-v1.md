@@ -301,7 +301,8 @@ manifest fields. `packageStatus` and `verifyStatus` describe the package;
           "audio": { "id": 90, "size": 28288, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                      "url": "/api/v1/tracks/55/audio" },
           "representations": [
-            { "id": 91, "size": 184320, "url": "/api/v1/tracks/55/representations/91/audio",
+            { "id": 91, "size": 184320, "sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+              "url": "/api/v1/tracks/55/representations/91/audio",
               "codec": { "codec": "flac", "mimeType": "audio/flac", "sampleRate": 48000, "channels": 2 },
               "label": "FLAC 24/96" }
           ]
@@ -310,7 +311,7 @@ manifest fields. `packageStatus` and `verifyStatus` describe the package;
     }
   ],
   "artwork": [ { "id": 7, "kind": "artwork", "role": "front",
-                 "mimeType": "image/jpeg",
+                 "mimeType": "image/jpeg", "sha256": "5335…d22ca",
                  "url": "/api/v1/assets/7" } ],
   "assets": [ { "id": 8, "kind": "booklet", "mimeType": "application/pdf",
                 "url": "/api/v1/assets/8" } ],
@@ -323,6 +324,13 @@ Media and track arrays retain the package's canonical manifest order.
 (stored from the manifest, never recomputed). Track `duration` is seconds from
 the manifest when present. These power the client's Album/Track normalization
 without inventing new package semantics.
+
+**Content hashes (additive):** representation entries and release assets
+(`artwork`/`assets`) carry an optional `sha256` — the same lowercase-hex
+manifest hash the byte endpoints expose as their strong `ETag` — and
+`waveform` objects carry `sha256` as well. Clients can verify downloaded
+bytes without a separate `HEAD`; absent values are tolerated for forward/
+backward compatibility with older servers.
 
 ### `GET /api/v1/tracks/{id}`
 
