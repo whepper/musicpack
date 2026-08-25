@@ -1112,3 +1112,64 @@ describe('PlayerController', () => {
     expect(player.model.get().error).toBeUndefined();
   });
 });
+
+describe('representation selection wiring (Phase 4)', () => {
+  const flacRep = {
+    id: 91,
+    size: 5000,
+    url: '/api/v1/tracks/31/representations/91/audio',
+    codec: { codec: 'flac', mimeType: 'audio/flac' },
+  };
+
+  function repRelease(): ReleaseDetail {
+    return {
+      ...release(4, ['Rep Track']),
+      media: [
+        { disc: 1, tracks: [{ ...track(31, 'Rep Track'), representations: [flacRep] }] },
+      ],
+    };
+  }
+
+  it('playAlbum resolves the lossless representation and opens its source', async () => {
+    const queue = createQueueStore();
+    const openedKinds: Array<'musepack' | 'native'> = [];
+    let b: FakeBackend | null = null;
+    // Node env has no document; pin the host's native capability decision.
+    // (portsOverride is the internal unit-test seam, hence the cast.)
+    const player = new PlayerController(
+      queue,
+      {
+        backendFactory: (kind: 'musepack' | 'native', events: BackendEvents) => {
+          openedKinds.push(kind);
+          b = new FakeBackend(kind, events);
+          return b;
+        },
+        portsOverride: { resolveKind: () => 'native' as const },
+        selection: () => ({ preference: { mode: 'lossless' }, canPlay: () => true }),
+      } as unknown as ConstructorParameters<typeof PlayerController>[1],
+    );
+    player.init();
+    await player.playAlbum(repRelease(), 'Test Album', '');
+
+    expect(openedKinds).toContain('native');
+    expect(b!.opened[0]).toBe(flacRep.url);
+    expect(player.model.get().current?.id).toBe('t31r91');
+    expect(queue.get().items[0]?.representationId).toBe(91);
+  });
+
+  it('without a selection context playback stays on the primary source', async () => {
+    const queue = createQueueStore();
+    let b: FakeBackend | null = null;
+    const player = new PlayerController(queue, {
+      backendFactory: (kind, events) => {
+        b = new FakeBackend(kind, events);
+        return b;
+      },
+    });
+    player.init();
+    await player.playAlbum(repRelease(), 'Test Album', '');
+
+    expect(b!.opened[0]).toBe('/api/v1/tracks/31/audio');
+    expect(player.model.get().current?.id).toBe('t31');
+  });
+});

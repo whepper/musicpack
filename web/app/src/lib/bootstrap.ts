@@ -5,8 +5,14 @@
 // playback controller and router into singletons the Svelte components use.
 import { ApiClient } from './api/client';
 import { bindSession, type SessionStore } from './auth/session';
+import { browserCanPlay } from './playback/capability';
 import { createLibraryStore, type LibraryStore } from './state/library';
-import { createQueueStore, type QueueStore } from './state/queue';
+import { createAudioPreferenceStore } from './state/preferences';
+import {
+  createQueueStore,
+  type QueueStore,
+  type SelectionContext,
+} from './state/queue';
 import { PlayerController } from './playback/controller';
 import { createTransitionPlanner } from './playback/transition-profiles';
 import { createRouter, type Router } from './router';
@@ -14,7 +20,15 @@ import { createRouter, type Router } from './router';
 export const api = new ApiClient({});
 export const session: SessionStore = bindSession(api);
 export const library: LibraryStore = createLibraryStore(api);
-export const queue: QueueStore = createQueueStore();
+// Representation preference (Phase 4): persisted web-app setting; selection
+// happens only at itemForTrack() construction time. No UI yet — set it via
+// the debug hook or console; playback picks it up on the next built item.
+export const audioPreference = createAudioPreferenceStore();
+/** The one SelectionContext source both item-construction paths share. */
+export function currentSelection(): SelectionContext {
+  return { preference: audioPreference.get(), canPlay: browserCanPlay };
+}
+export const queue: QueueStore = createQueueStore({ selection: currentSelection });
 // Content-aware transitions: profiles come from the tracks' waveform
 // envelopes; without data the planner degrades to the legacy fixed fade.
 const transitionPlanner = createTransitionPlanner({
@@ -23,6 +37,7 @@ const transitionPlanner = createTransitionPlanner({
 });
 export const player = new PlayerController(queue, {
   planTransition: (query) => transitionPlanner.plan(query),
+  selection: currentSelection,
 });
 // Prefetch boundary profiles for the current and next item as playback
 // advances so plans are content-aware by the time a boundary approaches.
@@ -60,6 +75,7 @@ export interface MusicPackDebug {
   queue: QueueStore;
   player: PlayerController;
   router: Router;
+  audioPreference: ReturnType<typeof createAudioPreferenceStore>;
 }
 
 declare global {
@@ -69,5 +85,5 @@ declare global {
 }
 
 export function exposeDebug(): void {
-  window.__musicpack = { api, session, library, queue, player, router };
+  window.__musicpack = { api, session, library, queue, player, router, audioPreference };
 }

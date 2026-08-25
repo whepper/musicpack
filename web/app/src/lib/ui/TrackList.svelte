@@ -6,7 +6,7 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import type { ReleaseDetail, Track } from '../api/types';
   import { fmtTime, mediumLabel, codecLabel } from '../format';
-  import { queue } from '../bootstrap';
+  import { currentSelection, queue } from '../bootstrap';
   import { itemForTrack } from '../state/queue';
   import { onDestroy } from 'svelte';
 
@@ -45,7 +45,7 @@ SPDX-License-Identifier: BSD-3-Clause
 
   function addTrack(track: Track): void {
     const artist = release.album.artists[0]?.name ?? '';
-    queue.addItem(itemForTrack(release, track, release.album.title, artist));
+    queue.addItem(itemForTrack(release, track, release.album.title, artist, currentSelection()));
     addedSet = new Set([...addedSet, track.id]);
     const prior = timers.get(track.id);
     if (prior) clearTimeout(prior);

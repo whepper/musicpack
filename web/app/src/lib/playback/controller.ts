@@ -26,9 +26,10 @@ import type { Engine } from '../../../../player-core/src/engine';
 import type { PlaybackItem } from '../../../../player-core/src/types';
 import type { NormalizationMode } from './loudness';
 import { bindMediaActions, setMediaMetadata, setMediaPosition } from './media-session';
+import { browserSupportsMime, isMusepackCodec } from './capability';
 import { MusepackEngine } from './musepack-engine';
 import { NativeBackend } from './native-backend';
-import type { QueueItem, QueueStore } from '../state/queue';
+import type { QueueItem, QueueStore, SelectionContext } from '../state/queue';
 import type { PlayerEvent } from '../../../../player-core/src/events';
 
 export interface PlayerModel {
@@ -86,17 +87,11 @@ const mediaControls: MediaControlsPort = {
 };
 
 /** Backend selection (web policy). Codec string → musepack; else a browser
- *  capability probe → native; else a friendly failure. */
+ *  capability probe → native; else a friendly failure. The capability rules
+ *  live in ./capability so representation selection shares one truth. */
 function chooseBackend(item: PlaybackItem): 'musepack' | 'native' {
-  const codec = item.codec ?? '';
-  if (codec === 'musepack' || codec === 'musepack-sv7' || codec === 'musepack-sv8') {
-    return 'musepack';
-  }
-  const mime = item.mimeType ?? '';
-  if (mime && typeof document !== 'undefined') {
-    const probe = document.createElement('audio');
-    if (probe.canPlayType(mime)) return 'native';
-  }
+  if (isMusepackCodec(item.codec)) return 'musepack';
+  if (browserSupportsMime(item.mimeType)) return 'native';
   throw new Error('This format is not supported by this browser.');
 }
 
@@ -137,6 +132,10 @@ export interface ControllerOptions {
   storage?: { get: () => string | null; set: (value: string | null) => void };
   /** Content-aware transition policy (Sweet Fades); see transition-profiles. */
   planTransition?: PlayerPorts['planTransition'];
+  /** Representation-selection context provider (Phase 4): consulted at item
+   *  construction time so PlaybackItems carry the preferred audio source.
+   *  Omitted ⇒ default-only behavior. */
+  selection?: () => SelectionContext;
 }
 
 interface InternalControllerOptions extends ControllerOptions {
@@ -162,9 +161,11 @@ export class PlayerController {
   });
   private core: Player;
   private queue: QueueStore;
+  private readonly selection?: () => SelectionContext;
 
   constructor(queue: QueueStore, opts: ControllerOptions = {}) {
     this.queue = queue;
+    this.selection = opts.selection;
     const o = opts as InternalControllerOptions;
     const ports: PlayerPorts = {
       engineFactory: (kind, handlers) =>
@@ -249,8 +250,9 @@ export class PlayerController {
     // Build items without installing: reuse the store's public builder by
     // calling playAlbum on a THROWAWAY probe? No — simpler: the store keeps
     // its builder; expose it as a pure function instead. See state/queue.ts
-    // `itemsForRelease` export used here.
-    return itemsForRelease(release, title, artist);
+    // `itemsForRelease` export used here. Representation selection (Phase 4)
+    // rides along through the injected context provider.
+    return itemsForRelease(release, title, artist, this.selection?.());
   }
 
   async next(): Promise<void> {
