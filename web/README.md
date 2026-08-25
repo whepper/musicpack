@@ -169,6 +169,46 @@ so Player Core, the engines and the queue model stay representation-blind:
   restarts already-built/playing items — it applies from the next
   construction onward.
 
+## Offline downloads (offline `.mpack`, Phase: offline v1)
+
+Complete releases can be downloaded for offline playback. The governing
+rules:
+
+- **Installed-Package Usability Invariant:** a package is *installed* iff
+  one atomically committed catalog record holds every playback-critical
+  asset (each track's primary audio, waveforms, referenced artwork)
+  verified against the manifest SHA-256 — with any damaged non-critical
+  asset (an alternate representation) explicitly excluded rather than
+  silently absent. Staged/failed/orphaned files are invisible to playback;
+  a partially-installed package can never appear playable.
+- **D1 local-first:** an installed package's selected assets ALWAYS play
+  from local storage, online or offline; remote sources serve only
+  non-installed content.
+- **D2 user-initiated updates:** online hash differences only FLAG a
+  package `stale`; replacement happens strictly via explicit user action.
+- **D3 lyrics deferred:** booklet/lyrics/extras are not downloaded until a
+  consuming feature ships.
+- **Download policy (v1):** every track's primary audio + ALL declared
+  representations + per-track waveforms + release artwork. Waveforms ride
+  along because the seek control AND Sweet-Fade planning consume them.
+- **Selection stays Phase 4:** `resolveAudio()` remains the single policy;
+  offline availability composes in at item construction (`SelectionContext.
+  offline`) and through the injected `canPlay` candidate identity. Player
+  Core gained only an additive `'local-file'` member on `PlaybackSource`.
+- **Storage split:** OPFS (`musicpack-offline-v1/releases/…`, staged under
+  `.staging/<installId>/…`) holds audio bytes; IndexedDB holds catalog
+  records + small blobs; localStorage keys are unchanged. The static shell
+  service worker (`public/sw.js`) caches ONLY the app shell + worker/wasm
+  scripts — it never intercepts `/api/**` and holds no domain state.
+- **Integrity:** bytes are hashed incrementally while streaming into
+  staging and verified before commit; corrupt primaries fail the install,
+  corrupt alternates commit nothing for that asset. Boot-time audit
+  reconciles files vs catalog (browser eviction → `damaged` → excluded
+  until reinstall). Signing/publisher trust remains out of scope.
+- **Offline session:** a boot network failure WITH installed content
+  enters `AuthState 'offline'` (degraded-authenticated) instead of the
+  sign-in screen; `navigator.onLine` is deliberately not consulted.
+
 ## Crossfade (opt-in)
 
 The ⤡ button in the player bar cycles Off → 4 s → 8 s → 12 s (persisted in
