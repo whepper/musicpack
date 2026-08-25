@@ -303,10 +303,10 @@ test_migrations(void)
     char err[256];
     snprintf(dbpath, sizeof dbpath, "%s/mig.db", g_tmpdir);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "open fresh db");
-    CHECK(db != 0 && mp_db_schema_version(db) == 9, "schema version 9");
+    CHECK(db != 0 && mp_db_schema_version(db) == 10, "schema version 10");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 1, err, sizeof err) == 0, "reopen db");
-    CHECK(mp_db_schema_version(db) == 9, "version stable on reopen");
+    CHECK(mp_db_schema_version(db) == 10, "version stable on reopen");
     mp_db_close(db);
     CHECK(mp_db_open(&db, dbpath, 0, err, sizeof err) == 0, "open read-only");
     mp_db_close(db);
@@ -2018,12 +2018,12 @@ test_upgrade_from_v5(void)
     }
     sqlite3_close(raw);
 
-    /* normal writable open must migrate 5 -> 9 automatically */
+    /* normal writable open must migrate 5 -> 10 automatically */
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upgrade: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 9,
-          "upgrade: schema version now 9");
+    CHECK(mp_library_schema_version(lib_h) == 10,
+          "upgrade: schema version now 10");
 
     /* ingesting into the upgraded schema assigns uids; a metadata edit
        re-ingest preserves ids exactly like a fresh database */
@@ -2397,7 +2397,7 @@ test_upgrade_from_v7(void)
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upg7: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 9, "upg7: schema version 9");
+    CHECK(mp_library_schema_version(lib_h) == 10, "upg7: schema version 10");
     CHECK(scalar_ll(db, "SELECT id FROM artists WHERE name = ?1",
                     "Legacy Artist") == 1,
           "upg7: artist row id preserved");
@@ -2490,7 +2490,7 @@ test_upgrade_from_v8(void)
     lib_h = mp_library_open(dbpath, 1, 0, 0);
     CHECK(lib_h != 0, "upg8: migrated open succeeds");
     db = mp_library_sqlite(lib_h);
-    CHECK(mp_library_schema_version(lib_h) == 9, "upg8: schema version 9");
+    CHECK(mp_library_schema_version(lib_h) == 10, "upg8: schema version 10");
     CHECK(scalar_ll(db, "SELECT id FROM release_groups WHERE title=?1",
                     "Legacy Album") == 1,
           "upg8: group row preserved");
@@ -2501,6 +2501,254 @@ test_upgrade_from_v8(void)
             "Legacy Album", gj, sizeof gj);
         CHECK(g != 0 && *g == '\0', "upg8: legacy genres_json NULL");
     }
+    mp_library_close(lib_h);
+}
+
+/* ---------- representations ingest (Phase 3) ------------------------------ */
+
+/* Copies the reference MPC package, adds a FLAC representation to track 1,
+   and returns the hex sha256 of the added file in \p sha_out. */
+static void
+make_variant_package(const char *lib, const char *pkg_name, char *sha_out,
+                     size_t sha_cap)
+{
+    char pkg[4096], mpath[4096], alt[4096], alt_src[4096];
+
+    snprintf(pkg, sizeof pkg, "%s/%s", lib, pkg_name);
+    copy_tree(g_ref_mpc, pkg);
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+    /* Use an existing file from the reference package itself as the
+       "alternate" content (waveform blob) so no external fixture is needed;
+       its bytes differ from the primary audio. */
+    snprintf(alt_src, sizeof alt_src,
+             "%s/analysis/waveform/01-01.wfm", pkg);
+    snprintf(alt, sizeof alt, "%s/audio/01-alt.flac", pkg);
+    {
+        FILE *s = fopen(alt_src, "rb");
+        FILE *d = fopen(alt, "wb");
+        char buf[4096];
+        size_t n;
+        CHECK(s != 0 && d != 0, "variant: copy alternate file");
+        if (s != 0 && d != 0) {
+            while ((n = fread(buf, 1, sizeof buf, s)) > 0)
+                fwrite(buf, 1, n, d);
+            fclose(s);
+            fclose(d);
+        } else {
+            if (s) fclose(s);
+            if (d) fclose(d);
+        }
+    }
+    CHECK(musicpack_sha256_file(alt, sha_out, sha_cap) == MUSICPACK_OK,
+          "variant: hash alternate");
+    {
+        /* Rewrite manifest: insert the representations array as a sibling
+           key AFTER the whole audio object of track 1 closes (brace-match). */
+        char *buf = read_file(mpath);
+        const char *audio_key = "\"audio\": {";
+        char *hit = buf ? strstr(buf, audio_key) : 0;
+        char *reps;
+        size_t head, i, depth = 1, audio_len = strlen(audio_key);
+        FILE *f;
+
+        CHECK(hit != 0, "variant: find audio key");
+        if (hit == 0) {
+            free(buf);
+            return;
+        }
+        head = (size_t) (hit - buf);
+        i = head + audio_len; /* first char inside the audio object */
+        while (depth > 0 && buf[i] != '\0') {
+            if (buf[i] == '{') depth++;
+            else if (buf[i] == '}') depth--;
+            i++;
+        }
+        /* buf[i-1] is the audio object's closing brace */
+        reps = malloc(strlen(buf) + 512);
+        memcpy(reps, buf, i); /* includes everything through '}' */
+        reps[i] = '\0';
+        strcat(reps,
+            ", \"representations\": ["
+            "{\"path\": \"audio/01-alt.flac\", \"sha256\": \"");
+        strcat(reps, sha_out);
+        strcat(reps, "\", \"label\": \"FLAC Alt\", \"codec\": \"flac\"}]");
+        strcat(reps, buf + i);
+        f = fopen(mpath, "wb");
+        CHECK(f != 0, "variant: write manifest");
+        if (f != 0) {
+            fwrite(reps, 1, strlen(reps), f);
+            fclose(f);
+        }
+        free(reps);
+        free(buf);
+    }
+}
+
+static void
+test_variant_ingest(void)
+{
+    char lib[4096], dbpath[4096], pkg[4096], mpath[4096];
+    mp_library *lib_h;
+    mp_scan_result res;
+    sqlite3 *db;
+    long long v1, v2;
+    char sha[80];
+
+    snprintf(lib, sizeof lib, "%s/varlib", g_tmpdir);
+    snprintf(dbpath, sizeof dbpath, "%s/var.db", g_tmpdir);
+    make_dir(lib);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "variant: open db");
+    db = mp_library_sqlite(lib_h);
+
+    /* initial ingest WITHOUT representations */
+    snprintf(pkg, sizeof pkg, "%s/Base.mpack", lib);
+    copy_tree(g_ref_mpc, pkg);
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK &&
+          res.added == 1, "variant: base scan");
+
+    /* add a representation to track 1 */
+    make_variant_package(lib, "Base.mpack", sha, sizeof sha);
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "variant: scan with rep");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM audio_variants", -1) == 1,
+          "variant: one row after adding");
+    v1 = scalar_ll(db,
+        "SELECT id FROM audio_variants WHERE relative_path="
+        "'audio/01-alt.flac'", 0);
+    CHECK(v1 > 0, "variant: row exists");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM audio_variants WHERE label='FLAC Alt'"
+        " AND codec LIKE 'flac%'", -1) == 1,
+        "variant: label + probed codec stored");
+
+    /* unchanged re-ingest keeps the id */
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "variant: idempotent rescan");
+    CHECK(scalar_ll(db,
+        "SELECT id FROM audio_variants WHERE relative_path="
+        "'audio/01-alt.flac'", 0) == v1,
+        "variant: id survives rescan");
+
+    /* label edit updates in place; still the same id */
+    snprintf(mpath, sizeof mpath, "%s/manifest.json", pkg);
+    replace_in_file(mpath, "\"label\": \"FLAC Alt\"",
+                    "\"label\": \"FLAC Alt v2\"");
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "variant: label-edit scan");
+    CHECK(scalar_ll(db,
+        "SELECT id FROM audio_variants WHERE relative_path="
+        "'audio/01-alt.flac'", 0) == v1,
+        "variant: id survives label edit");
+    CHECK(count_rows(db,
+        "SELECT COUNT(*) FROM audio_variants WHERE label='FLAC Alt v2'",
+        -1) == 1, "variant: new label stored");
+
+    /* path change issues a NEW id (identifier-lifetime rule) */
+    {
+        char alt_old[4096], alt_new[4096];
+        char *buf;
+        snprintf(alt_old, sizeof alt_old, "%s/audio/01-alt.flac", pkg);
+        snprintf(alt_new, sizeof alt_new, "%s/audio/01-alt2.flac", pkg);
+        rename(alt_old, alt_new);
+        replace_in_file(mpath, "audio/01-alt.flac", "audio/01-alt2.flac");
+        (void) buf;
+    }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "variant: path-change scan");
+    v2 = scalar_ll(db,
+        "SELECT id FROM audio_variants WHERE relative_path="
+        "'audio/01-alt2.flac'", 0);
+    CHECK(v2 > 0 && v2 != v1, "variant: path change yields fresh id");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM audio_variants", -1) == 1,
+          "variant: old row gone after path change");
+
+    /* removing the representation deletes its row: splice out the whole
+       inserted block ", \"representations\": [ ... ]" (brace-matched). */
+    {
+        char *buf = read_file(mpath);
+        char *start = buf ? strstr(buf, ", \"representations\": [") : 0;
+        CHECK(start != 0, "variant: locate rep block for removal");
+        if (start != 0) {
+            size_t i = (size_t) (start - buf) + strlen(", \"representations\": [");
+            int depth = 1;
+            while (depth > 0 && buf[i] != '\0') {
+                if (buf[i] == '[') depth++;
+                else if (buf[i] == ']') depth--;
+                i++;
+            }
+            /* i-1 is the closing ]; the original text that followed the
+               audio object (e.g. ',\n "duration"') is still intact after
+               it, so splice out exactly [start, i). */
+            memmove(start, buf + i, strlen(buf + i) + 1);
+            write_file(mpath, buf);
+        }
+        free(buf);
+    }
+    CHECK(mp_scan_library(lib_h, lib, 0, &res, 0, 0) == MUSICPACK_OK,
+          "variant: removal scan");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM audio_variants", -1) == 0,
+          "variant: row deleted with its entity");
+
+    /* tracks/audio ids never moved because of any variant churn */
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM tracks", -1) == 4,
+          "variant: all four tracks remain");
+    mp_library_close(lib_h);
+}
+
+/* v9 -> v10: pre-Phase-3 databases have no audio_variants table; the
+   migration must create it empty and leave every legacy row untouched. */
+static void
+test_upgrade_from_v9(void)
+{
+    char dbpath[4096];
+    sqlite3 *raw;
+    const char *const *migrations = mp_schema_migrations();
+    int i;
+    mp_library *lib_h;
+    sqlite3 *db;
+
+    snprintf(dbpath, sizeof dbpath, "%s/upg-v9.db", g_tmpdir);
+    CHECK(sqlite3_open(dbpath, &raw) == SQLITE_OK, "upg9: create raw db");
+    CHECK(sqlite3_exec(raw,
+        "CREATE TABLE schema_version ("
+        "  version INTEGER PRIMARY KEY,"
+        "  applied_at TEXT NOT NULL);", 0, 0, 0) == SQLITE_OK,
+        "upg9: schema_version table");
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO schema_version(version, applied_at)"
+        " VALUES (0, datetime('now'));", 0, 0, 0) == SQLITE_OK,
+        "upg9: stamp version 0");
+    for (i = 0; i < 9; i++) {
+        char sql[128];
+        snprintf(sql, sizeof sql,
+                 "UPDATE schema_version SET version=%d, applied_at="
+                 "datetime('now');", i + 1);
+        CHECK(sqlite3_exec(raw, migrations[i], 0, 0, 0) == SQLITE_OK,
+              "upg9: apply migration");
+        CHECK(sqlite3_exec(raw, sql, 0, 0, 0) == SQLITE_OK,
+              "upg9: record new version");
+    }
+    /* seed a release group + edition (pre-P3 data; no variants anywhere) */
+    CHECK(sqlite3_exec(raw,
+        "INSERT INTO artists(id, name) VALUES (1, 'Legacy Artist');"
+        "INSERT INTO release_groups(id, title, group_key)"
+        " VALUES (1, 'Legacy Album', 'legacy-key');"
+        "INSERT INTO releases(id, group_id, release_key)"
+        " VALUES (1, 1, 'legacy-edition');", 0, 0, 0) == SQLITE_OK,
+        "upg9: seed pre-P3 rows");
+    sqlite3_close(raw);
+
+    lib_h = mp_library_open(dbpath, 1, 0, 0);
+    CHECK(lib_h != 0, "upg9: migrated open succeeds");
+    db = mp_library_sqlite(lib_h);
+    CHECK(mp_library_schema_version(lib_h) == 10, "upg9: schema version 10");
+    CHECK(scalar_ll(db, "SELECT id FROM release_groups WHERE title=?1",
+                    "Legacy Album") == 1,
+          "upg9: group row preserved");
+    CHECK(count_rows(db, "SELECT COUNT(*) FROM audio_variants", -1) == 0,
+          "upg9: variants table exists and is empty");
     mp_library_close(lib_h);
 }
 
@@ -2675,6 +2923,8 @@ main(int argc, char **argv)
     test_upgrade_from_v5();
     test_upgrade_from_v7();
     test_upgrade_from_v8();
+    test_upgrade_from_v9();
+    test_variant_ingest();
     test_genre_preservation();
     test_ingest_busy_rollback();
     test_ownership_conflict();

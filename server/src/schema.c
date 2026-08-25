@@ -233,7 +233,31 @@ static const char *const mp_migrations[] = {
 /* 8 -> 9: preserve release-group-level genres as JSON array (Phase 2B).
     Manifest `album.genres[]` strings are stored verbatim; NULL = no genres
     supplied. No entity table, no normalisation. */
-"ALTER TABLE release_groups ADD COLUMN genres_json TEXT;"
+"ALTER TABLE release_groups ADD COLUMN genres_json TEXT;",
+
+/* 9 -> 10: alternate audio representations (Phase 3). One row per
+    non-default representation of a track; the primary stays in
+    audio_objects (1:1, load-bearing). Uniqueness of (track_id,
+    relative_path) is enforced by the ingest natural-key sync in code,
+    mirroring assets. uid follows migration 6's insurance scheme.
+    stream_version/sample_rate/channels come from the same codec probe as
+    primaries (0 when unknown); label is the optional manifest display
+    string; position preserves manifest order. */
+"CREATE TABLE audio_variants ("
+"  id INTEGER PRIMARY KEY,"
+"  track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,"
+"  relative_path TEXT NOT NULL,"
+"  sha256 TEXT,"
+"  file_size INTEGER NOT NULL DEFAULT 0,"
+"  mime_type TEXT NOT NULL,"
+"  codec TEXT NOT NULL,"
+"  stream_version INTEGER,"
+"  sample_rate INTEGER,"
+"  channels INTEGER,"
+"  label TEXT,"
+"  position INTEGER NOT NULL,"
+"  uid TEXT);"
+"CREATE INDEX audio_variants_track_idx ON audio_variants(track_id);"
 };
 
 const char *const *

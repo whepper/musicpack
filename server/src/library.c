@@ -5,6 +5,7 @@
   (BSD 3-clause, see library.h)
 */
 #include "library.h"
+#include "codec.h"
 #include "log.h"
 #include "mime.h"
 #include "random.h"
@@ -1182,12 +1183,239 @@ sync_track_waveform(mp_library *lib, long long track_id, const char *root,
     return insert_waveform_row(lib, track_id, root, w);
 }
 
+/* ---------- alternate audio representations (Phase 3) --------------------- */
+
+/* A variant row currently stored under the release, used to match incoming
+   manifest representations so unchanged entities keep their row ids
+   (natural key: owning track + relative path, mirroring assets). */
+typedef struct existing_variant {
+    long long id;
+    long long track_id;
+    char *path;
+    int matched;
+} existing_variant;
+
+static void
+free_existing_variants(existing_variant **rows, size_t *n)
+{
+    size_t i;
+    if (*rows == 0)
+        return;
+    for (i = 0; i < *n; i++)
+        free((*rows)[i].path);
+    free(*rows);
+    *rows = 0;
+    *n = 0;
+}
+
+static int
+load_existing_variants(mp_library *lib, long long release_id,
+                       existing_variant **out, size_t *out_n)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT v.id, v.track_id, v.relative_path"
+        "  FROM audio_variants v"
+        "  JOIN tracks t ON t.id = v.track_id"
+        "  JOIN media me ON me.id = t.media_id"
+        " WHERE me.release_id = ?1");
+    existing_variant *rows = 0;
+    size_t n = 0, cap = 0;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, release_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        existing_variant *r;
+        if (n == cap) {
+            size_t next = cap != 0 ? cap * 2 : 8;
+            existing_variant *grown =
+                (existing_variant *) realloc(rows, next * sizeof *grown);
+            if (grown == 0) {
+                sqlite3_finalize(st);
+                free(rows);
+                return -1;
+            }
+            rows = grown;
+            cap = next;
+        }
+        r = &rows[n++];
+        memset(r, 0, sizeof *r);
+        r->id = sqlite3_column_int64(st, 0);
+        r->track_id = sqlite3_column_int64(st, 1);
+        r->path = strdup((const char *) sqlite3_column_text(st, 2));
+        if (r->path == 0) {
+            sqlite3_finalize(st);
+            free_existing_variants(&rows, &n);
+            return -1;
+        }
+    }
+    sqlite3_finalize(st);
+    *out = rows;
+    *out_n = n;
+    return 0;
+}
+
+static existing_variant *
+find_variant_slot(existing_variant *rows, size_t n, long long track_id,
+                  const char *rel)
+{
+    size_t i;
+    for (i = 0; i < n; i++) {
+        if (rows[i].track_id == track_id && !rows[i].matched &&
+            strcmp(rows[i].path, rel) == 0)
+            return &rows[i];
+    }
+    return 0;
+}
+
+/* Syncs one manifest representation against an existing row (update in
+   place: content/label may change; the id survives). */
+static int
+update_variant_row(mp_library *lib, const existing_variant *ea,
+                   const char *root, const musicpack_representation *rep,
+                   size_t position)
+{
+    sqlite3_stmt *st;
+    char abs[MUSICPACK_PATH_MAX + 2];
+    mp_codec_info probe;
+    long long size = 0;
+
+    memset(&probe, 0, sizeof probe);
+    if (musicpack_path_resolve(root, rep->path, abs, sizeof abs)
+        == MUSICPACK_OK) {
+        size = file_size_of(abs);
+        /* Never fails on unreadable/unsupported files: best-effort fields. */
+        (void) mp_codec_probe(abs, rep->path, &probe);
+    }
+    st = stmt_prepare(lib,
+        "UPDATE audio_variants SET sha256 = ?1, file_size = ?2,"
+        "  mime_type = ?3, codec = ?4, stream_version = ?5,"
+        "  sample_rate = ?6, channels = ?7, label = ?8, position = ?9"
+        " WHERE id = ?10");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_text(st, 1, rep->sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, size);
+    sqlite3_bind_text(st, 3, mp_mime_for_path(rep->path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, probe.codec[0] != '\0' ? probe.codec
+                          : mp_codec_for_path(rep->path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 5, probe.stream_version);
+    sqlite3_bind_int64(st, 6, probe.sample_rate);
+    sqlite3_bind_int64(st, 7, probe.channels);
+    sqlite3_bind_text(st, 8, rep->label, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 9, (long long) position);
+    sqlite3_bind_int64(st, 10, ea->id);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return ensure_row_uid(lib, "audio_variants", ea->id);
+}
+
+/* Inserts a brand-new variant row for a freshly seen representation. */
+static int
+insert_variant_row(mp_library *lib, long long track_id, const char *root,
+                   const musicpack_representation *rep, size_t position)
+{
+    sqlite3_stmt *st;
+    char abs[MUSICPACK_PATH_MAX + 2];
+    mp_codec_info probe;
+    char uid[33];
+    long long size = 0;
+
+    memset(&probe, 0, sizeof probe);
+    if (musicpack_path_resolve(root, rep->path, abs, sizeof abs)
+        == MUSICPACK_OK) {
+        size = file_size_of(abs);
+        (void) mp_codec_probe(abs, rep->path, &probe);
+    }
+    if (generate_uid(uid) != 0)
+        return -1;
+    st = stmt_prepare(lib,
+        "INSERT INTO audio_variants(track_id, relative_path, sha256,"
+        "  file_size, mime_type, codec, stream_version, sample_rate,"
+        "  channels, label, position, uid)"
+        " VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)");
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    sqlite3_bind_text(st, 2, rep->path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, rep->sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, size);
+    sqlite3_bind_text(st, 5, mp_mime_for_path(rep->path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 6, probe.codec[0] != '\0' ? probe.codec
+                          : mp_codec_for_path(rep->path), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 7, probe.stream_version);
+    sqlite3_bind_int64(st, 8, probe.sample_rate);
+    sqlite3_bind_int64(st, 9, probe.channels);
+    sqlite3_bind_text(st, 10, rep->label, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 11, (long long) position);
+    sqlite3_bind_text(st, 12, uid, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return 0;
+}
+
+/* Diff-aware sync of one track's representations: match by natural key
+   (track_id + relative_path), update matched rows in place, insert new
+   ones, delete whatever vanished. Runs inside the caller's transaction. */
+static int
+sync_track_variants(mp_library *lib, long long track_id, const char *root,
+                    const musicpack_track *tr,
+                    existing_variant *rows, size_t row_n)
+{
+    size_t r;
+
+    for (r = 0; r < tr->representation_count; r++) {
+        existing_variant *ev =
+            find_variant_slot(rows, row_n, track_id,
+                              tr->representations[r].path);
+        if (ev != 0) {
+            ev->matched = 1;
+            if (update_variant_row(lib, ev, root, &tr->representations[r],
+                                   r) != 0)
+                return -1;
+        } else if (insert_variant_row(lib, track_id, root,
+                                      &tr->representations[r], r) != 0) {
+            return -1;
+        }
+    }
+    /* Delete variants of this track whose entity no longer exists.
+       (Cross-track leftovers are handled by the caller's sweep.) */
+    for (r = 0; r < row_n; r++) {
+        sqlite3_stmt *st;
+        if (rows[r].matched || rows[r].track_id != track_id)
+            continue;
+        /* Only delete when this sync owns that track's current pass; other
+           tracks' stale rows are swept in their own sync call. */
+        st = stmt_prepare(lib, "DELETE FROM audio_variants WHERE id = ?1");
+        if (st == 0)
+            return -1;
+        sqlite3_bind_int64(st, 1, rows[r].id);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        sqlite3_finalize(st);
+        rows[r].matched = 1; /* deleted: never revisit */
+    }
+    return 0;
+}
+
 /* Updates an existing track row in place (same rowid), including its
    1:1 audio object, artist credits, and waveform. */
 static int
 update_track_row(mp_library *lib, const existing_track *r, long long media_id,
                  const musicpack_track *tr, const mp_track_ingest *ti,
-                 const char *root)
+                 const char *root, existing_variant *variants,
+                 size_t variant_n)
 {
     sqlite3_stmt *st;
     char codec[24];
@@ -1266,7 +1494,9 @@ update_track_row(mp_library *lib, const existing_track *r, long long media_id,
     if (insert_track_artists(lib, r->id, tr) != 0)
         return -1;
 
-    return sync_track_waveform(lib, r->id, root, &tr->waveform);
+    if (sync_track_waveform(lib, r->id, root, &tr->waveform) != 0)
+        return -1;
+    return sync_track_variants(lib, r->id, root, tr, variants, variant_n);
 }
 
 /* Inserts a brand-new track entity with fresh row ids. */
@@ -1345,6 +1575,10 @@ insert_track_row(mp_library *lib, long long media_id,
 
     if (tr->waveform.present &&
         insert_waveform_row(lib, track_id, root, &tr->waveform) != 0)
+        return -1;
+    /* A new track's representations are all inserts by definition; pass a
+       null snapshot so every entry takes the insert path. */
+    if (sync_track_variants(lib, track_id, root, tr, 0, 0) != 0)
         return -1;
     return 0;
 }
@@ -1487,6 +1721,8 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
     existing_asset *old_assets = 0;
     size_t old_asset_n = 0;
     long long *media_ids = 0;
+    existing_variant *variants = 0;
+    size_t variant_n = 0;
     size_t ci = 0;
     size_t d, t, i;
     int rc = -1;
@@ -1498,6 +1734,8 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
         return -1;
     if (load_existing_assets(lib, release_id, &old_assets, &old_asset_n)
         != 0)
+        goto out;
+    if (load_existing_variants(lib, release_id, &variants, &variant_n) != 0)
         goto out;
     media_ids = (long long *) calloc(m->disc_count ? m->disc_count : 1,
                                      sizeof *media_ids);
@@ -1528,7 +1766,8 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
                                            tr->audio.sha256);
             if (mt != 0) {
                 mt->matched = 1;
-                if (update_track_row(lib, mt, media_ids[d], tr, ti, root)
+                if (update_track_row(lib, mt, media_ids[d], tr, ti, root,
+                                     variants, variant_n)
                     != 0)
                     goto out;
             } else if (insert_track_row(lib, media_ids[d], tr, ti, root)
@@ -1593,6 +1832,7 @@ mp_library_replace_release_content(mp_library *lib, long long release_id,
     rc = 0;
 out:
     free(media_ids);
+    free_existing_variants(&variants, &variant_n);
     free_existing_assets(&old_assets, &old_asset_n);
     free(old_tracks);
     return rc; /* nonzero rolls back the caller's transaction */
