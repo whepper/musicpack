@@ -349,7 +349,10 @@ updated in place when content changes). A `{rid}` that does not belong to
 `{id}`, or whose owning package is not servable, returns 404.
 Representation ids follow the same identifier-lifetime rules as other
 entities: stable across rescans while `(track, path)` is unchanged; changing
-a representation's path issues a new id.
+a representation's path issues a new id. Clients may select among the
+listed representations (e.g. by user preference); `audio` remains the
+default for clients that do not, and selection is a client-side decision —
+the serving contract above is identical for both.
 
 ### `GET /api/v1/tracks/{id}/waveform`
 

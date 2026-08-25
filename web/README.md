@@ -141,6 +141,34 @@ The queue is one canonical track list; ordering never destroys it.
   canonical list; the cursor follows the moved item and Previous history
   stays valid.
 
+## Audio representations (Phase 4)
+
+A package may ship alternate audio representations per track (Phase 3
+`representations[]`); the primary `audio` entry remains the frozen default.
+Selection is a pure web-domain policy — `resolveAudio()` in
+`lib/state/representation-selection.ts` — consumed only by `itemForTrack()`,
+so Player Core, the engines and the queue model stay representation-blind:
+
+- **No preference (default)** plays the primary audio exactly as before
+  Phase 4; tracks without representations are unaffected by any preference.
+- One active preference exists: `default`, an explicit representation id,
+  an exact codec family (`codec: "flac"`), or `lossless` (closed set:
+  flac/wav/aiff). It persists under its own localStorage key
+  (`musicpack.audio-preference.v1`) — deliberately outside the player-core
+  snapshot schema. No settings UI yet; set it via the debug hook.
+- Fallback is deterministic and total: a preference that matches nothing
+  falls back to the primary; an unplayable primary may be rescued by the
+  first playable alternate in manifest order; if nothing is playable the
+  item is still built and today's unsupported-format error surfaces at open.
+- Playability is injected (`browserCanPlay`, shared with backend resolution
+  so both can never disagree); a future offline host can inject local-file
+  availability instead.
+- Selected items get identity `t{trackId}r{repId}` so the same track can
+  appear twice with different sources unambiguously; default items keep the
+  plain `t{trackId}` identity. Changing the preference never rebuilds or
+  restarts already-built/playing items — it applies from the next
+  construction onward.
+
 ## Crossfade (opt-in)
 
 The ⤡ button in the player bar cycles Off → 4 s → 8 s → 12 s (persisted in
