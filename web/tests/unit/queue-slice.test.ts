@@ -16,6 +16,7 @@ import {
   tracksOfRelease,
 } from '../../app/src/lib/state/queue';
 import { codecLabel } from '../../app/src/lib/format';
+import type { QueueItem } from '../../app/src/lib/state/queue';
 import type { ReleaseDetail, Track } from '../../app/src/lib/api/types';
 
 function track(id: number, number_: number, title: string, over: Partial<Track> = {}): Track {
@@ -199,6 +200,115 @@ describe('album construction funnels through itemForTrack', () => {
     const empty = release({ id: 9, media: [] });
     expect(() => store.addAlbum(empty, 'Empty', 'Nobody')).not.toThrow();
     expect(store.get().items).toHaveLength(n);
+  });
+});
+
+describe('representation selection at the itemForTrack boundary (Phase 4)', () => {
+  const flacRep = {
+    id: 77,
+    size: 999,
+    url: '/api/v1/tracks/14/representations/77/audio',
+    codec: { codec: 'flac', mimeType: 'audio/flac' },
+    label: 'FLAC 24/96',
+  };
+  const wavRep = {
+    id: 78,
+    size: 4000,
+    url: '/api/v1/tracks/14/representations/78/audio',
+    codec: { codec: 'wav', mimeType: 'audio/wav' },
+  };
+  const withReps = track(14, 2, 'T4', { representations: [flacRep, wavRep] });
+  const browser = {
+    preference: { mode: 'lossless' } as const,
+    canPlay: () => true,
+  };
+
+  it('omitted context is byte-identical to the plain default item', () => {
+    const r = release();
+    // The carried-verbatim `track` differs by design (one has representations);
+    // every PLAYER-facing field must be identical.
+    const strip = (q: QueueItem): Omit<QueueItem, 'track'> => {
+      const { track: _t, ...rest } = q;
+      return rest;
+    };
+    expect(strip(itemForTrack(r, withReps, 'A', 'Artist'))).toEqual(
+      strip(itemForTrack(r, track(14, 2, 'T4'), 'A', 'Artist')),
+    );
+  });
+
+  it('lossless preference selects the first lossless rep in manifest order', () => {
+    const item = itemForTrack(release(), withReps, 'A', 'Artist', browser);
+    expect(item.id).toBe('t14r77'); // representation-aware identity
+    expect(item.representationId).toBe(77);
+    expect(item.source).toEqual({ kind: 'http-range', url: flacRep.url, byteSize: flacRep.size });
+    expect(item.codec).toBe('flac');
+    expect(item.mimeType).toBe('audio/flac');
+    // track-level metadata is representation-independent
+    expect(item.trackId).toBe(14);
+    expect(item.title).toBe('T4');
+    expect(item.track).toBe(withReps);
+  });
+
+  it('unplayable primary is rescued by a playable alternate', () => {
+    const item = itemForTrack(release(), withReps, 'A', 'Artist', {
+      preference: { mode: 'default' },
+      canPlay: (c) => c.codec !== 'musepack-sv8',
+    });
+    expect(item.representationId).toBe(77);
+    expect(item.codec).toBe('flac');
+  });
+
+  it('explicit representation preference resolves by id', () => {
+    const item = itemForTrack(release(), withReps, 'A', 'Artist', {
+      preference: { mode: 'representation', id: 78 },
+      canPlay: () => true,
+    });
+    expect(item.id).toBe('t14r78');
+    expect(item.source.url).toBe(wavRep.url);
+  });
+
+  it('the same track under different selections yields distinct identities', () => {
+    const r = release();
+    const def = itemForTrack(r, withReps, 'A', 'B');
+    const flac = itemForTrack(r, withReps, 'A', 'B', browser);
+    const wav = itemForTrack(r, withReps, 'A', 'B', {
+      preference: { mode: 'representation', id: 78 },
+      canPlay: () => true,
+    });
+    expect(new Set([def.id, flac.id, wav.id]).size).toBe(3);
+    expect(def.id).toBe('t14');
+  });
+
+  it('itemsForRelease funnels every track through the same policy', () => {
+    const t5 = track(15, 3, 'T5');
+    const rel = release({ media: [{ disc: 1, tracks: [withReps, t5] }] });
+    const items = itemsForRelease(rel, 'A', 'B', browser);
+    expect(items.map((i) => i.id)).toEqual(['t14r77', 't15']); // rep-aware + default
+  });
+
+  it('store playAlbum/addAlbum honor an injected selection context', () => {
+    let calls = 0;
+    const store = createQueueStore({
+      selection: () => {
+        calls++;
+        return browser;
+      },
+    });
+    const playing = store.playAlbum(release(), 'Slice Album', 'Slice Artist');
+    expect(playing.id).toBe('t11'); // t1 has no representations
+    store.addAlbum(release({ id: 8, media: [{ disc: 1, tracks: [withReps] }] }), 'Other', 'X');
+    const last = store.get().items.at(-1);
+    expect(last?.id).toBe('t14r77');
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('selection stays deterministic and never mutates its inputs', () => {
+    const r = release();
+    const before = JSON.stringify({ r, withReps });
+    const a = itemForTrack(r, withReps, 'A', 'B', browser);
+    const b = itemForTrack(r, withReps, 'A', 'B', browser);
+    expect(a).toEqual(b);
+    expect(JSON.stringify({ r, withReps })).toBe(before);
   });
 });
 

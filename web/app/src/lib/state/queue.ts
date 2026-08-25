@@ -12,11 +12,28 @@
 
 import { createQueueModel, type QueueModel } from '../../../../player-core/src/queue';import type { PlaybackItem } from '../../../../player-core/src/types';
 import type { AlbumLoudness, ReleaseDetail, Track } from '../api/types';
+import {
+  acceptAll,
+  resolveAudio,
+  type AudioPreference,
+  type CanPlay,
+} from './representation-selection';
 
 export interface QueueItem extends PlaybackItem {
   track: Track;
   releaseId: number;
   albumId: number;
+  /** Set iff an alternate representation was selected for this item
+   *  (Phase 4); absent = the track's primary audio. */
+  representationId?: number;
+}
+
+/** Everything itemForTrack() needs to resolve audio: the active preference
+ *  plus the host playability predicate. Omitted entirely ⇒ pre-Phase-4
+ *  behavior, byte-identical. */
+export interface SelectionContext {
+  preference?: AudioPreference;
+  canPlay?: CanPlay;
 }
 
 export interface QueueState {
@@ -38,23 +55,30 @@ export function tracksOfRelease(release: ReleaseDetail): Track[] {
 
 /** Builds a single web QueueItem for one track of a release. Shared by the
  *  album builders and the per-track add-to-queue action so item construction
- *  (the future representation-selection boundary) lives in exactly one place. */
+ *  AND representation selection (Phase 4) live in exactly one place. Without
+ *  `sel` the output is byte-identical to the pre-Phase-4 default-only
+ *  behavior. */
 export function itemForTrack(
   release: ReleaseDetail,
   track: Track,
   title: string,
   artist: string,
+  sel?: SelectionContext,
 ): QueueItem {
   const artworkUrl = release.artwork[0]?.url;
+  const chosen = resolveAudio(track, sel?.preference, sel?.canPlay ?? acceptAll);
+  const rep = chosen.representation;
   return {
     // core PlaybackItem fields (identity, source, policy metadata)
-    id: `t${track.id}`,
+    id: rep ? `t${track.id}r${rep.id}` : `t${track.id}`,
     trackId: track.id,
-    source: {
-      kind: 'http-range' as const,
-      url: track.audio.url,
-      byteSize: track.audio.size,
-    },
+    source: rep
+      ? { kind: 'http-range' as const, url: rep.url, byteSize: rep.size }
+      : {
+          kind: 'http-range' as const,
+          url: track.audio.url,
+          byteSize: track.audio.size,
+        },
     durationHintSeconds: track.duration,
     title: track.title,
     artist,
@@ -63,8 +87,9 @@ export function itemForTrack(
     artworkUrl,
     loudness: track.loudness,
     albumLoudness: release.loudness,
-    codec: track.codec.codec,
-    mimeType: track.codec.mimeType,
+    codec: rep ? rep.codec.codec : track.codec.codec,
+    mimeType: rep ? rep.codec.mimeType : track.codec.mimeType,
+    ...(rep ? { representationId: rep.id } : {}),
     // web-specific fields
     track,
     releaseId: release.id,
@@ -72,9 +97,14 @@ export function itemForTrack(
   };
 }
 
-function itemsFor(release: ReleaseDetail, title: string, artist: string): QueueItem[] {
+function itemsFor(
+  release: ReleaseDetail,
+  title: string,
+  artist: string,
+  sel?: SelectionContext,
+): QueueItem[] {
   return tracksOfRelease(release).map((track) =>
-    itemForTrack(release, track, title, artist),
+    itemForTrack(release, track, title, artist, sel),
   );
 }
 
@@ -84,15 +114,16 @@ export function itemsForRelease(
   release: ReleaseDetail,
   title: string,
   artist: string,
+  sel?: SelectionContext,
 ): QueueItem[] {
-  return itemsFor(release, title, artist);
+  return itemsFor(release, title, artist, sel);
 }
 
 /** The web queue store: QueueModel methods (delegated verbatim) plus the
  *  web-shaped playAlbum builder. NOTE: `{...model}` would snapshot the
  *  model's getters as static values (repeat/shuffle would freeze at their
  *  initial state), so the policy surface is forwarded explicitly. */
-export function createQueueStore() {
+export function createQueueStore(opts: { selection?: () => SelectionContext } = {}) {
   // Hosts own randomness (core purity law 2): the web passes Math.random.
   const model = createQueueModel<QueueItem>({ rng: Math.random });
   return {
@@ -124,7 +155,7 @@ export function createQueueStore() {
       artist: string,
       startIndex = 0,
     ): QueueItem {
-      const items = itemsFor(release, title, artist);
+      const items = itemsFor(release, title, artist, opts.selection?.());
       if (items.length === 0) throw new Error('This release has no playable tracks.');
       return model.playSequence(items, startIndex);
     },
@@ -138,7 +169,7 @@ export function createQueueStore() {
       title: string,
       artist: string,
     ): void {
-      model.enqueueMany(itemsFor(release, title, artist));
+      model.enqueueMany(itemsFor(release, title, artist, opts.selection?.()));
     },
   };
 }
