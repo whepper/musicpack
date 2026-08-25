@@ -105,9 +105,17 @@ test('lossless preference routes the represented track through the native backen
       (await page.evaluate(() => window.__musicpack?.player.getBackendKind())) === 'musepack',
     { label: 'engine switched for musepack track' },
   );
-  const crossed = await playerState(page);
-  expect(crossed.state).toBe('playing');
-  expect(crossed.error).toBeUndefined();
+  // Priming the freshly built engine takes a moment; wait for audible
+  // playback rather than sampling the transient buffering state.
+  await waitFor(
+    page,
+    async () => {
+      const s = await playerState(page);
+      return s.state === 'playing' && s.error === undefined;
+    },
+    { label: 'musepack track playing after recovery', timeout: 20_000 },
+  );
+  expect((await playerState(page)).error).toBeUndefined();
 
   // Musepack-only tracks in the same library are untouched by the preference.
   await page.getByRole('link', { name: 'MusicPack home' }).click(); // back to the shelf
