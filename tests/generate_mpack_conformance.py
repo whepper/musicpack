@@ -147,6 +147,37 @@ def main():
     }
     add_case(cases, "valid", "with-waveform", waveform_manifest, waveform_files)
 
+    # ---- alternate representations (Phase 3: track.representations[]) -----
+    reps_files = {**one, "audio/01-alt.bin": b"alt"}
+    reps_manifest = base_manifest()
+    reps_manifest["media"][0]["tracks"][0]["representations"] = [
+        {"path": "audio/01-alt.bin", "sha256": HASH(b"alt"),
+         "label": "FLAC 24/96", "codec": "flac"},
+    ]
+    add_case(cases, "valid", "with-representations", reps_manifest, reps_files)
+
+    rep_mutations = {
+        # missing checksum on the representation entry
+        "rep-missing-sha": lambda m: m["media"][0]["tracks"][0].update(
+            representations=[{"path": "audio/01-alt.bin"}]),
+        # representation path collides with the primary audio object
+        "rep-dup-path-primary": lambda m: m["media"][0]["tracks"][0].update(
+            representations=[{"path": "audio/01.bin",
+                              "sha256": HASH(b"one")}]),
+        # two representations sharing one path
+        "rep-dup-path-self": lambda m: m["media"][0]["tracks"][0].update(
+            representations=[
+                {"path": "audio/01-alt.bin", "sha256": HASH(b"alt")},
+                {"path": "audio/01-alt.bin", "sha256": HASH(b"two")}]),
+        # traversal in a representation path
+        "rep-traversal": lambda m: m["media"][0]["tracks"][0].update(
+            representations=[{"path": "../evil.bin", "sha256": HASH(b"x")}]),
+    }
+    for name, mutate in rep_mutations.items():
+        manifest = base_manifest()
+        mutate(manifest)
+        add_case(cases, "invalid_manifest", name, manifest, one)
+
     malformed = os.path.join(out, "malformed-json.mpack")
     os.makedirs(malformed)
     with open(os.path.join(malformed, "manifest.json"), "w", encoding="utf-8") as f:

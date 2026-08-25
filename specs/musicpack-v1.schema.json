@@ -229,6 +229,21 @@
                       "maximum": 864000
                     }
                   }
+                },
+                "representations": {
+                  "description": "Optional alternate audio representations. The track's primary audio is the `audio` object; these are alternates only. Paths share the package-wide uniqueness rule; every entry counts toward the referenced-asset budget.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "required": ["path", "sha256"],
+                    "properties": {
+                      "path": { "$ref": "#/$defs/packagePath" },
+                      "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                      "label": { "type": "string" },
+                      "codec": { "type": "string" }
+                    }
+                  }
                 }
               }
             }

@@ -63,6 +63,8 @@
 static int failures = 0;
 
 #define HASH_AAA "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define HASH_B   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#define HASH_C   "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 #define CHECK(cond, msg)                                                     \
     do {                                                                     \
@@ -267,6 +269,142 @@ test_large_track_paths(void)
 /* ------------------------------------------------------------------ */
 /* unknown-field round-trip preservation                               */
 /* ------------------------------------------------------------------ */
+
+/* Alternate representations (Phase 3): typed parse, round-trip, uniqueness
+   and validation. The default `audio` object is untouched by all of this. */
+
+static const char *REPS_MANIFEST =
+    "{\"format\":\"musicpack\",\"version\":1,"
+    "\"album\":{\"title\":\"R\",\"artists\":[{\"name\":\"A\"}]},"
+    "\"media\":[{\"disc\":1,\"tracks\":[{"
+    "\"track\":1,\"title\":\"T\","
+    "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\",\"codec\":\"musepack-sv8\"},"
+    "\"representations\":["
+    "{\"path\":\"audio/a.flac\",\"sha256\":\"" HASH_B "\"},"
+    "{\"path\":\"audio/a-hd.flac\",\"sha256\":\"" HASH_C "\",\"label\":\"FLAC 24/96\",\"codec\":\"flac\"}"
+    "]}]}]}";
+
+static void
+test_representations_parse(void)
+{
+    musicpack_manifest *m;
+    musicpack_status s;
+
+    m = musicpack_manifest_parse(REPS_MANIFEST, &s);
+    CHECK(m != 0, "reps: manifest parses");
+    if (m == 0)
+        return;
+    CHECK(m->disc_count == 1 && m->discs[0].track_count == 1, "reps: one track");
+    {
+        const musicpack_track *tr = &m->discs[0].tracks[0];
+        CHECK(tr->representation_count == 2, "reps: two representations");
+        if (tr->representation_count == 2) {
+            CHECK(strcmp(tr->representations[0].path, "audio/a.flac") == 0,
+                  "reps: first path");
+            CHECK(strcmp(tr->representations[0].sha256, HASH_B) == 0,
+                  "reps: first sha256");
+            CHECK(tr->representations[0].label == 0 &&
+                  tr->representations[0].codec == 0, "reps: optional fields absent");
+            CHECK(strcmp(tr->representations[1].label, "FLAC 24/96") == 0,
+                  "reps: label parsed");
+            CHECK(strcmp(tr->representations[1].codec, "flac") == 0,
+                  "reps: codec parsed");
+        }
+        /* default untouched */
+        CHECK(strcmp(tr->audio.path, "audio/a.mpc") == 0, "reps: audio untouched");
+        CHECK(strcmp(tr->audio_codec ? tr->audio_codec : "", "musepack-sv8") == 0,
+              "reps: audio codec untouched");
+    }
+    musicpack_manifest_free(m);
+}
+
+static void
+test_representations_roundtrip(void)
+{
+    char dir[512];
+    char path[512];
+    char *readback;
+    FILE *f;
+
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        CHECK(0, "reps-rt: temp dir");
+        return;
+    }
+    snprintf(path, sizeof path, "%s/manifest.json", dir);
+    f = fopen(path, "wb");
+    if (f != 0) {
+        fwrite(REPS_MANIFEST, 1, strlen(REPS_MANIFEST), f);
+        fclose(f);
+    }
+    {
+        musicpack_package *pkg = musicpack_package_open_dir(dir, 0);
+        CHECK(pkg != 0, "reps-rt: open package");
+        if (pkg != 0) {
+            /* save_manifest rewrites from the TYPED model: the array must
+               survive because it is now a known field. */
+            CHECK(musicpack_package_save_manifest(pkg) == MUSICPACK_OK,
+                  "reps-rt: save");
+            musicpack_package_close(pkg);
+        }
+    }
+    readback = malloc(65536);
+    {
+        size_t n = 0;
+        FILE *r = fopen(path, "rb");
+        CHECK(r != 0, "reps-rt: read back");
+        if (r != 0) {
+            n = fread(readback, 1, 65535, r);
+            readback[n] = '\0';
+            fclose(r);
+        }
+    }
+    CHECK(strstr(readback, "\"representations\"") != 0,
+          "reps-rt: array survives rewrite");
+    CHECK(strstr(readback, "FLAC 24/96") != 0, "reps-rt: label survives");
+    free(readback);
+    remove_temp_dir(dir, "manifest.json");
+}
+
+static void
+test_representations_invalid(void)
+{
+    static const struct { const char *name; const char *json; } cases[] = {
+        { "missing sha",
+          "{\"format\":\"musicpack\",\"version\":1,"
+          "\"album\":{\"title\":\"R\",\"artists\":[{\"name\":\"A\"}]},"
+          "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+          "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"},"
+          "\"representations\":[{\"path\":\"audio/a.flac\"}]}]}]}" },
+        { "bad sha form",
+          "{\"format\":\"musicpack\",\"version\":1,"
+          "\"album\":{\"title\":\"R\",\"artists\":[{\"name\":\"A\"}]},"
+          "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+          "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"},"
+          "\"representations\":[{\"path\":\"audio/a.flac\",\"sha256\":\"ZZ\"}]}]}]}" },
+        { "dup path vs primary",
+          "{\"format\":\"musicpack\",\"version\":1,"
+          "\"album\":{\"title\":\"R\",\"artists\":[{\"name\":\"A\"}]},"
+          "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+          "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"},"
+          "\"representations\":[{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_B "\"}]}]}]}" },
+        { "unsafe path",
+          "{\"format\":\"musicpack\",\"version\":1,"
+          "\"album\":{\"title\":\"R\",\"artists\":[{\"name\":\"A\"}]},"
+          "\"media\":[{\"disc\":1,\"tracks\":[{\"track\":1,\"title\":\"T\","
+          "\"audio\":{\"path\":\"audio/a.mpc\",\"sha256\":\"" HASH_AAA "\"},"
+          "\"representations\":[{\"path\":\"../escape.flac\",\"sha256\":\"" HASH_B "\"}]}]}]}" },
+    };
+    size_t i;
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        musicpack_manifest *m;
+        musicpack_status s;
+        m = musicpack_manifest_parse(cases[i].json, &s);
+        /* unsafe path yields ERR_PATH; everything else ERR_INVALID */
+        CHECK(m == 0 && s < 0, cases[i].name);
+        if (m != 0)
+            musicpack_manifest_free(m);
+    }
+}
 
 static void
 test_unknown_field_roundtrip(void)
@@ -2260,6 +2398,9 @@ int main(int argc, char **argv)
         metadir = argv[3];
     test_parse_valid();
     test_parse_invalid();
+    test_representations_parse();
+    test_representations_roundtrip();
+    test_representations_invalid();
     test_large_track_paths();
     test_unknown_field_roundtrip();
     test_manifest_add_new_fields();

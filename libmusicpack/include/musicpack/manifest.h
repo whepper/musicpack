@@ -94,6 +94,17 @@ typedef struct musicpack_waveform_ref {
     unsigned long points; ///< bucket count, including final partial bucket
 } musicpack_waveform_ref;
 
+/// An alternate audio representation for a track (Phase 3). The track's
+/// primary/default audio stays `musicpack_track.audio`; this lists
+/// alternates only. Each entry is a normal referenced asset: required
+/// path+sha256, optional free-text label and optional codec hint.
+typedef struct musicpack_representation {
+    char *path;   ///< required, package-unique
+    char *sha256; ///< required lowercase SHA-256 hex
+    char *label;  ///< optional display label ("FLAC 24/96"); may be NULL
+    char *codec;  ///< optional codec hint ("flac", "mpc", ...); may be NULL
+} musicpack_representation;
+
 /// A single track on a disc.
 typedef struct musicpack_track {
     int number;
@@ -113,6 +124,8 @@ typedef struct musicpack_track {
     musicpack_asset audio;
     char *audio_codec;       ///< optional encoded audio codec ("mpc", "flac", ...)
     musicpack_waveform_ref waveform; ///< optional per-track waveform reference
+    musicpack_representation *representations; ///< optional alternates; may be NULL
+    size_t representation_count;
 } musicpack_track;
 
 /// A disc / medium.

@@ -363,6 +363,23 @@ parse_waveform(cJSON *o, musicpack_waveform_ref *w, musicpack_status *status)
 /* ------------------------------------------------------------------ */
 
 static int
+parse_representation(cJSON *o, musicpack_representation *r,
+                     musicpack_status *status)
+{
+    /* A representation is a referenced asset (path+sha256 required, path
+       validated) plus optional display/hint strings. The asset part parses
+       straight into the leading members of the struct (same layout as
+       musicpack_asset). */
+    if (!parse_asset(o, (musicpack_asset *) r, status))
+        return 0;
+    if (!get_opt_string(o, "label", &r->label, status))
+        return 0;
+    if (!get_opt_string(o, "codec", &r->codec, status))
+        return 0;
+    return 1;
+}
+
+static int
 parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
 {
     cJSON *v;
@@ -441,6 +458,28 @@ parse_track(cJSON *o, musicpack_track *t, musicpack_status *status)
     if (v != 0 && !parse_waveform(v, &t->waveform, status))
         return 0;
 
+    v = cJSON_GetObjectItemCaseSensitive(o, "representations");
+    if (v != 0) {
+        int i = 0;
+        cJSON *ritem;
+        if (!cJSON_IsArray(v)) {
+            *status = MUSICPACK_ERR_INVALID;
+            return 0;
+        }
+        t->representations = (musicpack_representation *) calloc(
+            (size_t) cJSON_GetArraySize(v), sizeof *t->representations);
+        if (t->representations == 0) {
+            *status = MUSICPACK_ERR_NOMEM;
+            return 0;
+        }
+        cJSON_ArrayForEach(ritem, v) {
+            if (!parse_representation(ritem, &t->representations[i], status))
+                return 0;
+            i++;
+        }
+        t->representation_count = (size_t) i;
+    }
+
     return 1;
 }
 
@@ -506,9 +545,18 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
             return 0;
         }
         count += m->discs[d].track_count;
-        for (t = 0; t < m->discs[d].track_count; t++)
+        for (t = 0; t < m->discs[d].track_count; t++) {
             if (m->discs[d].tracks[t].waveform.present)
                 count++;
+            /* overflow-safe: representation_count is bounded by the
+               manifest's own array sizes, far below SIZE_MAX */
+            if (m->discs[d].tracks[t].representation_count >
+                SIZE_MAX - count) {
+                *status = MUSICPACK_ERR_NOMEM;
+                return 0;
+            }
+            count += m->discs[d].tracks[t].representation_count;
+        }
     }
     if (count > MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS) {
         *status = MUSICPACK_ERR_INVALID;
@@ -524,9 +572,15 @@ check_dup_paths(const musicpack_manifest *m, musicpack_status *status)
         for (t = 0; t < m->discs[d].track_count; t++)
             paths[count++] = m->discs[d].tracks[t].audio.path;
     for (d = 0; d < m->disc_count; d++)
-        for (t = 0; t < m->discs[d].track_count; t++)
+        for (t = 0; t < m->discs[d].track_count; t++) {
             if (m->discs[d].tracks[t].waveform.present)
                 paths[count++] = m->discs[d].tracks[t].waveform.path;
+            {
+                size_t r;
+                for (r = 0; r < m->discs[d].tracks[t].representation_count; r++)
+                    paths[count++] = m->discs[d].tracks[t].representations[r].path;
+            }
+        }
     for (a = 0; a < m->artwork_count; a++) paths[count++] = m->artwork[a].asset.path;
     for (a = 0; a < m->booklet_count; a++) paths[count++] = m->booklet[a].path;
     for (a = 0; a < m->lyrics_count; a++) paths[count++] = m->lyrics[a].path;
@@ -962,6 +1016,16 @@ musicpack_manifest_clear(musicpack_manifest *m)
             free(tr->waveform.path);
             free(tr->waveform.sha256);
             free(tr->waveform.encoding);
+            if (tr->representations != 0) {
+                size_t r;
+                for (r = 0; r < tr->representation_count; r++) {
+                    free(tr->representations[r].path);
+                    free(tr->representations[r].sha256);
+                    free(tr->representations[r].label);
+                    free(tr->representations[r].codec);
+                }
+            }
+            free(tr->representations);
         }
         free(d->tracks);
     }
@@ -1166,6 +1230,21 @@ build_tree(const musicpack_manifest *m)
                 cJSON_AddNumberToObject(wf, "floorDb", tr->waveform.floor_db);
                 cJSON_AddNumberToObject(wf, "points", (double) tr->waveform.points);
             }
+            if (tr->representation_count > 0) {
+                size_t r;
+                cJSON *rarr = cJSON_AddArrayToObject(to, "representations");
+                for (r = 0; r < tr->representation_count; r++) {
+                    const musicpack_representation *rep = &tr->representations[r];
+                    cJSON *ro = cJSON_CreateObject();
+                    cJSON_AddItemToObject(ro, "path", cJSON_CreateString(rep->path));
+                    cJSON_AddItemToObject(ro, "sha256", cJSON_CreateString(rep->sha256));
+                    if (rep->label != 0)
+                        cJSON_AddStringToObject(ro, "label", rep->label);
+                    if (rep->codec != 0)
+                        cJSON_AddStringToObject(ro, "codec", rep->codec);
+                    cJSON_AddItemToArray(rarr, ro);
+                }
+            }
             cJSON_AddItemToArray(item, to);
         }
         cJSON_AddItemToArray(arr, o);
@@ -1246,11 +1325,18 @@ validate_for_write(const musicpack_manifest *m)
             return MUSICPACK_ERR_INVALID;
         for (t = 0; t < disc->track_count; t++) {
             const musicpack_track *track = &disc->tracks[t];
+            size_t r;
             if (track->title == 0 || track->audio.path == 0 || track->audio.sha256 == 0)
                 return MUSICPACK_ERR_INVALID;
             for (i = 0; i < track->artist_count; i++)
                 if (track->artists == 0 || track->artists[i].name == 0)
                     return MUSICPACK_ERR_INVALID;
+            for (r = 0; r < track->representation_count; r++) {
+                const musicpack_representation *rep = &track->representations[r];
+                if (track->representations == 0 || rep->path == 0 ||
+                    rep->sha256 == 0)
+                    return MUSICPACK_ERR_INVALID;
+            }
         }
     }
     for (i = 0; i < m->artwork_count; i++)

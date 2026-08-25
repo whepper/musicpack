@@ -108,6 +108,7 @@ Field summary (see the JSON Schema for full constraints):
 | `media`                | yes      | non-empty array of media; each has `disc` (>=1), optional `format` (closed enum), `tracks[]` |
 | track fields           | yes/var  | `track` (>=1), `title`, `audio`; optional `artists`, `identifiers` (`isrc`, `musicbrainzTrackId`, `musicbrainzRecordingId`), `source`, `sourceAudio`, `duration` (derived), `loudness`, `waveform` (see `specs/musicpack-waveform-v1.md`) |
 | `audio`                | yes      | object: `path` (required), `sha256` (required, 64 lowercase hex), `codec` (optional) |
+| `representations`      | no       | array of alternate audio objects `{ path, sha256, label?, codec? }`; alternates only — see "Alternate representations" below |
 | `artwork`              | no       | array of `{ role, path, sha256 }`             |
 | `booklet`,`lyrics`,`extras` | no | arrays of `{ path, sha256 }`              |
 | `analysis`             | no       | optional package-scope analysis references: array of `{ type, profile?, path, sha256 }` (see below) |
@@ -217,6 +218,30 @@ single logical medium with `format: "Digital"` (and `disc: 1`).
 ```
 
 `path` is the only linkage to storage; `codec` is informational and optional.
+
+### Alternate representations
+
+A track may declare optional alternates via `representations[]`:
+
+```json
+"audio":   { "path": "audio/05.mpc", "sha256": "…", "codec": "musepack-sv8" },
+"representations": [
+  { "path": "audio/05.flac", "sha256": "…", "label": "FLAC 24/96", "codec": "flac" }
+]
+```
+
+- `audio` keeps its frozen meaning: **the default/primary representation**.
+  Consumers without representation support play it, unchanged.
+- Each entry is a normal referenced asset: required `path` + `sha256`
+  (lowercase hex), optional free-text `label`, optional `codec` hint.
+- Representation paths participate in the package-wide uniqueness rule and
+  every entry counts toward the referenced-asset budget (§3 path rules).
+- Verification treats each representation exactly like a primary audio
+  object: containment-checked, size-capped, checksum-hashed.
+- The field is additive within v1; parsers unaware of it ignore the array
+  (unknown nested field). Authoring tools must be current before editing
+  packages that carry representations, because rewrite-through does not
+  preserve unknown nested fields.
 
 ## 4. Identity vs provenance
 

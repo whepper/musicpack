@@ -315,6 +315,12 @@ manifest_shape_safe(const musicpack_manifest *m)
             if (track->artist_count > MUSICPACK_MANIFEST_MAX_ARTISTS_PER_CREDIT ||
                 (track->artist_count > 0 && track->artists == 0))
                 return 0;
+            /* Representations are referenced assets: the global budget
+               (MUSICPACK_MANIFEST_MAX_REFERENCED_ASSETS) bounds them during
+               the serializer's deep validation, so only the array/element
+               pairing needs checking here. */
+            if (track->representation_count > 0 && track->representations == 0)
+                return 0;
         }
     }
     return 1;
@@ -562,6 +568,18 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
                 for (t = 0; t < m->discs[d].track_count && !referenced; t++)
                     if (strcmp(m->discs[d].tracks[t].audio.path, files[i]) == 0)
                         referenced = 1;
+        if (!referenced)
+            for (d = 0; d < m->disc_count && !referenced; d++)
+                for (t = 0; t < m->discs[d].track_count && !referenced; t++) {
+                    size_t r;
+                    for (r = 0; r < m->discs[d].tracks[t].representation_count;
+                         r++)
+                        if (strcmp(m->discs[d].tracks[t].representations[r].path,
+                                   files[i]) == 0) {
+                            referenced = 1;
+                            break;
+                        }
+                }
         if (!referenced)
             for (a = 0; a < m->artwork_count && !referenced; a++)
                 if (strcmp(m->artwork[a].asset.path, files[i]) == 0)
@@ -830,6 +848,18 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
             verify_assets(pkg, &tr->audio, 1, "track", rep, fn, ctx, &failed,
                           &budget);
             verify_waveform_track(pkg, tr, rep, fn, ctx, &failed);
+            if (tr->representation_count > 0) {
+                size_t r;
+                for (r = 0; r < tr->representation_count; r++) {
+                    /* Each representation is a referenced asset: same path
+                       safety, size caps, and byte budgets as the primary. */
+                    musicpack_asset as_asset;
+                    as_asset.path = tr->representations[r].path;
+                    as_asset.sha256 = tr->representations[r].sha256;
+                    verify_assets(pkg, &as_asset, 1, "representation", rep, fn,
+                                  ctx, &failed, &budget);
+                }
+            }
         }
     }
     for (i = 0; i < m->artwork_count; i++)
