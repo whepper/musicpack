@@ -21,6 +21,7 @@ interface EngineHarness {
     sourceInfo: EngineStreamInfo | null;
     eos: boolean;
     nextUrl: null;
+    item?: import('../../player-core/src/types').PlaybackItem | null;
     cancelOpen?: (() => void) | null;
   };
   standby: EngineHarness['current'] | null;
@@ -373,9 +374,12 @@ describe('MusepackEngine backpressure reports', () => {
       sourceInfo: { rate: 48000, channels: 1, version: 8, lengthSamples: 240000 },
       eos: false,
       nextUrl: null,
+      item: { ...item('/next') },
     };
 
-    const advancing = engine.advance();
+    // The core may only promote a standby matching its current policy
+    // target — here the prepared item IS the expected one.
+    const advancing = engine.advance(item('/next'));
     expect(portPost).toHaveBeenCalledWith({ type: 'end', generation: 7 });
     expect(harness.current.worker).toBe(
       currentWorker as unknown as { postMessage: ReturnType<typeof vi.fn> },
@@ -391,6 +395,60 @@ describe('MusepackEngine backpressure reports', () => {
     });
     expect(portPost.mock.calls.some(([message]) => message.type === 'reset')).toBe(false);
   });
+
+  it(
+    'promotes a matching standby, refuses mismatch/null expectations without flushing',
+    { timeout: 15000 },
+    async () => {
+      const engine = new MusepackEngine({
+        primed: vi.fn(),
+        buffering: vi.fn(),
+        eos: vi.fn(),
+        error: vi.fn(),
+        tick: vi.fn(),
+      });
+      const harness = engine as unknown as EngineHarness;
+      const portPost = vi.fn();
+      harness.generation = 7;
+      harness.node = { port: { postMessage: portPost } };
+      harness.current = {
+        worker: new AsyncWorker() as unknown as EngineHarness['current']['worker'],
+        info: null,
+        sourceInfo: null,
+        eos: false,
+        nextUrl: null,
+        item: item('/current.mpc'),
+        cancelOpen: null,
+      };
+      harness.standby = {
+        worker: new AsyncWorker() as unknown as EngineHarness['current']['worker'],
+        info: { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 },
+        sourceInfo: { rate: 44100, channels: 2, version: 8, lengthSamples: 441000 },
+        eos: false,
+        nextUrl: null,
+        item: item('/next.mpc'),
+        cancelOpen: null,
+      };
+
+      // Mismatched expectation: refused BEFORE any flush ('end' never sent),
+      // the standby stays in its slot untouched.
+      await expect(engine.advance(item('/other.mpc'))).resolves.toBeNull();
+      expect(portPost.mock.calls.some(([m]) => (m as Record<string, unknown>).type === 'end')).toBe(false);
+      expect(harness.standby?.item?.id).toBe(item('/next.mpc').id);
+
+      // Null expectation (nothing may follow): also refused, no promotion.
+      await expect(engine.advance(null)).resolves.toBeNull();
+
+      // Matching expectation: the normal gapless promotion runs. The
+      // 'trackEnded' handshake resolves the flush the same way the worklet
+      // does in production.
+      const advancing = engine.advance(item('/next.mpc'));
+      harness.onWorkletMessage({ type: 'trackEnded', frames: 100, generation: 7 });
+      await expect(advancing).resolves.toMatchObject({
+        lengthSamples: 441000,
+      });
+    },
+  );
 
   it('keeps only the newest standby when prepareNext calls overlap', async () => {
     const engine = new MusepackEngine({
@@ -510,6 +568,9 @@ describe('MusepackEngine crossfade (M8 Phase B)', () => {
             sourceInfo: info,
             eos: false,
             nextUrl: null,
+            // The standby carries the item it was prepared for; tests drive
+            // beginCrossfade(item('/next.mpc')), so this must match.
+            item: item('/next.mpc'),
             cancelOpen: null,
           };
     h.node = {

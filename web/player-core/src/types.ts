@@ -53,3 +53,11 @@ export interface StreamInfo {
   version: number;
   lengthSamples: number;
 }
+
+/** Queue-entry identity (standby/policy agreement): two entries describe
+ *  the same playable item iff both the queue-entry id and the server track
+ *  id match — the same rule `beginCrossfadeTransition` uses to relocate its
+ *  target after a fade. Reorders keep it; replacements break it. */
+export function sameItemIdentity(a: PlaybackItem, b: PlaybackItem): boolean {
+  return a.id === b.id && a.trackId === b.trackId;
+}

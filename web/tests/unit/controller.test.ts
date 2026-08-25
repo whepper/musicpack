@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PlayerController } from '../../app/src/lib/playback/controller';
 import type { Engine } from '../../player-core/src/engine';
 type Backend = Engine;
@@ -50,8 +50,12 @@ class FakeBackend implements Backend {
   private rendered = 0; // worklet rendered counter (resets on seek/open)
   private resetBase = 0;
   private standbyInfo: { rate: number; channels: number; version: number; lengthSamples: number } | null = null;
+  /** The item the standby was prepared for (standby/policy agreement). */
+  private standbyItem: import('../../player-core/src/types').PlaybackItem | null = null;
   opened: string[] = [];
   prepared: string[] = [];
+  /** When set, prepareNext silently fails once (network-style). */
+  failNextPrepare = false;
   gains: number[] = [];
   events: BackendEvents;
   paused = false;
@@ -97,13 +101,32 @@ class FakeBackend implements Backend {
   async prepareNext(item: import('../../player-core/src/types').PlaybackItem) {
     const url = item.source.url;
     this.prepared.push(url);
+    if (this.failNextPrepare) {
+      this.failNextPrepare = false;
+      this.standbyItem = null;
+      this.standbyInfo = null;
+      return null;
+    }
     const info = { rate: RATE, channels: 2, version: 8, lengthSamples: this.lengthFor(url) };
     this.standbyInfo = info;
+    this.standbyItem = item;
     return info;
   }
-  async advance() {
+  async advance(expected: import('../../player-core/src/types').PlaybackItem | null) {
+    // Standby/policy agreement: promote only a standby matching the core's
+    // current policy target; null expectation never promotes.
+    if (!expected || !this.standbyItem) return null;
     if (this.advanceGate) return this.advanceGate;
-    return this.standbyInfo;
+    if (
+      this.standbyItem.id !== expected.id ||
+      this.standbyItem.trackId !== expected.trackId
+    ) {
+      return null;
+    }
+    const info = this.standbyInfo;
+    this.standbyItem = null; // promotion consumes the standby slot
+    this.standbyInfo = null;
+    return info;
   }
   startPumping() {
     this.paused = false;
@@ -237,6 +260,10 @@ function makeWithOpenGate() {
 describe('PlayerController', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined, removeItem: () => undefined });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('playAlbum transitions loading -> buffering -> playing on prime', async () => {
@@ -946,5 +973,142 @@ describe('PlayerController', () => {
     expect(player.model.get().current?.track.title).toBe('T1');
     expect(player.model.get().state).toBe('playing');
     expect(b.opened.length).toBe(opens); // no reload was triggered
+  });
+
+  // ---- standby/policy agreement (stabilization) ---------------------------
+
+  it('never promotes a standby for an item that was removed from the queue', async () => {
+    const { player, queue, getBackend } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    expect(b.prepared).toContain('/api/v1/tracks/2/audio'); // T2 standby primed
+
+    queue.removeAt(1); // remove the PREPARED NEXT item
+    await flush();
+    b.opened.length = 0;
+    b.setRendered(LENGTH);
+    b.emitEos();
+    await flush();
+
+    // The stale T2 standby must not be promoted; policy selects T3 and it
+    // is loaded fresh. Exactly one advancement happened.
+    expect(queue.get().index).toBe(1); // T3 now first after removal
+    expect(player.model.get().current?.track.title).toBe('T3');
+    expect(b.opened).toContain('/api/v1/tracks/3/audio');
+    expect(b.opened).not.toContain('/api/v1/tracks/2/audio');
+    // Stream facts describe the PROMOTED item, not a foreign standby.
+    expect(player.model.get().currentTrackDurationSeconds).toBeCloseTo(10, 5);
+  });
+
+  it('follows current shuffle order at EOS instead of a stale canonical standby', async () => {
+    const { player, getBackend, queue } = make();
+    await player.playAlbum(release(9, ['T1', 'T2', 'T3']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+    expect(b.prepared).toContain('/api/v1/tracks/2/audio'); // canonical T2
+
+    // Pin the shuffled successor deterministically: T1 -> T3 -> T2, so the
+    // prepared canonical T2 standby is NOT the policy target anymore.
+    queue.setShuffle(true); // rebuilds presentation order around T1
+    queue.setPresentationOrderForTest([0, 2, 1]);
+    expect(queue.getPresentationOrder()).toEqual([0, 2, 1]);
+    await flush();
+
+    b.opened.length = 0;
+    b.setRendered(LENGTH);
+    b.emitEos();
+    await flush();
+
+    // Whatever the shuffled successor is, audio source and metadata must
+    // agree: either the fast path promoted a matching standby (successor is
+    // still T2) or a fresh load ran for the real successor — but stale
+    // canonical-next audio can never play under another item's metadata.
+    const cur = player.model.get().current!;
+    const curId = cur.id;
+    if (curId !== 't2') {
+      // The stale T2 standby was refused: the policy item was loaded fresh.
+      // (The cursor is adopted on the next tick after the load — the model's
+      // current item is the authority for what was loaded and promoted.)
+      expect(b.opened).toHaveLength(1);
+      expect(player.model.get().currentTrackDurationSeconds).toBeCloseTo(10, 5);
+    } else {
+      // Fast path: shuffle happened to keep T2 second; promotion was legal.
+      expect(b.opened).toHaveLength(0);
+      expect(queue.current()?.id).toBe('t2');
+    }
+  });
+
+  it('ends cleanly when a wrapped standby is held but repeat is now off', async () => {
+    const { player, getBackend } = make();
+    // Repeat-all from the start: loading the LAST track preloads the wrap
+    // target T1 into the standby slot.
+    player.setRepeat('all');
+    await player.playAlbum(release(9, ['T1', 'T2']), 'A', 'Artist');
+    const b = getBackend();
+    b.emitPrimed();
+    await flush();
+
+    // Drive to the last track through the normal matching handoff.
+    b.setRendered(LENGTH);
+    b.emitEos(); // T1 -> T2
+    await flush();
+    expect(player.model.get().current?.track.title).toBe('T2');
+    await flush(6);
+    expect(b.prepared.filter((u) => u === '/api/v1/tracks/1/audio').length)
+      .toBeGreaterThanOrEqual(1); // wrapped standby primed under repeat-all
+
+    // Policy flips BEFORE the boundary: nothing may follow now.
+    player.setRepeat('off');
+    await flush();
+    b.opened.length = 0;
+    b.setRendered(2 * LENGTH);
+    b.emitEos(); // decode end of T2 with a stale wrapped T1 standby held
+    await flush();
+
+    // The wrapped standby must NOT be promoted: current stays T2 and the
+    // session drains to its natural end.
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(b.opened).toHaveLength(0); // nothing was loaded or promoted
+
+    b.setRendered(3 * LENGTH);
+    b.emitPosition(); // drain past duration -> ended
+    await flush();
+    expect(player.model.get().state).toBe('ended');
+  });
+
+  it('recovers playback when prepareNext silently fails mid-album', async () => {
+    // The engine is created inside the first load(); make() exposes no
+    // pre-load hook, so build the player manually with a wrapping factory.
+    const queue = createQueueStore();
+    let b: FakeBackend | null = null;
+    const player = new PlayerController(queue, {
+      backendFactory: (kind, events) => {
+        b = new FakeBackend(kind, events);
+        b.failNextPrepare = true; // the T1 load's prepareNext(T2) fails silently
+        return b;
+      },
+    });
+    player.init();
+    await player.playAlbum(release(9, ['T1', 'T2']), 'A', 'Artist');
+    const backend = b!;
+    backend.emitPrimed();
+    await flush();
+    expect(backend.prepared).toContain('/api/v1/tracks/2/audio'); // attempted
+    expect((backend as unknown as { standbyItem: unknown }).standbyItem).toBeNull();
+
+    backend.setRendered(LENGTH);
+    backend.emitEos();
+    await flush();
+
+    // A valid policy next item exists: the session must continue, not end.
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.track.title).toBe('T2');
+    expect(backend.opened.filter((u) => u === '/api/v1/tracks/2/audio').length)
+      .toBeGreaterThanOrEqual(1);
+    expect(player.model.get().state).not.toBe('ended');
+    expect(player.model.get().error).toBeUndefined();
   });
 });

@@ -19,6 +19,7 @@ import type {
   EngineEventName,
 } from '../../../../player-core/src/engine';
 import type { PlaybackItem } from '../../../../player-core/src/types';
+import { sameItemIdentity } from '../../../../player-core/src/types';
 
 export type EngineStreamInfo = import('../../../../player-core/src/types').StreamInfo & {
   /** Kept as a type alias for web-internal call sites; structurally the
@@ -48,6 +49,10 @@ interface WorkerHandle {
   sourceInfo: EngineStreamInfo | null;
   eos: boolean;
   nextUrl: string | null;
+  /** The queue item this handle was opened for. Standby/policy agreement:
+   *  the core may only promote a standby whose item still matches its
+   *  current policy target (see advance()). */
+  item: PlaybackItem | null;
   cancelOpen: (() => void) | null;
   /** Crossfade: the lane decode finished before promotion; the engine must
    *  re-emit the core's eos once this handle becomes current. */
@@ -181,6 +186,7 @@ export class MusepackEngine implements Engine {
       sourceInfo: null,
       eos: false,
       nextUrl: null,
+      item: null,
       cancelOpen: null,
     };
     worker.onmessage = (ev: MessageEvent) => {
@@ -438,13 +444,16 @@ export class MusepackEngine implements Engine {
     }
   }
 
-  /** Port signature (M4): standby-open by resolved item. */
+  /** Port signature (M4): standby-open by resolved item. The item rides on
+   *  the handle for standby/policy agreement at promotion time. */
   async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
-    return this.prepareNextSource(item.source.url, item.source.byteSize ?? -1);
+    return this.prepareNextSource(item.source.url, item.source.byteSize ?? -1, item);
   }
 
-  /** Opens the next track in the standby slot, ahead of the current one. */
-  async prepareNextSource(url: string, size: number): Promise<EngineStreamInfo | null> {
+  /** Opens the next track in the standby slot, ahead of the current one.
+   *  `item` is optional for web-internal legacy callers; only item-carrying
+   *  standbys are promotable through advance(expected). */
+  async prepareNextSource(url: string, size: number, item?: PlaybackItem): Promise<EngineStreamInfo | null> {
     const request = ++this.standbyRequest;
     const previous = this.standby;
     if (previous) this.standby = null;
@@ -452,6 +461,7 @@ export class MusepackEngine implements Engine {
     if (request !== this.standbyRequest) return null;
     const h = this.makeWorker();
     h.nextUrl = url;
+    h.item = item ?? null;
     this.standby = h;
     try {
       const info = await this.openInWorker(h, url, size, this.generation);
@@ -528,12 +538,27 @@ export class MusepackEngine implements Engine {
     this.streamSamples = 0;
   }
 
-  /** Promotes the standby worker to current (gapless handoff at EOS). */
-  async advance(): Promise<EngineStreamInfo | null> {
+  /** Promotes the standby worker to current (gapless handoff at EOS).
+   *  Standby/policy agreement: `expected` is the item the core's CURRENT
+   *  queue policy selected; `null` means nothing may follow (flush-only is
+   *  NOT needed for end detection — the ring drains into the END_TOLERANCE
+   *  window on its own). Validation runs BEFORE any flush so a refused
+   *  standby can neither bleed into output nor disturb resampler state;
+   *  the caller recovers by loading `expected` fresh. */
+  async advance(expected: PlaybackItem | null): Promise<EngineStreamInfo | null> {
     const generation = this.generation;
+    const standby = this.standby;
+    if (
+      !expected ||
+      !standby ||
+      !standby.info ||
+      !standby.item ||
+      !sameItemIdentity(standby.item, expected)
+    ) {
+      return null;
+    }
     await this.finishTrack(generation);
     if (generation !== this.generation) return null;
-    const standby = this.standby;
     if (!standby || !standby.info) return null;
     const promotedSourceInfo = standby.sourceInfo;
     if (!promotedSourceInfo) return null;
@@ -593,7 +618,10 @@ export class MusepackEngine implements Engine {
     if (!this.node || !outgoing || !incoming || !incoming.info || !incoming.sourceInfo) {
       return null;
     }
-    void next; // the standby is already opened on the prepared item
+    // Standby/policy agreement: the caller's `next` is its current policy
+    // target. A standby prepared for a different item must never be faded
+    // in — refuse and let the normal EOS path recover.
+    if (!incoming.item || !sameItemIdentity(incoming.item, next)) return null;
     const clamped = Math.max(0.25, Math.min(15, fadeSeconds));
     const attempt: XfadeAttempt = {
       token: ++this.xfadeToken,

@@ -537,8 +537,16 @@ export class Player {
     // clamped to the audio that is actually left; on decline/failure the
     // normal gapless handoff below runs unchanged.
     if (await this.tryFadeAtEos(seq)) return;
+    const engine = this.engine;
+    // The policy target as of NOW — not what the standby happened to be
+    // prepared with. The engine refuses (and the recovery branch below
+    // reloads) whenever queue edits or repeat/shuffle changes moved the
+    // target after prepareNext ran.
+    const expected = this.peekPreloadTarget(this.queue.get().index);
     let info: StreamInfo | null = null;
-    if (isPreloadEngine(this.engine)) info = await this.engine.advance();
+    if (isPreloadEngine(engine)) {
+      info = await engine.advance(expected ? expected.item : null);
+    }
     if (seq !== this.loadingSeq) return;
 
     // Repeat-one: fresh reload of the SAME item (sample-exact via the normal
@@ -554,11 +562,26 @@ export class Player {
     this.mutating = true;
     const item = this.queue.next();
     this.mutating = false;
-    if (!info || !item) {
-      // Last track decoded; let the output drain, then end.
+    if (!item) {
+      // Policy says nothing follows: let the output drain, then end. The
+      // advance(null) contract guarantees nothing was promoted here.
       this.pendingEnded = true;
       this.gate().stop();
       this.tick();
+      return;
+    }
+    if (
+      !info ||
+      !expected ||
+      item.id !== expected.item.id ||
+      item.trackId !== expected.item.trackId
+    ) {
+      // No usable standby, or the promoted lane did not match current
+      // policy (queue edited / repeat-shuffle changed mid-track): recover
+      // by loading the policy-selected item fresh instead of overlaying
+      // foreign stream facts onto it — and never end the session while
+      // tracks remain. Exactly one advancement happened above.
+      await this.load();
       return;
     }
     const qi = this.queue.get().index;

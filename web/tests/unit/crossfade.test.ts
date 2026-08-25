@@ -54,6 +54,10 @@ function makePlayer(opts: {
   overlapFrames?: number;
   /** Hold the first beginCrossfade call open until resolveFade is invoked. */
   deferredFade?: boolean;
+  /** Item id the engine's standby was prepared with. beginCrossfade refuses
+   *  (returns null) when the requested target differs — standby/policy
+   *  agreement, as the real engines enforce. */
+  standbyItemId?: string;
   /** Content-aware policy port under test (Sweet Fades). */
   planTransition?: ConstructorParameters<typeof Player>[1]['planTransition'];
 }): { player: Player; h: Harness; queue: ReturnType<typeof createQueueModel> } {
@@ -71,6 +75,11 @@ function makePlayer(opts: {
     // DECLINED the fade" and must be returned as-is.
     beginCrossfade: vi.fn(
       async (it: PlaybackItem, _seconds: number): Promise<CrossfadeResult | null> => {
+        // Standby/policy agreement (mirrors the real engines): a fade may
+        // only start for the item the standby was actually prepared with.
+        if (opts.standbyItemId !== undefined && opts.standbyItemId !== it.id) {
+          return null;
+        }
         if (opts.deferredFade) {
           if (!h.resolveFade) {
             return new Promise<CrossfadeResult | null>((resolve) => {
@@ -104,7 +113,11 @@ function makePlayer(opts: {
         init: async () => undefined,
         open: async (it: PlaybackItem) => infoFor(it),
         prepareNext: async (it: PlaybackItem) => infoFor(it),
-        advance: async () => infoFor(queue.current() ?? { ...item(0), durationHintSeconds: 30 }),
+        advance: async (expected?: PlaybackItem | null) =>
+          // Standby/policy agreement: without a prepared-item model this
+          // fake promotes only when an expectation was supplied (the real
+          // core always supplies one at EOS).
+          expected ? infoFor(expected) : null,
         play: async () => undefined,
         pause: async () => undefined,
         seekSample: async () => undefined,
@@ -136,6 +149,37 @@ function primeAndPlay(h: Harness): Promise<void> {
 }
 
 describe('crossfade trigger semantics (M8 Phase A)', () => {
+  it('refuses a fade when the standby does not match policy and falls back to the normal boundary', async () => {
+    // Standby/policy agreement: the fake engine's standby was prepared for
+    // t9 (a stale item), so beginCrossfade(t2) must be declined and the
+    // positional trigger must leave the boundary to the EOS path.
+    const { player, h, queue } = makePlayer({
+      crossfadeCapable: true,
+      standbyItemId: 't9',
+    });
+    player.init();
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+
+    h.rendered = 25 * RATE; // inside track 1's fade window
+    h.handlers.tick();
+    await flush();
+
+    expect(h.beginCrossfade).toHaveBeenCalledOnce();
+    expect(h.beginCrossfade.mock.calls[0]?.[0].id).toBe('t2'); // policy target
+    // Fade declined: cursor untouched, no error, no duplicate trigger.
+    expect(player.model.get().current?.id).toBe('t1');
+    expect(player.model.get().state).toBe('playing');
+
+    // The natural boundary still advances exactly once.
+    h.handlers.eos();
+    await flush();
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.id).toBe('t2');
+    expect(player.model.get().state).not.toBe('error');
+  });
+
   it('fires once near the end of the current track and advances cursor/policy', async () => {
     const { player, h, queue } = makePlayer({ crossfadeCapable: true });
     player.init();

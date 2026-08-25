@@ -68,10 +68,19 @@ export interface Engine {
 }
 
 /** Standby/preload capability: open the next source ahead of time and
- *  promote it at the boundary without re-opening the output graph. */
+ *  promote it at the boundary without re-opening the output graph.
+ *
+ *  Standby/policy agreement: `advance(expected)` receives the item the
+ *  core's CURRENT queue policy selected (peeked at promotion time, not when
+ *  the standby was prepared). The standby may be promoted only when it was
+ *  prepared for exactly that item (`sameItemIdentity`); otherwise — or when
+ *  `expected` is `null`, meaning nothing may follow — the engine returns
+ *  `null` WITHOUT flushing or promoting, so a stale lane can never bleed
+ *  into output or metadata. The caller recovers by loading `expected`
+ *  fresh. */
 export interface PreloadEngine extends Engine {
   prepareNext(item: PlaybackItem): Promise<StreamInfo | null>;
-  advance(): Promise<StreamInfo | null>;
+  advance(expected: PlaybackItem | null): Promise<StreamInfo | null>;
 }
 
 /** Result of a taken crossfade transition. */
@@ -88,9 +97,12 @@ export interface CrossfadeResult {
  *  transition to `next` with an equal-power overlap instead of the normal
  *  sequential handoff. Returning null (or not implementing) makes the
  *  caller fall back to the normal EOS path — crossfade is best-effort by
- *  design. After a taken fade the engine suppresses the OLD lane's 'eos';
- *  the new lane's lifecycle (eos/position) is the engine's responsibility,
- *  exactly as after a normal advance(). */
+ *  design. The standby/policy-agreement rule applies here too: `next` is
+ *  the core's current policy target, and a standby prepared for a different
+ *  item must be refused (null), never faded in. After a taken fade the
+ *  engine suppresses the OLD lane's 'eos'; the new lane's lifecycle
+ *  (eos/position) is the engine's responsibility, exactly as after a normal
+ *  advance(). */
 export interface CrossfadeEngine {
   beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<CrossfadeResult | null>;
 }

@@ -131,6 +131,14 @@ export function createQueueModel<TItem extends PlaybackItem>(opts: { rng: Rng })
     getPresentationOrder(): number[] {
       return shuffling ? [...order] : [];
     },
+    /** Test-only seam: install a presentation order. Lets deterministic
+     *  tests pin a shuffle successor without reaching into closures.
+     *  Must only be called while shuffle is ON and with a permutation of
+     *  canonical indices starting at the cursor. */
+    setPresentationOrderForTest(next: number[]): void {
+      if (!shuffling) return;
+      order = [...next];
+    },
 
     /** Play the given sequence starting at `startIndex` (default first). */
     playSequence(items: TItem[], startIndex = 0): TItem {

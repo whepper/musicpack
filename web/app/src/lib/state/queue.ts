@@ -112,6 +112,11 @@ export function createQueueStore() {
     getPresentationOrder(): number[] {
       return model.getPresentationOrder();
     },
+    /** Test-only seam: pin the shuffle presentation order deterministically
+     *  (see QueueModel.setPresentationOrderForTest). */
+    setPresentationOrderForTest(next: number[]): void {
+      model.setPresentationOrderForTest(next);
+    },
     /** Play the given release from `startIndex` (default first track). */
     playAlbum(
       release: ReleaseDetail,

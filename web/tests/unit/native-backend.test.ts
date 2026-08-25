@@ -3,6 +3,18 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { NativeBackend } from '../../app/src/lib/playback/native-backend';
+import type { PlaybackItem } from '../../player-core/src/types';
+
+function nativeItem(id: string): PlaybackItem {
+  return {
+    id,
+    trackId: Number(id.replace(/\D/g, '')) || 1,
+    source: { kind: 'stream', url: `/${id}` },
+    title: id,
+    artist: 'a',
+    albumTitle: 'al',
+  };
+}
 
 interface FakeElement {
   currentTime: number;
@@ -14,8 +26,8 @@ interface FakeElement {
 }
 
 interface NativeHarness {
-  current: { el: FakeElement; src: unknown; url: string } | null;
-  standby: { el: FakeElement; src: unknown; url: string } | null;
+  current: { el: FakeElement; src: unknown; item?: PlaybackItem | null; url: string } | null;
+  standby: { el: FakeElement; src: unknown; item?: PlaybackItem | null; url: string } | null;
   ctx: { state: string; resume: ReturnType<typeof vi.fn> } | null;
 }
 
@@ -51,9 +63,18 @@ describe('NativeBackend transport ownership', () => {
     const current = element(false);
     const standby = element(true);
     harness.current = { el: current, src: null, url: '/current' };
-    harness.standby = { el: standby, src: null, url: '/standby' };
+    harness.standby = {
+      el: standby,
+      src: null,
+      url: '/standby',
+      item: nativeItem('t2'),
+    };
 
-    await expect(backend.advance()).resolves.toMatchObject({ lengthSamples: 441000 });
+    // Standby/policy agreement: promotion requires the expected item.
+    await expect(backend.advance(nativeItem('t9'))).resolves.toBeNull();
+    expect(standby.play).not.toHaveBeenCalled();
+    await expect(backend.advance(null)).resolves.toBeNull(); // nothing may follow
+    await expect(backend.advance(nativeItem('t2'))).resolves.toMatchObject({ lengthSamples: 441000 });
     expect(current.pause).toHaveBeenCalledOnce();
     expect(standby.play).not.toHaveBeenCalled();
 

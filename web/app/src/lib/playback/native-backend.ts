@@ -16,6 +16,7 @@ import type {
   EngineEventName,
 } from '../../../../player-core/src/engine';
 import type { PlaybackItem } from '../../../../player-core/src/types';
+import { sameItemIdentity } from '../../../../player-core/src/types';
 
 const NATIVE_CAPABILITIES: EngineCapabilities = {
   preloadNext: true,
@@ -36,6 +37,10 @@ interface ElementSlot {
   /** Set while this slot is the OUTGOING lane of a fade: its natural
    *  'ended' must not emit an eos (the core advanced at trigger time). */
   suppressEnded?: boolean;
+  /** The queue item this slot was loaded for. Standby/policy agreement:
+   *  only a standby matching the core's current policy target is promotable
+   *  (see advance()). */
+  item: PlaybackItem | null;
   url: string;
 }
 
@@ -105,7 +110,7 @@ export class NativeBackend {
     const slotGain = this.ctx.createGain();
     src.connect(slotGain);
     slotGain.connect(this.gain);
-    const slot: ElementSlot = { el, src, gain: slotGain, url: '' };
+    const slot: ElementSlot = { el, src, gain: slotGain, item: null, url: '' };
     el.addEventListener('ended', () => {
       if (slot.suppressEnded) {
         // Outgoing lane of an active fade: the core advanced its cursor at
@@ -155,15 +160,17 @@ export class NativeBackend {
     return info;
   }
 
-  /** Port signature (M4). */
+  /** Port signature (M4). The item rides on the standby slot for
+   *  standby/policy agreement at promotion time. */
   async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
-    return this.prepareNextSource(item.source.url);
+    return this.prepareNextSource(item.source.url, item);
   }
 
-  async prepareNextSource(url: string, size = 0): Promise<EngineStreamInfo | null> {
+  async prepareNextSource(url: string, item?: PlaybackItem, size = 0): Promise<EngineStreamInfo | null> {
     void size;
     this.disposeStandby();
     const slot = this.makeSlot();
+    slot.item = item ?? null;
     this.standby = slot;
     this.loadInto(slot, url);
     try {
@@ -207,8 +214,20 @@ export class NativeBackend {
     };
   }
 
-  async advance(): Promise<EngineStreamInfo | null> {
-    if (!this.standby) return null;
+  /** Promotes the standby element to current (gapless handoff at EOS).
+   *  Standby/policy agreement: `expected` is the item the core's CURRENT
+   *  queue policy selected. A standby prepared for a different item — or a
+   *  null expectation (nothing may follow) — is refused without touching
+   *  either lane; the caller recovers by loading `expected` fresh. */
+  async advance(expected: PlaybackItem | null): Promise<EngineStreamInfo | null> {
+    if (
+      !expected ||
+      !this.standby ||
+      !this.standby.item ||
+      !sameItemIdentity(this.standby.item, expected)
+    ) {
+      return null;
+    }
     const promoted = this.standby;
     this.playRequest++;
     this.shouldPlay = false;
@@ -227,7 +246,10 @@ export class NativeBackend {
   async beginCrossfade(next: PlaybackItem, fadeSeconds: number): Promise<CrossfadeResult | null> {
     const outgoing = this.current;
     if (!outgoing || !this.standby || !this.ctx || this.nativeFade) return null;
-    void next; // the standby is already opened on the prepared item
+    // Standby/policy agreement: the caller's `next` is its current policy
+    // target. A standby prepared for a different item must never be faded
+    // in — refuse and let the normal EOS path recover.
+    if (!this.standby.item || !sameItemIdentity(this.standby.item, next)) return null;
     const incoming = this.standby;
     const fade = Math.max(0.25, Math.min(15, fadeSeconds));
 
