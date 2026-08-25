@@ -393,13 +393,28 @@ export class MusepackEngine implements Engine {
     }
   }
 
-  /** Port signature (M4): open by resolved item. */
+  /** Port signature (M4): open by resolved item. Local-file items open the
+   *  OPFS-backed reader inside the worker; remote ones the HTTP demand
+   *  reader. The decode path itself is byte-source agnostic. */
   async open(item: PlaybackItem): Promise<EngineStreamInfo> {
+    if (item.source.kind === 'local-file') {
+      return this.openLocalSource(item.source.url, item.source.byteSize ?? -1);
+    }
     return this.openSource(item.source.url, item.source.byteSize ?? -1);
   }
 
-  /** Opens the first track in the current slot (fetches header + seek table). */
   async openSource(url: string, size: number): Promise<EngineStreamInfo> {
+    return this.openInSlot({ url, size });
+  }
+
+  /** Offline variant: `key` addresses a committed OPFS audio file. */
+  async openLocalSource(key: string, size: number): Promise<EngineStreamInfo> {
+    return this.openInSlot({ localKey: key, size });
+  }
+
+  /** Opens one track into the current slot from any byte source. */
+  private async openInSlot(src: { url?: string; localKey?: string; size: number }): Promise<EngineStreamInfo> {
+    const url = src.url ?? '';
     await this.ensureContext();
     const generation = ++this.generation;
     // Any in-flight crossfade is dead: the lane, its worker handles and its
@@ -426,7 +441,7 @@ export class MusepackEngine implements Engine {
     this.streamSamples = 0;
     this.outputDrained = false;
     try {
-      const info = await this.openInWorker(h, url, size, generation);
+      const info = await this.openInWorker(h, url, src.size, generation, src.localKey ?? null);
       if (generation !== this.generation || this.current !== h) {
         if (this.current === h) this.current = null;
         await this.closeWorker(h);
@@ -447,6 +462,9 @@ export class MusepackEngine implements Engine {
   /** Port signature (M4): standby-open by resolved item. The item rides on
    *  the handle for standby/policy agreement at promotion time. */
   async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
+    if (item.source.kind === 'local-file') {
+      return this.prepareNextLocalSource(item.source.url, item.source.byteSize ?? -1, item);
+    }
     return this.prepareNextSource(item.source.url, item.source.byteSize ?? -1, item);
   }
 
@@ -454,6 +472,16 @@ export class MusepackEngine implements Engine {
    *  `item` is optional for web-internal legacy callers; only item-carrying
    *  standbys are promotable through advance(expected). */
   async prepareNextSource(url: string, size: number, item?: PlaybackItem): Promise<EngineStreamInfo | null> {
+    return this.prepareNextInSlot({ url, size }, item);
+  }
+
+  /** Offline variant of prepareNextSource. */
+  async prepareNextLocalSource(key: string, size: number, item?: PlaybackItem): Promise<EngineStreamInfo | null> {
+    return this.prepareNextInSlot({ localKey: key, size }, item);
+  }
+
+  private async prepareNextInSlot(src: { url?: string; localKey?: string; size: number }, item?: PlaybackItem): Promise<EngineStreamInfo | null> {
+    const url = src.url ?? '';
     const request = ++this.standbyRequest;
     const previous = this.standby;
     if (previous) this.standby = null;
@@ -464,7 +492,7 @@ export class MusepackEngine implements Engine {
     h.item = item ?? null;
     this.standby = h;
     try {
-      const info = await this.openInWorker(h, url, size, this.generation);
+      const info = await this.openInWorker(h, url, src.size, this.generation, src.localKey ?? null);
       if (request !== this.standbyRequest || this.standby !== h) {
         if (this.standby === h) {
           this.standby = null;
@@ -487,6 +515,7 @@ export class MusepackEngine implements Engine {
     url: string,
     size: number,
     generation: number,
+    localKey: string | null = null,
   ): Promise<EngineStreamInfo> {
     const infoPromise = new Promise<EngineStreamInfo>((resolve, reject) => {
       const orig = h.worker.onmessage;
@@ -521,7 +550,7 @@ export class MusepackEngine implements Engine {
         }
       };
     });
-    h.worker.postMessage({ type: 'open', url, size, token: this.token, generation });
+    h.worker.postMessage({ type: 'open', url, size, token: this.token, generation, localKey });
     return infoPromise;
   }
 

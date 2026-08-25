@@ -42,6 +42,8 @@ interface ElementSlot {
    *  (see advance()). */
   item: PlaybackItem | null;
   url: string;
+  /** Object URL created for a local-file source; revoked on dispose. */
+  blobUrl?: string;
   /** True once the lane owns output (current or faded-in). Only OWNERSHIP
    *  failures are fatal to playback: a STANDBY that cannot decode its
    *  source (e.g. the next queue item needs another codec/engine) must not
@@ -150,8 +152,13 @@ export class NativeBackend {
     slot.el.load();
   }
 
-  /** Port signature (M4): open by resolved item. */
+  /** Port signature (M4): open by resolved item. Local items resolve to a
+   *  blob: object URL over the OPFS File (CSP already allows media-src
+   *  blob:); remote ones use the server URL directly. */
   async open(item: PlaybackItem): Promise<EngineStreamInfo> {
+    if (item.source.kind === 'local-file') {
+      return this.openLocalSource(item.source.url);
+    }
     return this.openSource(item.source.url);
   }
 
@@ -174,10 +181,52 @@ export class NativeBackend {
     return info;
   }
 
+  /** Offline variant: resolves a committed OPFS audio file to an object
+   *  URL and opens it. The URL is revoked when the slot is disposed. */
+  async openLocalSource(key: string): Promise<EngineStreamInfo> {
+    const objectUrl = await this.localObjectUrl(key);
+    if (!objectUrl) throw new Error('Offline audio is missing from local storage.');
+    try {
+      return await this.openSource(objectUrl);
+    } finally {
+      if (this.current) this.current.blobUrl = objectUrl;
+    }
+  }
+
+  /** Reads a committed offline audio file as a File and mints an object
+   *  URL for element playback. Returns null when the file is absent. */
+  private async localObjectUrl(key: string): Promise<string | null> {
+    if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return null;
+    try {
+      const root = await navigator.storage.getDirectory();
+      const base = await root.getDirectoryHandle('musicpack-offline-v1');
+      const releases = await base.getDirectoryHandle('releases');
+      const fh = await releases.getFileHandle(key, { create: false });
+      return URL.createObjectURL(await fh.getFile());
+    } catch {
+      return null;
+    }
+  }
+
   /** Port signature (M4). The item rides on the standby slot for
    *  standby/policy agreement at promotion time. */
   async prepareNext(item: PlaybackItem): Promise<EngineStreamInfo | null> {
+    if (item.source.kind === 'local-file') {
+      return this.prepareNextLocalSource(item.source.url, item);
+    }
     return this.prepareNextSource(item.source.url, item);
+  }
+
+  /** Offline variant: resolves the OPFS file key to a blob object URL.
+   *  Object URLs reference the browser-disk-backed File (no full JS copy);
+   *  revoked when the slot is disposed. */
+  async prepareNextLocalSource(key: string, item?: PlaybackItem): Promise<EngineStreamInfo | null> {
+    const url = await this.localObjectUrl(key);
+    if (!url) return null;
+    const info = await this.prepareNextSource(url, item);
+    if (info === null && url.startsWith('blob:')) URL.revokeObjectURL(url);
+    else if (this.standby) this.standby.blobUrl = url;
+    return info;
   }
 
   async prepareNextSource(url: string, item?: PlaybackItem, size = 0): Promise<EngineStreamInfo | null> {
@@ -435,6 +484,10 @@ export class NativeBackend {
     if (this.current) {
       this.current.el.pause();
       this.current.el.src = '';
+      if (this.current.blobUrl) {
+        URL.revokeObjectURL(this.current.blobUrl);
+        this.current.blobUrl = undefined;
+      }
       this.current = null;
     }
   }
@@ -443,6 +496,10 @@ export class NativeBackend {
     if (this.standby) {
       this.standby.el.pause();
       this.standby.el.src = '';
+      if (this.standby.blobUrl) {
+        URL.revokeObjectURL(this.standby.blobUrl);
+        this.standby.blobUrl = undefined;
+      }
       this.standby = null;
     }
   }

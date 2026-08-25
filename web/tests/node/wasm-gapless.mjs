@@ -156,6 +156,54 @@ async function decodeRange(Module, bytes, channels) {
   return { pcm, length, servedOpen: d.served() };
 }
 
+/** Offline-path stand-in for OPFS createSyncAccessHandle: reads at explicit
+ *  offsets exactly like localreader.js does inside decoder.worker.js. */
+function makeLocalAccess(bytes) {
+  return {
+    getSize: () => bytes.length,
+    read: (target, { at }) => {
+      const n = Math.min(target.length, bytes.length - at);
+      if (n <= 0) return 0;
+      target.set(bytes.subarray(at, at + n));
+      return n;
+    },
+    close: () => {},
+  };
+}
+
+/** Mirrors app/public/localreader.js's installed contract (64 KiB clamp,
+ *  short-read EOS). Kept in structural lockstep; the browser test asserts
+ *  the real script over OPFS. */
+async function decodeLocal(Module, bytes, channels) {
+  const access = makeLocalAccess(bytes);
+  const size = access.getSize();
+  const scratch = new Uint8Array(64 * 1024);
+  let pos = 0;
+  Module.mpcRangeRead = function (ptr, want) {
+    if (want <= 0) return 0;
+    const n = Math.min(want, scratch.length, size - pos);
+    if (n <= 0) return 0;
+    const got = access.read(scratch, { at: pos });
+    if (got <= 0) return 0;
+    Module.HEAPU8.set(scratch.subarray(0, Math.min(n, got)), ptr);
+    pos += Math.min(n, got);
+    return Math.min(n, got);
+  };
+  Module.mpcRangeSeek = function (offset) { pos = offset; return 1; };
+  Module.mpcRangeTell = function () { return pos; };
+  const h = Module._mpc_wasm_create();
+  try {
+    const err = await Module._mpc_wasm_open_range(h, size);
+    if (err !== 0) throw new Error(`open_range(local): ${err}`);
+    const length = Module._mpc_wasm_length_samples(h);
+    const pcm = await decodeAll(Module, h, channels);
+    return { pcm, length };
+  } finally {
+    Module._mpc_wasm_destroy(h);
+    Module.mpcRangeRead = Module.mpcRangeSeek = Module.mpcRangeTell = null;
+  }
+}
+
 require(moduleJs)().then(async (Module) => {
   console.log('wasm-gapless:');
 
@@ -196,6 +244,62 @@ require(moduleJs)().then(async (Module) => {
       }
     }
     ok(same, 'range PCM matches memory PCM at sample strides');
+  }
+
+  // ---- 2b. offline (local reader) equivalence -------------------------------
+  {
+    // The offline path swaps the byte source only: localreader.js serves the
+    // same mpcRangeRead/Seek/Tell contract from a local file. Decode the
+    // fixture through that contract and demand sample-identical output.
+    const bytes = fs.readFileSync(trackA);
+    const lr = await decodeLocal(Module, bytes, A.channels);
+    ok(lr.length === A.length, `local path length == memory length (${lr.length})`);
+    ok(lr.pcm.length === A.pcm.length, 'local decode produces exactly lengthSamples frames');
+    let same = true;
+    for (let i = 0; i < A.pcm.length; i += 997) {
+      if (lr.pcm[i] !== A.pcm[i]) {
+        same = false;
+        break;
+      }
+    }
+    ok(same, 'local PCM matches memory PCM at sample strides');
+
+    // Seek through the local contract and confirm exact samples. The
+    // reader position is left wherever the previous decode finished —
+    // exactly like real playback (the decoder drives every position).
+    const h2 = Module._mpc_wasm_create();
+    let pos = 0;
+    const scratch2 = new Uint8Array(64 * 1024);
+    const access2 = makeLocalAccess(bytes);
+    Module.mpcRangeRead = function (ptr, want) {
+      const n = Math.min(want, scratch2.length, bytes.length - pos);
+      if (n <= 0) return 0;
+      const got = access2.read(scratch2, { at: pos });
+      if (got <= 0) return 0;
+      Module.HEAPU8.set(scratch2.subarray(0, Math.min(n, got)), ptr);
+      pos += Math.min(n, got);
+      return Math.min(n, got);
+    };
+    Module.mpcRangeSeek = function (o) { pos = o; return 1; };
+    Module.mpcRangeTell = function () { return pos; };
+    try {
+      if ((await Module._mpc_wasm_open_range(h2, bytes.length)) !== 0) throw new Error('local open failed');
+      const samples = Module._mpc_wasm_length_samples(h2);
+      const channels = Module._mpc_wasm_channels(h2);
+      const ptr = Module._malloc(2 * channels * 4);
+      for (const frac of [0.1, 0.5, 0.9, 0.25]) {
+        const target = Math.floor(samples * frac);
+        await Module._mpc_wasm_seek_sample(h2, target);
+        const frames = await Module._mpc_wasm_read(h2, ptr, 2);
+        const actual = Module.HEAPF32[ptr >> 2];
+        ok(frames === 2 && actual === A.pcm[target * channels],
+          `local seek to ${Math.round(frac * 100)}% decodes the requested sample`);
+      }
+      Module._free(ptr);
+    } finally {
+      Module._mpc_wasm_destroy(h2);
+      Module.mpcRangeRead = Module.mpcRangeSeek = Module.mpcRangeTell = null;
+    }
   }
 
   // ---- 3. seek accounting ----------------------------------------------------

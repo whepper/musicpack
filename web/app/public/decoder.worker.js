@@ -27,6 +27,7 @@
 importScripts('musepack.js');
 importScripts('reader_mailbox.js');
 importScripts('rangereader.js');
+importScripts('localreader.js');
 
 const FRAMES_PER_CHUNK = 8 * 1152; // 8 decoder frames per message
 
@@ -54,13 +55,19 @@ async function init() {
   Module = await createMusepackModule();
 }
 
-async function open(url, size, token) {
+async function open(url, size, token, localKey) {
   if (handle >= 0) destroy();
   handle = Module._mpc_wasm_create();
   if (handle < 0) throw new Error('mpc_wasm_create failed');
 
-  demandReader = await MusicPackRange.installDemandReader(Module, url, size,
-                                                          token);
+  /* Offline path: the item's source is a locally installed OPFS file
+     (keyed by name). Same read contract, zero network. */
+  if (localKey) {
+    demandReader = await MusicPackLocal.installLocalReader(Module, localKey, size);
+  } else {
+    demandReader = await MusicPackRange.installDemandReader(Module, url, size,
+                                                            token);
+  }
   const err = Module._mpc_wasm_open_range(handle, size);
   if (err !== 0) {
     const le = demandReader.lastError();
@@ -153,7 +160,7 @@ self.onmessage = async (ev) => {
         reportGeneration = msg.generation;
         playing = false;
         eos = false;
-        await open(msg.url, msg.size, msg.token || null);
+        await open(msg.url, msg.size, msg.token || null, msg.localKey || null);
         break;
       case 'play':
         reportGeneration = msg.generation;
