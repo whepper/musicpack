@@ -194,6 +194,20 @@ typedef struct mp_object_ref {
 int mp_library_track_audio(mp_library *lib, long long track_id,
                            mp_object_ref *ref);
 
+/// Looks up one of a track's alternate representations (Phase 3). Returns 1
+/// and fills \p ref when variant \p variant_id belongs to track \p track_id
+/// and the owning package is servable; 0 otherwise.
+int mp_library_track_variant(mp_library *lib, long long track_id,
+                             long long variant_id, mp_object_ref *ref);
+
+/// Fetches all representations of a track in manifest position order.
+/// Writes at most \p max entries; returns the total count (which may exceed
+/// \p max), or -1 on error. \p labels receives the optional display label
+/// (empty string when absent).
+int mp_library_track_variants(mp_library *lib, long long track_id,
+                              mp_object_ref *out_refs, char (*labels)[64],
+                              size_t max);
+
 /// Looks up a track's waveform envelope by track id. Returns 1 when the
 /// track has a stored waveform and the owning package is servable; 0
 /// otherwise. The ref's mime/sha256/file_size are populated; codec/sample

@@ -80,8 +80,10 @@
    version 3 removes its `--ffmpeg` argument (FLAC/WAV decode is native);
    version 4 moves MusicBrainz transport into the Rust Author backend;
    version 5 adds the `waveform-draft` stage (per-track `peak-rms-u8`
-   envelope generation from source PCM). */
-#define MUSICPACK_AUTHOR_API 6
+   envelope generation from source PCM); version 7 keeps track
+   `representations[]` in the draft so Author saves preserve the Phase 3
+   alternates. */
+#define MUSICPACK_AUTHOR_API 7
 
 static char *read_file_bounded(const char *path, size_t max, musicpack_status *status);
 static void json_error_out(const char *code, const char *msg);

@@ -19,6 +19,8 @@ enum {
     MPJ_NULL,
 };
 
+/* (mp_json_arr_count is defined after this enum below.) */
+
 struct mp_json {
     int type;
     char *key;
@@ -27,6 +29,18 @@ struct mp_json {
     double dbl;
     mp_json *first, *last, *next;
 };
+
+size_t
+mp_json_arr_count(const mp_json *arr)
+{
+    size_t n = 0;
+    const mp_json *c;
+    if (arr == 0 || arr->type != MPJ_ARR)
+        return 0;
+    for (c = arr->first; c != 0; c = c->next)
+        n++;
+    return n;
+}
 
 mp_json *
 mp_json_obj(void)

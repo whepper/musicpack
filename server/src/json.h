@@ -51,6 +51,7 @@ typedef struct mp_json mp_json;
 mp_json *mp_json_obj(void);
 mp_json *mp_json_arr(void);
 void mp_json_free(mp_json *j);
+size_t mp_json_arr_count(const mp_json *arr);
 
 /* attach a child (obj: key != NULL; arr: key == NULL) */
 void mp_json_add(mp_json *parent, const char *key, mp_json *child);

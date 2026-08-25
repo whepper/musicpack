@@ -91,8 +91,33 @@ describe('itemForTrack — the QueueItem construction boundary', () => {
     expect(item.albumLoudness).toEqual({ albumLufs: -9.5, albumTruePeakDb: -0.5 });
   });
 
-  it('is pure: deterministic output, inputs never mutated', () => {
+  it('ignores representations: the default audio always feeds PlaybackItem', () => {
+    // Phase 3 guard: a track carrying alternate representations must still
+    // produce the byte-identical QueueItem — selection stays default-only
+    // until a selection UI exists, and nothing representation-shaped leaks
+    // into the player boundary.
+    const withReps = track(14, 2, 'T4', {
+      representations: [
+        {
+          id: 77,
+          size: 999,
+          url: '/api/v1/tracks/14/representations/77/audio',
+          codec: { codec: 'flac', mimeType: 'audio/flac' },
+          label: 'FLAC 24/96',
+        },
+      ],
+    });
     const r = release();
+    const plain = itemForTrack(r, track(14, 2, 'T4'), 'A', 'Artist');
+    const item = itemForTrack(r, withReps, 'A', 'Artist');
+
+    expect(item.source).toEqual(plain.source);
+    expect(item.codec).toBe(plain.codec);
+    expect(item.mimeType).toBe(plain.mimeType);
+    expect(item.track.representations).toHaveLength(1); // carried verbatim
+  });
+
+  it('is pure: deterministic output, inputs never mutated', () => {    const r = release();
     const before = JSON.stringify({ r, t1, t2, t3 });
     const a = itemForTrack(r, t2, 'A', 'B');
     const b = itemForTrack(r, t2, 'A', 'B');

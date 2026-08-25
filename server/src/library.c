@@ -1885,9 +1885,75 @@ mp_library_track_audio(mp_library *lib, long long track_id, mp_object_ref *ref)
 }
 
 int
-mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref)
+mp_library_track_variant(mp_library *lib, long long track_id,
+                         long long variant_id, mp_object_ref *ref)
 {
     sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT v.id, r.id, p.path, v.relative_path, v.mime_type, v.codec,"
+        "       v.file_size, p.status, v.stream_version, v.sample_rate,"
+        "       v.channels, v.sha256"
+        "  FROM audio_variants v"
+        "  JOIN tracks t ON t.id = v.track_id"
+        "  JOIN media me ON me.id = t.media_id"
+        "  JOIN releases r ON r.id = me.release_id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
+        " WHERE v.track_id = ?1 AND v.id = ?2"
+        "   AND p.status IN ('valid','warning')"
+        "   AND p.verify_status IN ('valid','warning')"
+        " LIMIT 1");
+    int rc = 0;
+    if (st == 0)
+        return 0;
+    sqlite3_bind_int64(st, 1, track_id);
+    sqlite3_bind_int64(st, 2, variant_id);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        fill_object_ref(st, ref);
+        rc = 1;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int
+mp_library_track_variants(mp_library *lib, long long track_id,
+                          mp_object_ref *out_refs, char (*labels)[64],
+                          size_t max)
+{
+    sqlite3_stmt *st = stmt_prepare(lib,
+        "SELECT v.id, r.id, p.path, v.relative_path, v.mime_type, v.codec,"
+        "       v.file_size, p.status, v.stream_version, v.sample_rate,"
+        "       v.channels, v.sha256, COALESCE(v.label, '')"
+        "  FROM audio_variants v"
+        "  JOIN tracks t ON t.id = v.track_id"
+        "  JOIN media me ON me.id = t.media_id"
+        "  JOIN releases r ON r.id = me.release_id"
+        "  JOIN packages p ON p.id = r.owner_package_id"
+        " WHERE v.track_id = ?1"
+        "   AND p.status IN ('valid','warning')"
+        "   AND p.verify_status IN ('valid','warning')"
+        " ORDER BY v.position, v.id");
+    size_t n = 0;
+    int total = 0;
+    if (st == 0)
+        return -1;
+    sqlite3_bind_int64(st, 1, track_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if ((size_t) total < max) {
+            fill_object_ref(st, &out_refs[n]);
+            if (labels != 0)
+                snprintf(labels[n], 64, "%s",
+                         (const char *) sqlite3_column_text(st, 12));
+            n++;
+        }
+        total++;
+    }
+    sqlite3_finalize(st);
+    return total;
+}
+
+int
+mp_library_asset(mp_library *lib, long long asset_id, mp_object_ref *ref)
+{    sqlite3_stmt *st = stmt_prepare(lib,
         "SELECT a.id, r.id, p.path, a.relative_path, a.mime_type, '',"
         "       a.file_size, p.status, 0, 0, 0, a.sha256"
         "  FROM assets a"

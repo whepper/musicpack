@@ -299,7 +299,12 @@ manifest fields. `packageStatus` and `verifyStatus` describe the package;
             "streamVersion": 8, "sampleRate": 44100, "channels": 2
           },
           "audio": { "id": 90, "size": 28288, "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                     "url": "/api/v1/tracks/55/audio" }
+                     "url": "/api/v1/tracks/55/audio" },
+          "representations": [
+            { "id": 91, "size": 184320, "url": "/api/v1/tracks/55/representations/91/audio",
+              "codec": { "codec": "flac", "mimeType": "audio/flac", "sampleRate": 48000, "channels": 2 },
+              "label": "FLAC 24/96" }
+          ]
         }
       ]
     }
@@ -330,6 +335,21 @@ no waveform envelope for the track, otherwise
 ### `GET /api/v1/tracks/{id}/audio`
 
 Direct byte serving of the original contained audio object. See §3.
+
+### `GET /api/v1/tracks/{id}/representations/{rid}/audio`
+
+Direct byte serving of one **alternate audio representation** of the track
+(Phase 3). Track JSON lists them via the optional `representations` array
+(`{ id, size, url, codec, label? }`, in manifest position order; the key is
+omitted entirely when a track has none). The route inherits every serving
+rule of `/tracks/{id}/audio`: authentication, `Range`/206/416 handling,
+security headers, disposition. Its strong ETag is the **variant's own
+content sha256** (variants are immutable content; the manifest hash is
+updated in place when content changes). A `{rid}` that does not belong to
+`{id}`, or whose owning package is not servable, returns 404.
+Representation ids follow the same identifier-lifetime rules as other
+entities: stable across rescans while `(track, path)` is unchanged; changing
+a representation's path issues a new id.
 
 ### `GET /api/v1/tracks/{id}/waveform`
 

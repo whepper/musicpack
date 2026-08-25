@@ -115,6 +115,18 @@ export interface Track {
   /// `null` (or undefined) means the track has no waveform — the player
   /// falls back to the linear `<input type="range">` seek control.
   waveform?: WaveformRef | null;
+  /// Optional alternate audio representations (Phase 3). The default
+  /// remains `audio`; the client currently plays only the default, so
+  /// this field is display/selection metadata. Omitted when empty.
+  representations?: RepresentationRef[];
+}
+
+export interface RepresentationRef {
+  id: number;
+  size: number;
+  url: string;
+  codec: CodecInfo;
+  label?: string;
 }
 
 export interface MediaDisc {

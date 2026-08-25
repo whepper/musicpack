@@ -326,6 +326,36 @@ draft_to_manifest(cJSON *draft, musicpack_manifest *m)
                             t->source_audio_md5 = strdup_opt(jstr(sub, "md5"));
                         }
                         t->audio.path = strdup_opt(jstr(tr, "audioPath"));
+                        /* Alternate representations pass through typed so
+                           Author saves never strip them (Phase 3). */
+                        sub = cJSON_GetObjectItemCaseSensitive(tr,
+                                                               "representations");
+                        if (cJSON_IsArray(sub)) {
+                            int rn = cJSON_GetArraySize(sub), k = 0;
+                            cJSON *ri;
+                            if (rn > 0) {
+                                t->representations =
+                                    (musicpack_representation *) calloc(
+                                        (size_t) rn,
+                                        sizeof *t->representations);
+                                if (t->representations == 0)
+                                    return 0;
+                                cJSON_ArrayForEach(ri, sub) {
+                                    const char *p = jstr(ri, "path");
+                                    const char *h = jstr(ri, "sha256");
+                                    if (p == 0 || h == 0)
+                                        continue;
+                                    t->representations[k].path = strdup(p);
+                                    t->representations[k].sha256 = strdup(h);
+                                    t->representations[k].label =
+                                        strdup_opt(jstr(ri, "label"));
+                                    t->representations[k].codec =
+                                        strdup_opt(jstr(ri, "codec"));
+                                    k++;
+                                }
+                                t->representation_count = (size_t) k;
+                            }
+                        }
                     }
                 }
             }
@@ -517,6 +547,22 @@ draft_from_manifest(const musicpack_manifest *m, const char *source_root,
             si++;
             cJSON_AddStringToObject(x, "audioPath",
                                     tr->audio.path != 0 ? tr->audio.path : "");
+            if (tr->representation_count > 0) {
+                cJSON *rarr = cJSON_AddArrayToObject(x, "representations");
+                size_t r;
+                for (r = 0; r < tr->representation_count; r++) {
+                    const musicpack_representation *rep =
+                        &tr->representations[r];
+                    cJSON *ro = cJSON_CreateObject();
+                    cJSON_AddStringToObject(ro, "path", rep->path);
+                    cJSON_AddStringToObject(ro, "sha256", rep->sha256);
+                    if (rep->label != 0)
+                        cJSON_AddStringToObject(ro, "label", rep->label);
+                    if (rep->codec != 0)
+                        cJSON_AddStringToObject(ro, "codec", rep->codec);
+                    cJSON_AddItemToArray(rarr, ro);
+                }
+            }
             cJSON_AddItemToArray(trk, x);
         }
         cJSON_AddItemToArray(media, med);

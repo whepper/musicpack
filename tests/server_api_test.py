@@ -46,12 +46,32 @@ def file_sha(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def add_representations(pkg_dir, primary_name):
+    """Phase 3 fixture: give track 1 an alternate representation. The alt
+    file is a copy of the package's own waveform blob (small, deterministic);
+    the manifest gains a typed representations[] array on that track."""
+    src = os.path.join(pkg_dir, "analysis", "waveform", "01-01.wfm")
+    alt_rel = "audio/01-alt.flac"
+    alt_abs = os.path.join(pkg_dir, *alt_rel.split("/"))
+    shutil.copy(src, alt_abs)
+    mpath = os.path.join(pkg_dir, "manifest.json")
+    with open(mpath, encoding="utf-8") as f:
+        m = json.load(f)
+    m["media"][0]["tracks"][0]["representations"] = [
+        {"path": alt_rel, "sha256": file_sha(alt_abs),
+         "label": "FLAC Alt", "codec": "flac"},
+    ]
+    write_json(mpath, m)
+
+
 def setup(ref_mpc, ref_flac, tmpdir):
     lib = os.path.join(tmpdir, "lib")
     shutil.rmtree(lib, ignore_errors=True)
     os.makedirs(lib)
 
     shutil.copytree(ref_mpc, os.path.join(lib, "Compilation.mpack"))
+    add_representations(os.path.join(lib, "Compilation.mpack"),
+                        "01 - Alphaville - Big in Japan.mpc")
     shutil.copytree(ref_flac, os.path.join(lib, "Classical.mpack"))
 
     second = os.path.join(lib, "Compilation-1987.mpack")
@@ -297,6 +317,7 @@ def run(base, libdir, demo_dir, t):
          == "musepack-sv8", "release detail + codec")
     track = rel["media"][0]["tracks"][0]
     tid = track["id"]
+    other_tid = rel["media"][0]["tracks"][1]["id"]
     two_disc = next(a for a in albums["albums"]
                     if a["title"] == "Two Disc Extravaganza")
     st, _, body = get(base, API + f"/albums/{two_disc['id']}")
@@ -384,6 +405,45 @@ def run(base, libdir, demo_dir, t):
     st, _, _ = get(base, API + f"/tracks/{tid}/audio",
                    {"If-None-Match": f'"{track["audio"]["sha256"]}"'})
     t.ok(st == 304, "If-None-Match -> 304")
+
+    # ---- representations (Phase 3) ------------------------------------
+    # The fixture gave track 1 one alternate representation; every other
+    # track must omit the key entirely (pre-Phase-3 byte-compat).
+    st, _, body = get(base, API + f"/tracks/{tid}")
+    td = json.loads(body)
+    t.ok("representations" in td and len(td["representations"]) == 1,
+         "track detail lists its representation")
+    rep = td["representations"][0]
+    t.ok(rep["codec"]["codec"].startswith("flac")
+         and rep["label"] == "FLAC Alt" and rep["size"] > 0,
+         "representation carries probed codec + label + size")
+    rid = rep["id"]
+    other = rel["media"][0]["tracks"][1]
+    t.ok("representations" not in other,
+         "untouched track omits the representations key")
+
+    alt_path = None
+    src_alt = os.path.join(libdir, "Compilation.mpack", "audio", "01-alt.flac")
+    want_sha = file_sha(src_alt)
+    st, h, body = get(base, API + f"/tracks/{tid}/representations/{rid}/audio")
+    t.ok(st == 200 and sha(body) == want_sha,
+         "variant full byte-identity")
+    t.ok(h.get("ETag") == f'"{want_sha}"',
+         "variant ETag is the content sha256")
+    st, h, _ = get(base, API + f"/tracks/{tid}/representations/{rid}/audio",
+                   {"Range": "bytes=0-0"})
+    t.ok(st == 206 and h.get("Content-Range", "").startswith("bytes 0-0/"),
+         "variant range 206")
+    st, _, _ = get(base, API + f"/tracks/{tid}/representations/{rid}/audio",
+                   {"Range": "bytes=99999999-"})
+    t.ok(st == 416, "variant unsatisfiable range 416")
+    st, _, _ = get(base, API + f"/tracks/{tid}/representations/999999/audio")
+    t.ok(st == 404, "unknown variant id -> 404")
+    # a real variant id of ANOTHER track must not resolve for this track
+    st, _, body2 = get(base, API + f"/tracks/{other_tid}")
+    other_detail = json.loads(body2)
+    t.ok("representations" not in other_detail,
+         "second track has no variants of its own")
 
     # ---- waveform envelope endpoint + track JSON ---------------------
     # The committed reference package carries waveform envelopes; verify

@@ -267,6 +267,46 @@ artists_of_track(mp_library *lib, long long track_id)
     return arr;
 }
 
+/* Alternate audio representations (Phase 3): emitted per-track like artist
+   credits so the positional wide SELECTs stay untouched. Returns an empty
+   array when the track has none; callers omit the key entirely in that
+   case. */
+static mp_json *
+representations_of_track(mp_library *lib, long long track_id)
+{
+    mp_object_ref refs[16];
+    char labels[16][64];
+    mp_json *arr = mp_json_arr();
+    int total, i;
+    char url[160];
+
+    total = mp_library_track_variants(lib, track_id, refs, labels, 16);
+    for (i = 0; i < total && i < 16; i++) {
+        mp_json *o = mp_json_obj();
+        mp_json *codec;
+        mp_json_int(o, "id", refs[i].id);
+        mp_json_int(o, "size", refs[i].file_size);
+        snprintf(url, sizeof url,
+                 "/api/%s/tracks/%lld/representations/%lld/audio",
+                 API_VERSION, track_id, refs[i].id);
+        mp_json_str(o, "url", url);
+        codec = mp_json_obj();
+        mp_json_str(codec, "codec", refs[i].codec);
+        mp_json_str(codec, "mimeType", refs[i].mime);
+        if (refs[i].stream_version != 0)
+            mp_json_int(codec, "streamVersion", refs[i].stream_version);
+        if (refs[i].sample_rate != 0)
+            mp_json_int(codec, "sampleRate", refs[i].sample_rate);
+        if (refs[i].channels != 0)
+            mp_json_int(codec, "channels", refs[i].channels);
+        mp_json_add(o, "codec", codec);
+        if (labels[i][0] != '\0')
+            mp_json_str(o, "label", labels[i]);
+        mp_json_add(arr, 0, o);
+    }
+    return arr;
+}
+
 static mp_json *
 media_formats_of_release(mp_library *lib, long long release_id)
 {
@@ -1026,6 +1066,16 @@ track_object(mp_library *lib, sqlite3_stmt *t)
         mp_json_str(audio, "url", url);
         mp_json_add(o, "audio", audio);
     }
+    {
+        /* Phase 3: alternates only; the key is omitted when there are none
+           so pre-Phase-3 responses are byte-identical. */
+        mp_json *reps = representations_of_track(lib,
+                                                 sqlite3_column_int64(t, 0));
+        if (mp_json_arr_count(reps) > 0)
+            mp_json_add(o, "representations", reps);
+        else
+            mp_json_free(reps);
+    }
     /* Waveform column offsets depend on the caller's SELECT. The detail-style
        SELECT in handle_release_detail has 22 columns (0..21); the compact
        SELECT in handle_tracks has 27 columns (0..26) and pushes the
@@ -1281,6 +1331,22 @@ handle_stream(mp_library *lib, struct MHD_Connection *c, long long id,
     if (!ok) {
         *st = 404;
         return error_response(404, "not_found", err);
+    }
+    return serve_object(lib, &ref, c, st);
+}
+
+/* Phase 3: byte-serves one alternate representation. Same serving law as
+   /tracks/{id}/audio (auth, Range, strong content-sha ETag); the variant
+   must belong to the given track and be visible or it 404s. */
+static struct MHD_Response *
+handle_variant_stream(mp_library *lib, struct MHD_Connection *c,
+                      long long track_id, long long variant_id,
+                      unsigned int *st)
+{
+    mp_object_ref ref;
+    if (!mp_library_track_variant(lib, track_id, variant_id, &ref)) {
+        *st = 404;
+        return error_response(404, "not_found", "Representation not found");
     }
     return serve_object(lib, &ref, c, st);
 }
@@ -1642,6 +1708,24 @@ dispatch(mp_server_ctx *srv, struct MHD_Connection *c, const char *method,
                                           "malformed track id");
                 }
                 return handle_stream(lib, c, id, 2, status_out);
+            }
+            /* /api/v1/tracks/{id}/representations/{rid}/audio (Phase 3) */
+            if (strncmp(slash, "/representations/", 17) == 0) {
+                char *rid_str = slash + 17;
+                char *rid_slash = strchr(rid_str, '/');
+                long long rid;
+                if (rid_slash != 0 &&
+                    strcmp(rid_slash, "/audio") == 0) {
+                    *slash = '\0';
+                    *rid_slash = '\0';
+                    if (!parse_id(rest, &id) || !parse_id(rid_str, &rid)) {
+                        *status_out = 400;
+                        return error_response(400, "invalid_request",
+                                              "malformed id");
+                    }
+                    return handle_variant_stream(lib, c, id, rid,
+                                                 status_out);
+                }
             }
             *status_out = 404;
             return error_response(404, "not_found", "Unknown endpoint");

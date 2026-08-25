@@ -489,7 +489,7 @@ if "$MUSICPACK" author-api-version --json 2>/dev/null > "$TMP/api.json" \
    && $PY - "$TMP/api.json" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["authorApi"] == 6, "author API version"
+assert d["authorApi"] == 7, "author API version"
 assert d["musicpackVersion"], "musicpack version present"
 print("ok")
 EOF
