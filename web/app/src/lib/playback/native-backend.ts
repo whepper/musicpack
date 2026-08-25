@@ -42,6 +42,12 @@ interface ElementSlot {
    *  (see advance()). */
   item: PlaybackItem | null;
   url: string;
+  /** True once the lane owns output (current or faded-in). Only OWNERSHIP
+   *  failures are fatal to playback: a STANDBY that cannot decode its
+   *  source (e.g. the next queue item needs another codec/engine) must not
+   *  kill the sounding track — metadata() rejects, prepareNext returns
+   *  null, and the core recovers by fresh-loading the target itself. */
+  promoted: boolean;
 }
 
 export class NativeBackend {
@@ -110,7 +116,7 @@ export class NativeBackend {
     const slotGain = this.ctx.createGain();
     src.connect(slotGain);
     slotGain.connect(this.gain);
-    const slot: ElementSlot = { el, src, gain: slotGain, item: null, url: '' };
+    const slot: ElementSlot = { el, src, gain: slotGain, item: null, url: '', promoted: false };
     el.addEventListener('ended', () => {
       if (slot.suppressEnded) {
         // Outgoing lane of an active fade: the core advanced its cursor at
@@ -122,6 +128,13 @@ export class NativeBackend {
     });
     el.addEventListener('waiting', () => this.emitLegacyAndPort('onBuffering', 'buffering'));
     el.addEventListener('error', () => {
+      if (!slot.promoted) {
+        // Standby lane: a source the browser cannot decode (e.g. the next
+        // queue item needs a different engine) is NOT a playback failure.
+        // metadata() rejects and prepareNext reports null; the core's
+        // boundary recovery fresh-loads the target with the right engine.
+        return;
+      }
       this.onError?.('This format cannot be played in your browser.');
       this.emitNamed('error');
     });
@@ -154,6 +167,7 @@ export class NativeBackend {
     this.disposeCurrent();
     this.disposeStandby();
     this.current = slot;
+    slot.promoted = true;
     this.loadInto(slot, url);
     const info = await this.metadata(slot);
     this.rate = info.rate;
@@ -232,6 +246,7 @@ export class NativeBackend {
     this.playRequest++;
     this.shouldPlay = false;
     this.standby = null;
+    promoted.promoted = true;
     this.disposeCurrent();
     this.current = promoted;
     return this.infoOf(promoted);
@@ -299,6 +314,7 @@ export class NativeBackend {
     }
     this.playRequest++;
     this.standby = null;
+    incoming.promoted = true;
     this.disposeCurrent();
     this.current = incoming;
     // Respect a pause that raced the completion: the core believes it is
