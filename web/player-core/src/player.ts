@@ -161,6 +161,13 @@ export class Player {
   private lengths = new Map<number, number>();
   private resetOffset = 0;
   private pendingEnded = false;
+  /** True while an onEos() boundary handoff is between its engine promotion
+   *  and the cursor advance (or its reload fallback). The tick catch-up must
+   *  stand down inside that window: the promoted stream already sounds at
+   *  qi+1 while the cursor is still on qi, so position-based adoption there
+   *  would double-advance past the successor. Same ownership contract as
+   *  crossfadeInProgress. Single-writer (onEos), so no epoch tracking. */
+  private eosInFlight = false;
   private loadingSeq = 0;
   private transportSeq = 0;
   private mutating = false;
@@ -530,6 +537,21 @@ export class Player {
   private async onEos(): Promise<void> {
     if (!this.engine) return;
     const seq = this.loadingSeq;
+    this.eosInFlight = true;
+    try {
+      await this.runEosBoundary(seq);
+    } finally {
+      this.eosInFlight = false;
+    }
+  }
+
+  /** The whole natural-boundary handoff: last-chance fade, standby
+   *  promotion, cursor advance (or reload/end fallback). Extracted from
+   *  onEos() solely so the eosInFlight guard wraps every exit path. */
+  private async runEosBoundary(seq: number): Promise<void> {
+    // The engine may have been torn down while the boundary event was in
+    // flight; a boundary without an engine has no handoff to perform.
+    if (!this.engine) return;
     // Last-chance Sweet Fade: the decoder reached EOF while buffered audio
     // is still sounding (decode runs far ahead of playback, especially
     // right after a seek into the fade window — the positional trigger may
@@ -685,7 +707,23 @@ export class Player {
     // straight to that track (song 1 -> last-song jump). Without a real
     // length under the target the album clock simply cannot prove a
     // boundary there; EOS/load owns the handoff instead.
-    if (idx > qi && !this.pendingEnded && !this.crossfadeInProgress) {
+    //
+    // Two further stand-downs close the remaining adoption windows where
+    // "position ahead of cursor" does NOT mean a real boundary was crossed:
+    // - navigation: previous()/next()/seek hold a transport load open on
+    //   state 'loading'/'buffering' while the OLD engine still renders the
+    //   old higher-offset track; adopting there bounced backward skips
+    //   forward toward the abandoned position.
+    // - eos promotion: while eosInFlight the promoted standby sounds at
+    //   qi+1 before next() moved the cursor; adopting stole one advance
+    //   so the natural boundary landed two tracks ahead ("next skipped").
+    if (
+      this.model.get().state === 'playing' &&
+      idx > qi &&
+      !this.pendingEnded &&
+      !this.crossfadeInProgress &&
+      !this.eosInFlight
+    ) {
       const target = Math.min(idx, qi + 1);
       if (this.lengthOf(target) > 0) {
         this.mutating = true;

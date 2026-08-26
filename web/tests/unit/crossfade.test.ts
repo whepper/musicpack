@@ -6,6 +6,7 @@ import { Player } from '../../player-core/src/player';
 import { createQueueModel } from '../../player-core/src/queue';
 import type { PlayerEvent } from '../../player-core/src/events';
 import type { CrossfadeResult } from '../../player-core/src/engine';
+import type { EngineStreamInfo } from '../../app/src/lib/playback/musepack-engine';
 import type { PlaybackItem } from '../../player-core/src/types';
 
 const RATE = 44100;
@@ -44,6 +45,12 @@ interface Harness {
   rendered: number;
   /** Set while a deferred fade is pending (opts.deferredFade). */
   resolveFade?: ((r: CrossfadeResult | null) => void) | null;
+  /** Held-open advance() resolver (opts.advanceHold): simulate the real
+   *  engine's async standby promotion so ticks can be delivered INSIDE
+   *  the eos boundary window. */
+  resolveAdvance?: (() => void) | null;
+  /** Internal once-latch for advanceHold. */
+  advanceArmed?: boolean;
 }
 
 /** Fake engine with controllable crossfade support. */
@@ -63,6 +70,9 @@ function makePlayer(opts: {
   /** Simulate a failed/gapped standby: prepareNext never yields a length,
    *  so every successor's offset collapses onto the previous track's end. */
   standbyFails?: boolean;
+  /** Hold advance() open until harness.resolveAdvance() fires — models
+   *  the promote-gap between decoder eos and cursor next(). */
+  advanceHold?: boolean;
 }): { player: Player; h: Harness; queue: ReturnType<typeof createQueueModel> } {
   const queue = createQueueModel({ rng: () => 0.5 });
   /** Exact decoded length the fake engine reports for an item. */
@@ -116,11 +126,21 @@ function makePlayer(opts: {
         init: async () => undefined,
         open: async (it: PlaybackItem) => infoFor(it),
         prepareNext: async (it: PlaybackItem) => (opts.standbyFails ? null : infoFor(it)),
-        advance: async (expected?: PlaybackItem | null) =>
+        advance: async (expected?: PlaybackItem | null) => {
+          if (opts.advanceHold && h.resolveAdvance === undefined && h.advanceArmed !== true) {
+            h.advanceArmed = true;
+            return new Promise<EngineStreamInfo | null>((resolve) => {
+              h.resolveAdvance = () => {
+                h.resolveAdvance = null;
+                resolve(expected ? infoFor(expected!) : null);
+              };
+            });
+          }
           // Standby/policy agreement: without a prepared-item model this
           // fake promotes only when an expectation was supplied (the real
           // core always supplies one at EOS).
-          expected ? infoFor(expected) : null,
+          return expected ? infoFor(expected) : null;
+        },
         play: async () => undefined,
         pause: async () => undefined,
         seekSample: async () => undefined,
@@ -807,6 +827,96 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
         await flush();
         expect(queue.get().index).toBe(queue.get().items.findIndex((it) => it.id === id));
       }
+    });
+  });
+
+  // Boundary ownership must hold for BOTH directions and BOTH movers.
+  // previous() awaits a slow engine re-open while the OLD engine keeps
+  // rendering the old (higher-offset) track; onEos() awaits engine.advance
+  // BEFORE advancing the cursor. In both await-gaps a rendered tick sees
+  // "position ahead of cursor" — the legacy catch-up adopted it, bouncing
+  // backward navigation forward (random-feeling jumps) or letting the eos
+  // advance land two tracks past the boundary ("next track skipped").
+  describe('tick catch-up vs manual navigation and eos windows', () => {
+    it('R1: ticks during a pending previous() never bounce toward the abandoned position', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false });
+      player.init();
+      // Start on song 4 of 6; load() already settled, within-track 0s.
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30), mk(4, 30), mk(5, 30), mk(6, 30)], 'AL', 'A', 3);
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(3);
+
+      void player.previous(); // -> index 2, engine re-open pending
+      // Stale OLD-frame render arrives mid-load: album clock still maps
+      // into song 5's region (old base + high rendered).
+      h.rendered = 121 * RATE;
+      h.handlers.tick();
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(2);
+      expect(player.model.get().current?.id).toBe('t3');
+    });
+
+    it('R2: repeated backward skips with interleaved stale ticks never creep forward', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30), mk(4, 30), mk(5, 30), mk(6, 30)], 'AL', 'A', 4);
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(4);
+
+      void player.previous(); // target 3
+      h.rendered = 155 * RATE; // maps into song 6's region vs the new base
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(3);
+      const afterFirst = queue.get().index;
+
+      void player.previous(); // target 2
+      h.rendered = 125.5 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(2);
+      expect(queue.get().index).toBeLessThanOrEqual(afterFirst - 1);
+    });
+
+    it('R3: a tick inside the eos advance-gap cannot steal the cursor advancement', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, advanceHold: true });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // EOS fired; onEos is parked INSIDE `await engine.advance(...)`
+      // while the promoted stream has already begun sounding.
+      h.handlers.eos();
+      await flush();
+      h.rendered = 31 * RATE;
+      h.handlers.tick(); // promotion window tick — must NOT adopt qi+1
+      await flush();
+
+      h.resolveAdvance?.();
+      await flush();
+      expect(queue.get().index).toBe(1); // exactly one advance, owned by eos
+      expect(player.model.get().current?.id).toBe('t2');
+    });
+
+    it('R5: repeat-one reload window likewise holds the cursor still', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, advanceHold: true });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30)], 'AL', 'A');
+      player.setRepeat('one');
+      await primeAndPlay(h);
+
+      h.handlers.eos();
+      await flush();
+      h.rendered = 31 * RATE; // during held advance/reload: would adopt t2
+      h.handlers.tick();
+      await flush();
+
+      h.resolveAdvance?.();
+      await flush();
+      expect(queue.get().index).toBe(0);
+      expect(player.model.get().current?.id).toBe('t1'); // reload semantics win
     });
   });
 });

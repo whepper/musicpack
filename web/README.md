@@ -308,7 +308,13 @@ single-track repeat-all loop, never manual skips or seeks.
   re-derived from the persisted item's own `track.duration`, never
   invented. Snapshots persisted before the player-core extraction (bare
   `{track,...}` items) are rejected at restore instead of being
-  resurrected as unplayable entries. Follow-ups: server-side ingest
+  resurrected as unplayable entries. Two further boundary-ownership windows
+  were closed in the same family: rendered ticks during a pending
+  previous()/next() engine re-open now stand down (the old engine still
+  sounds at higher offsets, so backward skips no longer bounce forward
+  through the tracklist), and ticks inside the eos standby-promotion gap
+  stand down (the cursor advance can no longer be stolen, so natural
+  boundaries never skip the next track). Follow-ups: server-side ingest
   duration backfill for legacy packages (opt-in migration, header-only);
   audit of hint sample-rate scaling for non-device-rate sources.
 
