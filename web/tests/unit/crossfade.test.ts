@@ -559,4 +559,130 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
     await flush();
     expect(player.model.get().state).toBe('ended');
   });
+
+  // The tick() cursor-catch-up (player-core/player.ts) must not advance the
+  // queue while a crossfade owns the boundary, or it races the transition
+  // through extra tracks (legacy end-of-track random-jump bug).
+  describe('tick cursor catch-up vs crossfade boundary ownership', () => {
+    it('advances the cursor via tick catch-up when no crossfade is in progress', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Render ahead into track 2's region while the cursor is still on track 1.
+      // With no crossfade in progress, the catch-up syncs the cursor forward.
+      h.rendered = 35 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(1);
+    });
+
+    it('does not move the cursor via tick catch-up while a crossfade is in progress', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3)], 'AL', 'A');
+      player.setCrossfade(8);
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Trigger the crossfade (held open by the deferred fade).
+      h.rendered = 25 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(h.beginCrossfade).toHaveBeenCalledOnce();
+
+      // Render ahead into track 2's region. The catch-up must NOT fire because
+      // the crossfade owns the boundary.
+      h.rendered = 35 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(0); // cursor untouched by catch-up
+    });
+
+    it('advances exactly once when the crossfade completes', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3)], 'AL', 'A');
+      player.setCrossfade(8);
+      await primeAndPlay(h);
+
+      h.rendered = 25 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(h.beginCrossfade).toHaveBeenCalledOnce();
+      const callsBefore = h.beginCrossfade.mock.calls.length;
+
+      // Catch-up must not fire while the fade is pending.
+      h.rendered = 35 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(0);
+
+      // Resolve the fade: the transition advances exactly once.
+      h.resolveFade!(FADE_OK);
+      await flush();
+      expect(queue.get().index).toBe(1);
+      expect(h.beginCrossfade.mock.calls.length).toBe(callsBefore); // no extra trigger
+    });
+
+    it('cannot sweep a short-track queue via tick catch-up during a crossfade', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([mk(1, 1), mk(2, 1), mk(3, 1), mk(4, 1)], 'AL', 'A');
+      player.setCrossfade(4);
+      await primeAndPlay(h);
+
+      // Trigger the crossfade on the 1 s opener.
+      h.rendered = 0.8 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(h.beginCrossfade).toHaveBeenCalledOnce();
+
+      // Attempt to sweep through the remaining tracks via repeated ticks.
+      for (const pos of [1.5, 2.5, 3.5]) {
+        h.rendered = pos * RATE;
+        h.handlers.tick();
+        await flush();
+        expect(queue.get().index).toBe(0); // catch-up suppressed
+      }
+
+      // Resolve: exactly one advance to track 2.
+      h.resolveFade!(FADE_OK);
+      await flush();
+      expect(queue.get().index).toBe(1);
+    });
+
+    it('cannot override the crossfade presentation-order successor via tick catch-up in shuffle', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3), item(4)], 'AL', 'A');
+      queue.setShuffle(true);
+      queue.setPresentationOrderForTest([0, 2, 1, 3]); // next after t1 is t3 (canonical 2)
+      player.setCrossfade(8);
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Trigger the crossfade; it targets the presentation successor t3 (index 2).
+      h.rendered = 25 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(h.beginCrossfade).toHaveBeenCalledOnce();
+      expect(h.beginCrossfade.mock.calls[0]?.[0].id).toBe('t3');
+
+      // Render into t2's canonical region. Without the guard the catch-up would
+      // move the cursor to canonical t2 (index 1), overriding the shuffle target.
+      h.rendered = 35 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(0); // catch-up suppressed, cursor stays on t1
+
+      // Resolve: the transition advances to the shuffle successor t3 (index 2).
+      h.resolveFade!(FADE_OK);
+      await flush();
+      expect(queue.get().index).toBe(2);
+      expect(player.model.get().current?.id).toBe('t3');
+    });
+  });
 });

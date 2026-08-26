@@ -675,8 +675,10 @@ export class Player {
     // onEos() owns forward advancement. Only a LATER index may be adopted
     // here (never a regression): the output ring renders ahead, so at a
     // gapless handoff the rendered position can still describe the previous
-    // track for a moment while the cursor has already advanced.
-    if (idx > qi && !this.pendingEnded) {
+    // track for a moment while the cursor has already advanced. While a
+    // crossfade owns the boundary the transition itself advances the cursor,
+    // so the catch-up must stand down to avoid racing it through extra tracks.
+    if (idx > qi && !this.pendingEnded && !this.crossfadeInProgress) {
       this.mutating = true;
       this.queue.moveTo(idx);
       this.mutating = false;
