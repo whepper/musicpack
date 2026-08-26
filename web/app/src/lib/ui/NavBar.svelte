@@ -10,6 +10,7 @@ SPDX-License-Identifier: BSD-3-Clause
   // underline on whichever page the bar first rendered with.
   const routeStore = router.route;
   const name = $derived($routeStore.name);
+  const sessionState = $derived($session.state);
 </script>
 
 <header class="topnav">
@@ -29,6 +30,10 @@ SPDX-License-Identifier: BSD-3-Clause
       aria-current={name === 'queue' ? 'page' : undefined}>Now Playing</a>
   </nav>
   <div style="margin-left:auto;display:flex;align-items:center;gap:var(--space-3)">
+    <a class="navlink" href="/settings" aria-current={name === 'settings' ? 'page' : undefined}>Settings</a>
+    {#if sessionState === 'offline'}
+      <span class="offline-chip smallcaps" role="status">Offline</span>
+    {/if}
     <button class="smallcaps" onclick={() => void session.logout()}>Sign out</button>
   </div>
 </header>

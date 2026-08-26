@@ -44,21 +44,23 @@ function chunkedResponse(bytes: Uint8Array): Response {
   return new Response(stream, { status: 200 });
 }
 
-function makeManager() {
-  const fileStore = memoryFileStore();
-  const catalog = memoryCatalog();
+const fixtureFetch = ((url: string) => {
+  const enc = new TextEncoder();
+  const sources: Record<string, Uint8Array> = {
+    '/api/v1/tracks/101/audio': enc.encode('abc'),
+  };
+  const src = sources[url];
+  if (!src) return Promise.reject(new Error('no fixture ' + url));
+  return Promise.resolve(chunkedResponse(src));
+}) as unknown as typeof fetch;
+
+function makeManager(stores?: { fileStore?: ReturnType<typeof memoryFileStore>; catalog?: ReturnType<typeof memoryCatalog> }) {
+  const fileStore = stores?.fileStore ?? memoryFileStore();
+  const catalog = stores?.catalog ?? memoryCatalog();
   const manager = createOfflineManager({
     fileStore,
     catalog,
-    fetch: ((url: string) => {
-      const enc = new TextEncoder();
-      const sources: Record<string, Uint8Array> = {
-        '/api/v1/tracks/101/audio': enc.encode('abc'),
-      };
-      const src = sources[url];
-      if (!src) return Promise.reject(new Error('no fixture ' + url));
-      return Promise.resolve(chunkedResponse(src));
-    }) as unknown as typeof fetch,
+    fetch: fixtureFetch,
   });
   return { manager, fileStore, catalog };
 }
@@ -108,6 +110,63 @@ describe('offline manager (D2 lifecycle)', () => {
     expect(await fileStore.sizeOf('t.101.primary')).toBeNull();
     expect(manager.availability.localKeyFor(101, { kind: 'primary' })).toBeNull();
     expect(manager.availability.hasInstalled()).toBe(false);
+  });
+
+  it('boot audit damage surfaces as the damaged UI state and reinstall heals it', async () => {
+    const { manager, fileStore, catalog } = makeManager();
+    await manager.install(releaseFixture(SHA_ABC));
+    for (let i = 0; i < 50 && !(await manager.packageFor(7)); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // Evict a committed primary behind the catalog's back (browser eviction).
+    await fileStore.remove('t.101.primary');
+
+    // A fresh manager over the SAME catalog+fileStore boots through init():
+    // the audit runs, the record loses its asset and the UI state must read
+    // 'damaged', not 'stale'. It carries the same fetch fixture so the
+    // reinstall below can succeed (this mirrors one browser session's
+    // reload, where only the page — not the storage — is new).
+    const { manager: booted } = makeManager({ fileStore, catalog });
+    await booted.init();
+    let uiState: string | undefined;
+    booted.states.subscribe((m) => (uiState = m.get(7)?.state))();
+    expect(uiState).toBe('damaged');
+    expect(await booted.packageFor(7)).not.toBeNull();
+
+    // Reinstall (same bytes served again) clears the damaged presentation.
+    await booted.install(releaseFixture(SHA_ABC));
+    for (let i = 0; i < 50; i++) {
+      let s: string | undefined;
+      booted.states.subscribe((m) => (s = m.get(7)?.state))();
+      if (s === 'installed') break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    booted.states.subscribe((m) => (uiState = m.get(7)?.state))();
+    expect(uiState).toBe('installed');
+  });
+
+  it('listPackages exposes committed records for the storage panel', async () => {
+    const { manager } = makeManager();
+    expect(await manager.listPackages()).toEqual([]);
+    await manager.install(releaseFixture(SHA_ABC));
+    for (let i = 0; i < 50 && !(await manager.packageFor(7)); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const pkgs = await manager.listPackages();
+    expect(pkgs.map((p) => p.releaseId)).toContain(7);
+    expect(pkgs.find((p) => p.releaseId === 7)?.bytes).toBeGreaterThan(0);
+  });
+
+  it('installedAlbumIds maps installed releases to album ids', async () => {
+    const { manager } = makeManager();
+    expect(manager.installedAlbumIds().size).toBe(0);
+    const rel = releaseFixture(SHA_ABC);
+    (rel as unknown as { album: { id: number } }).album = { id: 42 };
+    await manager.install(rel);
+    for (let i = 0; i < 50 && !(await manager.packageFor(7)); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(manager.installedAlbumIds()).toEqual(new Set([42]));
   });
 
   it('disabled manager (no OPFS/IDB) is inert and safe', async () => {

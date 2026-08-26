@@ -188,6 +188,68 @@ h3 {
   border-bottom-color: var(--accent);
 }
 
+.offline-chip {
+  color: var(--paper);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+
+.offline-badge {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  background: var(--accent);
+  color: var(--paper);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+/* ---- settings ----------------------------------------------------------- */
+
+.settings-page {
+  max-width: 720px;
+}
+.settings-page section {
+  margin-top: var(--space-6);
+}
+.pref-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.pref-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+.pkg-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-4) 0 0;
+  display: flex;
+  flex-direction: column;
+}
+.pkg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.pkg-title {
+  flex: 1;
+  min-width: 0;
+}
+.pkg-flag {
+  color: var(--accent);
+}
+
 /* ---- shelf -------------------------------------------------------------- */
 
 .shelf-header {

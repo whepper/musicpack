@@ -208,6 +208,40 @@ rules:
 - **Offline session:** a boot network failure WITH installed content
   enters `AuthState 'offline'` (degraded-authenticated) instead of the
   sign-in screen; `navigator.onLine` is deliberately not consulted.
+  The NavBar shows an Offline chip while degraded, and the app re-probes
+  on connectivity return (an `online` listener plus a slow fallback timer,
+  since a page booted offline may never receive the event). Reconnect
+  never demotes an offline session to sign-in.
+- **UI surface:** every release/edition page carries a download control
+  (`DownloadControl.svelte`) covering the full lifecycle — Download with
+  progress ring, Installed badge (with size hint), Update available
+  (stale), Needs repair (audit-damaged), Failed reason + Retry, and
+  Remove. The shelf adds an "Available offline" filter and a ⤓ badge on
+  installed albums, and renders downloaded albums from stored snapshots
+  while offline. `/settings` exposes the playback-quality preference and
+  per-album storage management (`SettingsPage.svelte`).
+
+## Audio preference & settings
+
+The Phase-4 preference mechanism now has its user-facing half:
+`/settings` → *Playback quality* offers Automatic / Prefer lossless /
+FLAC-only / WAV-only / AIFF-only — a direct binding onto the one existing
+`AudioPreference` union (`musicpack.audio-preference.v1`), so selection,
+fallback and persistence semantics are exactly as documented under
+"Audio representations" above. Changing the preference affects future item
+construction only. *Downloads & storage* on the same page lists installed
+albums with sizes, supports removal, and reports quota/persistence status
+(including the browser-may-evict caveat when persistence was denied).
+
+The player bar and mobile player label what is sounding — e.g.
+`FLAC · 48 kHz · stereo` or `MPC` — derived from the selected
+representation's probed metadata plus manifest labels. Bit depth and
+encoder quality are not part of `.mpack` v1 metadata and are never shown.
+
+PWA-lite: `manifest.json` + PNG icons complete the static-shell service
+worker's precache list (sw.js VERSION bumps whenever that list changes);
+the app remains installable-but-plain — there is no offline-sync machinery
+beyond the package downloads described above.
 
 ## Crossfade (opt-in)
 
@@ -240,9 +274,10 @@ single-track repeat-all loop, never manual skips or seeks.
   length. Without envelope data the planner degrades to the legacy fixed
   duration.
 - **Known limitation:** tracks shorter than the fade window, or seeks that
-  land within a second of a boundary, may still fall back to the natural
-  gapless seam instead of fading; rapid sequences of sub-fade-length tracks
-  can stall progression and remain under follow-up investigation.
+  land within a second of a boundary, may fall back to the natural gapless
+  seam instead of fading. The historical short-track progression stall was
+  root-caused (a lost decode-pump credit) and fixed; boundaries now advance
+  exactly once even across rapid sub-fade-length tracks.
 
 ## BS.1770 loudness normalization
 

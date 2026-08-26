@@ -30,6 +30,7 @@ const DEFINITIONS: RouteDef[] = [
   { pattern: /^\/artists\/?$/, name: 'artists', keys: [] },
   { pattern: /^\/artists\/([0-9]+)$/, name: 'artist', keys: ['id'] },
   { pattern: /^\/queue\/?$/, name: 'queue', keys: [] },
+  { pattern: /^\/settings\/?$/, name: 'settings', keys: [] },
 ];
 
 export function parseRoute(path: string): Route | null {

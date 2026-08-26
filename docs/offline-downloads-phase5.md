@@ -104,8 +104,34 @@ the server's `Cache-Control: no-cache`. `/api/**` is never intercepted.
   resumed playback + progression → online restore with remote fallback;
   remove-download lifecycle.
 
+## UI requirements (implemented)
+
+The planned surface shipped as the Offline & Representation UX milestone:
+- Release page — `DownloadControl.svelte` covers the full lifecycle:
+  Download (progress ring + %) → Installed badge → Update available
+  (`stale`) → Needs repair (audit-damaged) → Failed reason + Retry, and
+  Remove. Update checks run on release-page open while authenticated.
+- Shelf — "Available offline" filter chip, ⤓ badge on installed albums,
+  and a downloaded-albums grid rendered from stored snapshots while
+  offline. The album↠installed mapping derives from committed records'
+  snapshots; no server parameter was added.
+- NavBar — Offline chip while `AuthState==='offline'`; reconnect re-probes
+  via an `online` listener plus a slow fallback interval (a page booted
+  offline may never receive the event); reconnect never demotes to
+  sign-in.
+- Settings (`/settings`, `SettingsPage.svelte`) — playback-quality
+  preference radios bound to the existing `AudioPreference` union, plus
+  storage usage, persistence status (incl. denied caveat) and per-album
+  removal.
+- PWA-lite — `manifest.json` + PNG icons complete the shell SW precache
+  (sw.js `VERSION` bumped with that list change).
+Failure copy uses the installer's typed reasons verbatim (quota /
+network / integrity / canceled).
+
 ## Deliberately out of scope (v1)
 
 Signing/publisher trust, transcoding/codecs, background sync, mobile
-hosts, Player Core redesign, `.mpack` format changes, PWA install UX,
-lyrics/booklet/extras consumption, per-track preference maps.
+hosts, Player Core redesign, `.mpack` format changes,
+lyrics/booklet/extras consumption, per-track preference maps. (PWA
+install UX landed as PWA-lite only: manifest + icons + precache; no
+offline-sync machinery.)

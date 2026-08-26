@@ -67,8 +67,13 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
    *  this is presentation state derived from catalog + live activity. */
   const uiStates = writable<Map<number, PackageUiState>>(new Map());
   const progress = writable<DownloadProgress[]>([]);
+  /** Releases the boot audit found damaged (in-memory presentation
+   *  marker; any later committed install clears it via setState). */
+  const damagedReleases = new Set<number>();
 
   function setState(releaseId: number, s: PackageUiState): void {
+    if (s.state === 'damaged') damagedReleases.add(releaseId);
+    else damagedReleases.delete(releaseId);
     uiStates.update((m) => {
       const next = new Map(m);
       next.set(releaseId, s);
@@ -83,7 +88,14 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
       return;
     }
     if (pkg.status === 'installed') {
-      setState(releaseId, pkg.stale === true ? { state: 'stale' } : { state: 'installed' });
+      // Audit-damaged records are flagged by the boot audit (assets were
+      // stripped, stale set); present them distinctly from a server-side
+      // content update so the UI can offer "Reinstall" with the right copy.
+      if (damagedReleases.has(releaseId)) {
+        setState(releaseId, { state: 'damaged' });
+      } else {
+        setState(releaseId, pkg.stale === true ? { state: 'stale' } : { state: 'installed' });
+      }
     } else {
       setState(releaseId, { state: 'failed', reason: pkg.error ?? 'unknown error' });
     }
@@ -102,8 +114,10 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
       }
       // Audit: reconcile catalog vs files; damaged assets leave the record
       // so availability can never point at vanished bytes.
+      const damagedIds = new Set<number>();
       for (const result of await auditAll(stores.catalog, stores.fileStore)) {
         if (result.verdict === 'damaged') {
+          damagedIds.add(result.releaseId);
           const pkg = await stores.catalog.getPackage(result.releaseId);
           if (pkg) {
             const updated = applyAudit(pkg, result, Date.now());
@@ -113,6 +127,13 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
         }
       }
       for (const releaseId of [...(await stores.catalog.allPackages()).map((p) => p.releaseId)]) {
+        if (damagedIds.has(releaseId)) {
+          // Presentation marker for the audit verdict; the catalog record
+          // itself stays storage-shaped (assets already stripped by the
+          // audit apply). Cleared implicitly by any successful re-install.
+          setState(releaseId, { state: 'damaged' });
+          continue;
+        }
         await refreshState(releaseId);
       }
     } catch {
@@ -197,10 +218,10 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
   return {
     enabled,
     availability,
-    /** Reactive per-release UI states (`$offlineStates`). */
-    states: uiStates as Readable<Map<number, PackageUiState>>,
+    /** Reactive per-release UI states. */
+    states: uiStates,
     /** Reactive download-progress snapshots. */
-    downloads: progress as Readable<DownloadProgress[]>,
+    downloads: progress,
     init,
     install,
     cancel,
@@ -208,6 +229,11 @@ export function createOfflineManager(opts: OfflineManagerOptions = {}) {
     checkForUpdate,
     packageFor: (releaseId: number): Promise<InstalledPackage | null> =>
       stores ? stores.catalog.getPackage(releaseId) : Promise.resolve(null),
+    /** All committed package records (settings/storage panel rows). */
+    listPackages: (): Promise<InstalledPackage[]> =>
+      stores ? stores.catalog.allPackages() : Promise.resolve([]),
+    /** Album ids with at least one installed release (shelf badges/filter). */
+    installedAlbumIds: (): Set<number> => availability.installedAlbumIds(),
     /** Storage accounting for the future settings panel (§11). */
     storageUsage: () =>
       import('./audit').then((m) => m.storageUsage()),

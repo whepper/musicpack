@@ -88,3 +88,48 @@ export function codecLabel(codec?: string): string {
   if (lower === 'opus') return 'Opus';
   return codec.toUpperCase();
 }
+
+/** Byte size -> compact display ("412 kB", "38.4 MB", "1.2 GB"). Null or
+ *  non-positive input yields '' so callers can omit the segment entirely. */
+export function formatBytes(bytes?: number | null): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} kB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+  const gb = mb / 1024;
+  return `${Math.round(gb * 100) / 100} GB`;
+}
+
+function isMusepackFamily(codec: string): boolean {
+  const c = codec.toLowerCase();
+  return c === 'musepack' || c === 'musepack-sv7' || c === 'musepack-sv8';
+}
+
+/** Human-readable quality line for one audio representation, built ONLY
+ *  from metadata the API actually carries (codec family, sample rate,
+ *  channels, manifest label). Bit depth / encoder quality are not probed
+ *  anywhere in the stack and are deliberately never invented here.
+ *  Example outputs: "MPC", "FLAC · 48 kHz", "FLAC · 44.1 kHz · stereo". */
+export function qualityLine(
+  opts: { codec?: string; sampleRate?: number; channels?: number; label?: string } | undefined,
+): string {
+  if (!opts) return '';
+  const base = opts.label?.trim() || codecLabel(opts.codec);
+  if (!base) return '';
+  const parts: string[] = [base];
+  // Musepack SV8 is fixed-rate/fixed-schedule; rate/channel detail adds
+  // nothing there, while lossless formats are exactly where it matters.
+  if (
+    opts.sampleRate && opts.sampleRate > 0 && opts.codec &&
+    !isMusepackFamily(opts.codec)
+  ) {
+    parts.push(`${(opts.sampleRate / 1000).toString().replace(/\.0$/, '')} kHz`);
+    if (opts.channels === 2) parts.push('stereo');
+    else if (opts.channels && opts.channels > 2) parts.push(`${opts.channels} ch`);
+  }
+  return parts.join(' · ');
+}

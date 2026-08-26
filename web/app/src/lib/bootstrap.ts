@@ -31,6 +31,9 @@ export const audioPreference = createAudioPreferenceStore();
 // canPlay remains pure browser capability — the two concerns compose at
 // this single composition point without a second selection policy.
 export const offline = createOfflineManager();
+/** Reactive per-release offline UI states (install progress, stale/damaged
+ *  badges). Exported for components that need to re-derive on changes. */
+export const offlineStates = offline.states;
 /** The one SelectionContext source both item-construction paths share. */
 export function currentSelection(): SelectionContext {
   return {
@@ -75,6 +78,25 @@ void offline.init();
 // Offline session probe: lets the boot path distinguish "signed out" from
 // "network gone but installed content available" (AuthState 'offline').
 setOfflineContentProbe(() => offline.availability.hasInstalled());
+// Reconnect (offline UX): when connectivity returns during an 'offline'
+// session, re-probe. session.reattempt() contractually never demotes, so
+// flapping online events are harmless. navigator.onLine is still never
+// consulted at BOOT (unchanged policy). A slow interval covers the
+// Chromium case where a page booted while offline never receives the
+// 'online' event when connectivity returns.
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    void session.reattempt();
+  });
+  const RECONNECT_PROBE_MS = 30_000;
+  const reconnectTimer = setInterval(() => {
+    if (session.get().state !== 'offline') {
+      clearInterval(reconnectTimer);
+      return;
+    }
+    void session.reattempt();
+  }, RECONNECT_PROBE_MS);
+}
 // Prefetch boundary profiles for the current and next item as playback
 // advances so plans are content-aware by the time a boundary approaches.
 player.on((event) => {

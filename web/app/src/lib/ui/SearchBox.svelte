@@ -4,16 +4,20 @@ SPDX-License-Identifier: BSD-3-Clause
 -->
 
 <script lang="ts">
+  import type { Snippet } from 'svelte';
+
   let {
     value,
     onSearch,
     onSort,
     sort,
+    children,
   }: {
     value: string;
     sort: string;
     onSearch: (q: string) => void;
     onSort: (sort: string) => void;
+    children?: Snippet;
   } = $props();
 </script>
 
@@ -29,7 +33,8 @@ SPDX-License-Identifier: BSD-3-Clause
       oninput={(e) => onSearch((e.currentTarget as HTMLInputElement).value)}
     >
   </label>
-  <div class="sort" role="group" aria-label="Sort the shelf">
+  <div class="sort" role="group" aria-label="Filter and sort the shelf">
+    {@render children?.()}
     <button
       class="edition-chip"
       aria-pressed={sort === ''}

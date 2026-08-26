@@ -12,6 +12,7 @@ SPDX-License-Identifier: BSD-3-Clause
   import ArtistList from './lib/ui/ArtistList.svelte';
   import ArtistPage from './lib/ui/ArtistPage.svelte';
   import QueuePage from './lib/ui/QueuePage.svelte';
+  import SettingsPage from './lib/ui/SettingsPage.svelte';
   import QueueDrawer from './lib/ui/QueueDrawer.svelte';
   import PlayerBar from './lib/ui/PlayerBar.svelte';
   import MobilePlayer from './lib/ui/MobilePlayer.svelte';
@@ -59,6 +60,8 @@ SPDX-License-Identifier: BSD-3-Clause
           <ArtistPage artistId={route.get().params.id ?? ''} />
         {:else if route.get().name === 'queue'}
           <QueuePage />
+        {:else if route.get().name === 'settings'}
+          <SettingsPage />
         {:else}
           <ErrorView message="Page not found" detail="This address does not match anything in the collection." />
         {/if}

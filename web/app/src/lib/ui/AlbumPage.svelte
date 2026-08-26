@@ -4,7 +4,8 @@ SPDX-License-Identifier: BSD-3-Clause
 -->
 
 <script lang="ts">
-  import { library, player, playerModel, queue, router } from '../bootstrap';
+  import { library, player, playerModel, queue, router, offline, session } from '../bootstrap';
+  import DownloadControl from './DownloadControl.svelte';
   import Artwork from './Artwork.svelte';
   import EditionSelector from './EditionSelector.svelte';
   import TrackList from './TrackList.svelte';
@@ -61,6 +62,12 @@ SPDX-License-Identifier: BSD-3-Clause
 
   async function loadRelease(id: number): Promise<void> {
     rel = await library.releaseDetail(id);
+    // D2 update check (online only): flag a committed download whose
+    // hashes no longer match the server. Flagging is all the domain does;
+    // replacement stays a user action on the Download control.
+    if (offline.enabled && session.get().state === 'authenticated') {
+      void offline.checkForUpdate(rel);
+    }
   }
 
   async function selectEdition(id: number): Promise<void> {
@@ -144,6 +151,9 @@ SPDX-License-Identifier: BSD-3-Clause
         <div class="hero-actions">
           <button class="btn" onclick={playAlbum}>▶ Play album</button>
           <button class="btn ghost" onclick={shuffleAlbum}>⤨ Shuffle</button>
+          {#if rel}
+            <DownloadControl release={rel} states={offline.states} downloads={offline.downloads} />
+          {/if}
           <button
             class="btn ghost album-add"
             aria-label={albumAdded ? 'Album added to queue' : 'Add album to queue'}

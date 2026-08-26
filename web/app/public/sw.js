@@ -15,13 +15,13 @@
  * responses for anything but its precache list.
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `musicpack-shell-${VERSION}`;
 
 const SHELL_ASSETS = [
   '/',
   '/index.html',
-  '/manifest.webmanifest',
+  '/manifest.json',
   '/musepack.js',
   '/musepack.wasm',
   '/decoder.worker.js',

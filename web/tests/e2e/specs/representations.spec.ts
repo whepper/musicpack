@@ -55,10 +55,10 @@ test('default preference keeps represented tracks on their primary Musepack sour
 test('lossless preference routes the represented track through the native backend and persists across reloads', async ({
   page,
 }) => {
-  // No UI exists yet (by design): set the preference through the debug hook.
-  await page.evaluate(() =>
-    window.__musicpack?.audioPreference.set({ mode: 'lossless' }),
-  );
+  // The preference now has a real UI: Settings → Playback quality.
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.getByRole('radio', { name: /Prefer lossless/ }).check();
   expect(
     await page.evaluate(() => window.__musicpack?.audioPreference.get() ?? null),
   ).toEqual({ mode: 'lossless' });
@@ -67,7 +67,9 @@ test('lossless preference routes the represented track through the native backen
   expect(
     await page.evaluate(() => window.__musicpack?.audioPreference.get() ?? null),
   ).toEqual({ mode: 'lossless' });
-  // Still authenticated via the session cookie — straight back to the shelf.
+  // Still authenticated via the session cookie — back on the (reloaded)
+  // Settings page; navigate to the shelf for the playback assertions.
+  await page.getByRole('link', { name: 'Albums' }).click();
   await expect(page.getByRole('heading', { name: 'The shelf' })).toBeVisible({
     timeout: 20_000,
   });

@@ -5,7 +5,7 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { player, playerModel } from '../bootstrap';
-  import { fmtTime } from '../format';
+  import { fmtTime, qualityLine } from '../format';
   import Artwork from './Artwork.svelte';
   import WaveformSeek from './WaveformSeek.svelte';
   import type { Track } from '../api/types';
@@ -29,6 +29,24 @@ SPDX-License-Identifier: BSD-3-Clause
   /// includes the `waveform` field when the server populates it. Forward
   /// it through to the WaveformSeek component.
   const wfTrack = $derived<Track | null>(item?.track ?? null);
+  // Codec transparency: what is actually sounding (codec +, for lossless,
+  // rate/channels when probed). The manifest label wins when present.
+  const playingFormat = $derived(
+    item
+      ? qualityLine({
+          codec: item.codec,
+          sampleRate: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.codec.sampleRate ?? item.track.codec.sampleRate,
+          channels: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.codec.channels ?? item.track.codec.channels,
+          label: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.label,
+        })
+      : '',
+  );
 </script>
 
 {#if item}
@@ -38,7 +56,7 @@ SPDX-License-Identifier: BSD-3-Clause
         onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}>
       <div style="min-width:0">
         <div class="tt">{item.track.title}</div>
-        <div class="art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</div>
+        <div class="art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}{playingFormat ? ` · ${playingFormat}` : ''}</div>
       </div>
     </div>
 

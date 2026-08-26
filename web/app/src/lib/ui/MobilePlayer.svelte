@@ -5,7 +5,7 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { player, playerModel } from '../bootstrap';
-  import { fmtTime } from '../format';
+  import { fmtTime, qualityLine } from '../format';
   import WaveformSeek from './WaveformSeek.svelte';
   import type { Track } from '../api/types';
 
@@ -19,6 +19,23 @@ SPDX-License-Identifier: BSD-3-Clause
   const withinPos = $derived(Math.max(0, Math.min(trackDur, pos - trackStart)));
 
   const wfTrack = $derived<Track | null>(item?.track ?? null);
+  // Codec transparency (see PlayerBar): label + rate/channels when probed.
+  const playingFormat = $derived(
+    item
+      ? qualityLine({
+          codec: item.codec,
+          sampleRate: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.codec.sampleRate ?? item.track.codec.sampleRate,
+          channels: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.codec.channels ?? item.track.codec.channels,
+          label: (item.track.representations ?? []).find(
+            (r) => r.id === item.representationId,
+          )?.label,
+        })
+      : '',
+  );
 </script>
 
 {#if item}
@@ -54,7 +71,7 @@ SPDX-License-Identifier: BSD-3-Clause
         onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}>
       <button style="min-width:0;text-align:left" onclick={() => window.dispatchEvent(new CustomEvent('musicpack:queue'))}>
         <div class="tt">{item.track.title}</div>
-        <div class="art">{item.artist}</div>
+        <div class="art">{item.artist}{playingFormat ? ` · ${playingFormat}` : ''}</div>
       </button>
       <button aria-label="Previous track" onclick={() => void player.previous()}>
         <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14l-11-7z"/></svg>

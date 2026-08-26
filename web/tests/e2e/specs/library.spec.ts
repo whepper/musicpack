@@ -219,3 +219,23 @@ test('mobile viewport: hero actions wrap instead of overflowing', async ({ page 
     await expect(adds.nth(i)).toBeVisible();
   }
 });
+
+test('offline affordances: ⤓ badge on installed albums and "Available offline" shelf filter', async ({
+  page,
+}) => {
+  // Install Long Player through the UI, then verify both affordances.
+  await page.getByText('Long Player').click();
+  await expect(page.locator('.dl-control')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: /^Download Long Player for offline/ }).click();
+  await expect(page.locator('.dl-badge')).toHaveText(/Installed/, { timeout: 30_000 });
+
+  // Back to the shelf: the installed album shows the offline badge...
+  await page.getByRole('link', { name: 'MusicPack home' }).click();
+  const card = page.getByRole('listitem').filter({ hasText: 'Long Player' });
+  await expect(card.locator('.offline-badge')).toBeVisible();
+
+  // ...and the filter narrows the grid to exactly that album.
+  await page.getByRole('button', { name: 'Available offline' }).click();
+  await expect(page.locator('.shelf-grid [role="listitem"]')).toHaveCount(1);
+  await expect(page.locator('.shelf-grid').getByText('Long Player')).toBeVisible();
+});

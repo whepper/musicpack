@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseRoute } from '../../app/src/lib/router';
-import { fmtTime, yearOf, formatDate, countryName, mediumLabel, collectorLine } from '../../app/src/lib/format';
+import { fmtTime, yearOf, formatDate, countryName, mediumLabel, collectorLine, formatBytes, qualityLine } from '../../app/src/lib/format';
 
 describe('router', () => {
   it('parses all route shapes', () => {
@@ -50,5 +50,40 @@ describe('format', () => {
     expect(collectorLine({ year: '1990', media: ['CD'], releaseCount: 3 })).toBe('1990 · CD · 3 versions');
     expect(collectorLine({ year: '1986' })).toBe('1986');
     expect(collectorLine({})).toBe('');
+  });
+
+  it('formats byte sizes compactly', () => {
+    expect(formatBytes(undefined)).toBe('');
+    expect(formatBytes(null)).toBe('');
+    expect(formatBytes(0)).toBe('');
+    expect(formatBytes(-5)).toBe('');
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(1024)).toBe('1 kB');
+    expect(formatBytes(422_000)).toBe('412 kB');
+    expect(formatBytes(40_265_318)).toBe('38.4 MB');
+    expect(formatBytes(140_000_000)).toBe('134 MB'); // >=100 MB rounds to whole
+    expect(formatBytes(1_250_000_000)).toBe('1.16 GB');
+  });
+
+  it('builds quality lines from existing metadata only', () => {
+    // Musepack: family label only (rate/channels add nothing there).
+    expect(qualityLine({ codec: 'musepack-sv8' })).toBe('MPC');
+    expect(
+      qualityLine({ codec: 'musepack-sv8', sampleRate: 44100, channels: 2 }),
+    ).toBe('MPC');
+    // Lossless with probed facts.
+    expect(qualityLine({ codec: 'flac', sampleRate: 48000 })).toBe('FLAC · 48 kHz');
+    expect(
+      qualityLine({ codec: 'flac', sampleRate: 44100, channels: 2 }),
+    ).toBe('FLAC · 44.1 kHz · stereo');
+    expect(
+      qualityLine({ codec: 'wav', sampleRate: 96000, channels: 6 }),
+    ).toBe('WAV · 96 kHz · 6 ch');
+    // Manifest label wins over the derived codec name.
+    expect(qualityLine({ label: 'FLAC 24/96', codec: 'flac' })).toBe('FLAC 24/96');
+    expect(qualityLine({ label: '  ', codec: 'flac' })).toBe('FLAC');
+    // Absent/unknown metadata degrades honestly; never invents detail.
+    expect(qualityLine({ codec: 'flac' })).toBe('FLAC');
+    expect(qualityLine(undefined)).toBe('');
   });
 });

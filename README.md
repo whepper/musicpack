@@ -85,11 +85,15 @@ deliberately a *digital record shelf*, not a streaming catalogue:
 - **playback** through one controller over two backends: the Musepack
   demand-driven engine (SharedArrayBuffer reader → decoder workers → an
   AudioWorklet ring) for `.mpc`, and the browser's native media stack for
-  FLAC and other supported codecs
+  FLAC and other supported codecs — with a user-facing audio-quality
+  preference (automatic / lossless / codec family) and format labels on
+  what is playing
 - BS.1770 album/track normalization (default −16 LUFS, true-peak capped),
    **gapless album transitions**, a queue, Media Session, responsive waveform
-   seek controls when the package provides envelopes, and a responsive
-  mobile/desktop UI
+   seek controls when the package provides envelopes, complete-release
+   downloads for offline listening (integrity-checked, local-first), a
+   settings surface for audio-quality preference and storage management,
+   and a responsive mobile/desktop UI
 
 The client is a static Svelte 5 + Vite + TypeScript build served by
 `musicpack-server --static-dir web/app/dist`. See `web/README.md` for the

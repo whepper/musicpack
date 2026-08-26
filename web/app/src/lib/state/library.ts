@@ -104,6 +104,16 @@ export function createLibraryStore(api: ApiClient) {
       return detail;
     },
 
+    /** Bypasses the cache and overwrites it: update/reinstall actions must
+     *  consume the server's CURRENT content hashes, never the ones captured
+     *  when the page was first opened. */
+    async refreshRelease(id: number | string): Promise<ReleaseDetail> {
+      const key = String(id);
+      const detail = await api.release(id);
+      releaseCache.set(key, detail);
+      return detail;
+    },
+
     async artistDetail(id: number | string): Promise<ArtistDetail> {
       const key = String(id);
       const cached = artistCache.get(key);

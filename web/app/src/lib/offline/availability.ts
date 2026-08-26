@@ -25,11 +25,17 @@ export interface CandidateRef {
   representationId?: number;
 }
 
+/** Presentation lifecycle (UI-facing; the catalog's PackageStatus is the
+ *  storage-level truth). 'damaged' is set by the manager when the boot
+ *  audit stripped assets from a committed record — it is deliberately
+ *  distinct from 'stale' (server content changed): healing both is a fresh
+ *  install, but the copy differs ("Needs repair" vs "Update available"). */
 export type PackageUiState =
   | { state: 'not-installed' }
   | { state: 'downloading'; percent: number }
   | { state: 'installed' }
   | { state: 'stale' }
+  | { state: 'damaged' }
   | { state: 'failed'; reason: string };
 
 export function createAvailability(catalog: CatalogStore) {
@@ -94,6 +100,18 @@ export function createAvailability(catalog: CatalogStore) {
     if (pkg.status === 'installed') installed.set(pkg.releaseId, pkg);
   }
 
+  /** Album ids that hold at least one installed release (shelf badges and
+   *  the "Available offline" filter). Derived from the committed records'
+   *  release snapshots — no second index, no server parameter. */
+  function installedAlbumIds(): Set<number> {
+    const out = new Set<number>();
+    for (const pkg of installed.values()) {
+      const albumId = pkg.releaseDetail?.album?.id;
+      if (typeof albumId === 'number') out.add(albumId);
+    }
+    return out;
+  }
+
   return {
     hydrate,
     ready,
@@ -101,6 +119,7 @@ export function createAvailability(catalog: CatalogStore) {
     localKeyFor,
     packageFor,
     hasInstalled,
+    installedAlbumIds,
     forget,
     remember,
     /** Test/dev seam: drop all in-memory state (does not touch storage). */

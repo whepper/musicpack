@@ -112,6 +112,32 @@ describe('offline availability', () => {
     expect(av.localKeyFor(101, { kind: 'representation', representationId: 201 })).toBe('t.101.r.201');
     expect(av.localKeyFor(102, { kind: 'representation', representationId: 202 })).toBeNull();
   });
+
+  it('maps installed releases to their album ids for the shelf', async () => {
+    const catalog = memoryCatalog();
+    // Empty catalog: no albums.
+    const empty = createAvailability(catalog);
+    await empty.hydrate();
+    expect(empty.installedAlbumIds().size).toBe(0);
+
+    const pkg = installedFixture();
+    (pkg.releaseDetail as unknown as { album: { id: number } }).album = { id: 55 };
+    await catalog.putPackage(pkg);
+    const av = createAvailability(catalog);
+    await av.hydrate();
+    expect(av.installedAlbumIds()).toEqual(new Set([55]));
+
+    // A second release of the SAME album must not duplicate the id.
+    const pkg2: InstalledPackage = {
+      ...pkg,
+      releaseId: 8,
+      releaseDetail: { ...pkg.releaseDetail, id: 8 },
+    };
+    await catalog.putPackage(pkg2);
+    const av2 = createAvailability(catalog);
+    await av2.hydrate();
+    expect(av2.installedAlbumIds()).toEqual(new Set([55]));
+  });
 });
 
 describe('itemForTrack local-first source rule (D1)', () => {

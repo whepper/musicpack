@@ -62,6 +62,20 @@ function createSessionStore(api: ApiClient) {
       await api.createSession(token);
       store.set({ state: 'authenticated' });
     },
+    /** Reconnect probe for the 'online' event while in AuthState 'offline'.
+     *  Contract: success promotes to 'authenticated'; any failure leaves
+     *  state UNCHANGED — it must never demote an offline session to
+     *  sign-in. */
+    async reattempt(): Promise<boolean> {
+      if (store.get().state !== 'offline') return false;
+      try {
+        await api.session();
+        store.set({ state: 'authenticated' });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async logout(): Promise<void> {
       try {
         await api.logout();
