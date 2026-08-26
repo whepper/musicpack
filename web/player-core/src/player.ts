@@ -678,10 +678,20 @@ export class Player {
     // track for a moment while the cursor has already advanced. While a
     // crossfade owns the boundary the transition itself advances the cursor,
     // so the catch-up must stand down to avoid racing it through extra tracks.
+    // It is also capped at ONE step beyond the cursor, and only onto a
+    // track whose own length is known: when later tracks' lengths are
+    // unknown their offsets collapse onto the current end, so
+    // currentIndexAt() reports the LAST such index — adopting it skipped
+    // straight to that track (song 1 -> last-song jump). Without a real
+    // length under the target the album clock simply cannot prove a
+    // boundary there; EOS/load owns the handoff instead.
     if (idx > qi && !this.pendingEnded && !this.crossfadeInProgress) {
-      this.mutating = true;
-      this.queue.moveTo(idx);
-      this.mutating = false;
+      const target = Math.min(idx, qi + 1);
+      if (this.lengthOf(target) > 0) {
+        this.mutating = true;
+        this.queue.moveTo(target);
+        this.mutating = false;
+      }
     }
     const offs = this.offsets();
     const trackStart = offs[idx] ?? 0;

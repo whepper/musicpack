@@ -60,6 +60,9 @@ function makePlayer(opts: {
   standbyItemId?: string;
   /** Content-aware policy port under test (Sweet Fades). */
   planTransition?: ConstructorParameters<typeof Player>[1]['planTransition'];
+  /** Simulate a failed/gapped standby: prepareNext never yields a length,
+   *  so every successor's offset collapses onto the previous track's end. */
+  standbyFails?: boolean;
 }): { player: Player; h: Harness; queue: ReturnType<typeof createQueueModel> } {
   const queue = createQueueModel({ rng: () => 0.5 });
   /** Exact decoded length the fake engine reports for an item. */
@@ -112,7 +115,7 @@ function makePlayer(opts: {
         },
         init: async () => undefined,
         open: async (it: PlaybackItem) => infoFor(it),
-        prepareNext: async (it: PlaybackItem) => infoFor(it),
+        prepareNext: async (it: PlaybackItem) => (opts.standbyFails ? null : infoFor(it)),
         advance: async (expected?: PlaybackItem | null) =>
           // Standby/policy agreement: without a prepared-item model this
           // fake promotes only when an expectation was supplied (the real
@@ -577,6 +580,65 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
       h.handlers.tick();
       await flush();
       expect(queue.get().index).toBe(1);
+    });
+
+    // With every successor's length unknown (no hint + failed standby), the
+    // offset table collapses onto the current track's end and currentIndexAt
+    // maps ANY later position onto the LAST queue index. One tick past song
+    // 1 then teleports the cursor to song 6 (legacy bug reproduced below);
+    // the catch-up may adopt at most ONE proven step beyond the cursor.
+    it('never rides a collapsed offset table to the last track', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, standbyFails: true });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3), item(4), item(5), item(6)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Deep inside the collapsed region: every successor shares song 1's
+      // end offset here. No proven boundary ahead -> stand down entirely;
+      // EOS/load owns the handoff. Legacy code jumped straight to song 6.
+      h.rendered = 91 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(0);
+      expect(player.model.get().current?.id).toBe('t1');
+    });
+
+    it('caps the catch-up at exactly one step when the successor is provable', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, standbyFails: true });
+      player.init();
+      // Song 2 carries a real hint; songs 3-6 none. At 91 s the offset
+      // table still reports song 6 (offs[2..5] share one instant), but
+      // song 2's start is provable, so the cap must clamp to it.
+      await player.playSequence([item(1), mk(2, 30), item(3), item(4), item(5), item(6)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      h.rendered = 91 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(queue.get().index).toBe(1);
+      // Cursor-only sync: model.current keeps lagging until onEos() runs
+      // its full handoff bookkeeping.
+      expect(player.model.get().current?.id).toBe('t1');
+    });
+
+    it('stands down while no successor duration is known', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, standbyFails: true });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3), item(4), item(5), item(6)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Repeated far-future ticks across every collapsed instant: the
+      // clock can never prove the next boundary, so the cursor must never
+      // creep toward the last track.
+      for (const secs of [31, 61, 91, 181, 600]) {
+        h.rendered = secs * RATE;
+        h.handlers.tick();
+        await flush();
+        expect(queue.get().index).toBe(0);
+      }
     });
 
     it('does not move the cursor via tick catch-up while a crossfade is in progress', async () => {
