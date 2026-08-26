@@ -908,7 +908,34 @@ export class Player {
     // otherwise the boundary already happened and the EOS path owns it.
     const rate = this.rate();
     if (remaining <= END_TOLERANCE_SAMPLES) return false;
-    const overlapSeconds = Math.min(this.crossfadeSeconds, remaining / rate);
+    // Content-aware like the positional trigger: ask the planner for the
+    // overlap, then clamp to the audio that is actually left. Without a port
+    // (or with no content data) the planner degrades to the fixed cap below.
+    const maxOverlap = Math.min(this.crossfadeSeconds, remaining / rate);
+    let overlapSeconds = maxOverlap;
+    let decline = false;
+    if (this.ports.planTransition) {
+      const outgoing = this.queue.at(qi);
+      const plan = outgoing
+        ? this.ports.planTransition({
+            outgoing,
+            incoming: target.item,
+            maxFadeSeconds: maxOverlap,
+            // The outer guard already excluded repeat-one.
+            repeatOne: false,
+          })
+        : null;
+      if (plan?.type === 'sweet-fade') {
+        // The planner is bounded by maxOverlap, but clamp defensively: the
+        // fade can never exceed the audio that is actually left to play.
+        overlapSeconds = Math.min(plan.overlapSeconds, maxOverlap);
+      } else {
+        // gapless / hard-cut: no overlapped transition — let the normal EOS
+        // handoff own the boundary.
+        decline = true;
+      }
+    }
+    if (decline || overlapSeconds <= 0) return false;
     await this.beginCrossfadeTransition(overlapSeconds, seq);
     return this.queue.get().index !== qi;
   }

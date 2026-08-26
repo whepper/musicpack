@@ -440,6 +440,71 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
     expect(player.model.get().current?.id).toBe('t1');
   });
 
+  it('consults the planner on the EOS-race path and uses the planned overlap', async () => {
+    const { player, h } = makePlayer({
+      crossfadeCapable: true,
+      planTransition: () => ({ type: 'sweet-fade', overlapSeconds: 3 }),
+    });
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+    // Decode raced ahead: worker EOS arrives before any positional tick.
+    h.handlers.eos();
+    await flush();
+    expect(h.beginCrossfade).toHaveBeenCalledTimes(1);
+    // Planner's 3 s is used, NOT the raw 8 s cap.
+    expect(h.beginCrossfade.mock.calls[0]?.[1]).toBe(3);
+    expect(player.model.get().current?.id).toBe('t2');
+  });
+
+  it('clamps the planned EOS overlap to the audio actually left', async () => {
+    const { player, h } = makePlayer({
+      crossfadeCapable: true,
+      // Ask for more than remains; the path must clamp to remaining audio.
+      planTransition: () => ({ type: 'sweet-fade', overlapSeconds: 12 }),
+    });
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(12);
+    await primeAndPlay(h);
+    // Render most of the track so only ~5 s remains at the EOS.
+    h.rendered = 25 * RATE;
+    h.handlers.eos();
+    await flush();
+    expect(h.beginCrossfade).toHaveBeenCalledTimes(1);
+    // Clamped to remaining (~5 s), not the planned 12 s.
+    expect(h.beginCrossfade.mock.calls[0]?.[1]).toBeCloseTo(5, 1);
+    expect(h.beginCrossfade.mock.calls[0]?.[1] ?? 0).toBeLessThan(6);
+  });
+
+  it('declines an EOS gapless/hard-cut plan and hands off normally', async () => {
+    const { player, h, queue } = makePlayer({
+      crossfadeCapable: true,
+      planTransition: () => ({ type: 'gapless' }),
+    });
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+    h.handlers.eos();
+    await flush();
+    // No overlapped transition: the fade is never started.
+    expect(h.beginCrossfade).not.toHaveBeenCalled();
+    // The normal EOS handoff still advances exactly once.
+    expect(queue.get().index).toBe(1);
+    expect(player.model.get().current?.id).toBe('t2');
+  });
+
+  it('keeps the fixed-cap fallback on EOS when no planner is wired', async () => {
+    const { player, h } = makePlayer({ crossfadeCapable: true });
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+    h.handlers.eos();
+    await flush();
+    expect(h.beginCrossfade).toHaveBeenCalledTimes(1);
+    // No port → legacy fixed behaviour: min(cap 8 s, remaining 30 s) = 8 s.
+    expect(h.beginCrossfade.mock.calls[0]?.[1]).toBe(8);
+  });
+
   it('progresses through short tracks into a normal track without stalling', async () => {
     const { player, h } = makePlayer({ crossfadeCapable: true });
     await player.playSequence([mk(1, 48), mk(2, 1), mk(3, 1), mk(4, 48)], 'AL', 'A');

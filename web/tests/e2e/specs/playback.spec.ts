@@ -626,9 +626,16 @@ test('chained musepack fades keep advancing through later boundaries (BUG-1)', {
   monotonic(samples);
 
   const xf = await xfState(page);
-  expect(xf.calls).toBeGreaterThanOrEqual(1); // the opener boundary faded
-  expect(xf.result).toBe('taken');
-  // BUG-1 GUARD: at least one boundary AFTER a taken fade must advance.
+  // The EOS path is now content-aware (Smart Fades): same-release
+  // constant-amplitude (sine) tracks join gaplessly, so the opener boundary
+  // may correctly decline a fade. The BUG-1 invariant is that boundaries KEEP
+  // advancing (no hang) regardless of whether each boundary fades or goes
+  // gapless — that is what the chained-advancement guard below asserts.
+  if (xf.calls > 0) {
+    // Any fade that did engage must have been taken, never left dangling.
+    expect(xf.result).toBe('taken');
+  }
+  // BUG-1 GUARD: at least one boundary after the opener must advance.
   expect(lastIndex).toBeGreaterThanOrEqual(2);
   expect(seen.size).toBeGreaterThanOrEqual(2);
   expect(last?.error).toBeUndefined();

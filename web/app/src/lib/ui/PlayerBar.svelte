@@ -130,8 +130,8 @@ SPDX-License-Identifier: BSD-3-Clause
       </button>
       <button
         class="smallcaps"
-        aria-label={`Crossfade: ${$playerModel.crossfadeSeconds === 0 ? 'off' : `${$playerModel.crossfadeSeconds} seconds`}. Click to change.`}
-        title="Crossfade"
+        aria-label={`${$playerModel.crossfadeSeconds === 0 ? 'Crossfade off' : `Maximum Crossfade: ${$playerModel.crossfadeSeconds} s`} (Smart Fades adapt to the music). Click to change.`}
+        title={`${$playerModel.crossfadeSeconds === 0 ? 'Crossfade off' : `Maximum Crossfade: ${$playerModel.crossfadeSeconds} s`} (Smart Fades adapt to the music)`}
         style={$playerModel.crossfadeSeconds > 0 ? 'color:var(--accent,#b0632f)' : ''}
         onclick={() =>
           player.setCrossfade(
