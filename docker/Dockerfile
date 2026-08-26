@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # ---- 1. WASM decoder module (Emscripten) --------------------------------
-FROM emscripten/emsdk:3.1.50 AS wasm
+FROM emscripten/emsdk:6.0.6 AS wasm
 WORKDIR /src
 COPY . .
 RUN emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
