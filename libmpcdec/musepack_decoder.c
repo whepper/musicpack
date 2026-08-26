@@ -174,7 +174,7 @@ musepack_decoder_get_stream_info(const musepack_decoder *d, musepack_stream_info
     tmp.peak_title       = d->si.peak_title;
     tmp.peak_album       = d->si.peak_album;
     tmp.encoder_version  = d->si.encoder_version;
-    snprintf(tmp.encoder, sizeof tmp.encoder, "%s", d->si.encoder);
+    snprintf(tmp.encoder, sizeof tmp.encoder, "%.63s", d->si.encoder);
     snprintf(tmp.profile_name, sizeof tmp.profile_name, "%s",
              d->si.profile_name != 0 ? d->si.profile_name : "n.a.");
 

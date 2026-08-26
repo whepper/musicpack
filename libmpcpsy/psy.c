@@ -748,6 +748,7 @@ CalcMSThreshold ( PsyModel* m,
             break;
         default:
             fprintf ( stderr, "Unknown stereo mode\n");
+            /* fall through */
         case 10:
             if ( 4. * ergL[n] > ergR[n]   &&  ergL[n] < 4. * ergR[n] ) {// Energy between both channels differs by less than 6 dB
                 norm = 0.70794578f * iw[n];  // -1.5 dB * iwidth

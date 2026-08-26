@@ -33,6 +33,23 @@ set(MPC_PSY_SIMD_ENABLED ${MPC_PSY_SIMD_ENABLED} CACHE INTERNAL
 
 target_link_libraries(mpcpsy PUBLIC mpc_headers)
 
+# profile.c: the leading entries of the static Profiles[16] lookup table use
+# the canonical `{ 0 }` aggregate initializer, which -Wmissing-field-
+# initializers (from -Wextra) flags even though `{ 0 }` fully zero-initializes
+# the struct. The table is read-only static data, so suppress the diagnostic.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/profile.c
+    PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-missing-field-initializers>")
+
+# fft_routines_simd.c: the magnitude/power loops index a[2*i] with `i` an int
+# bounded by a small constant (<=1024). -Waggressive-loop-optimizations
+# assumes the int bound can make 2*i overflow and warns; the loop is provably
+# bounded at runtime. Changing the loop index types would risk the bit-exact
+# SIMD output, so suppress the diagnostic for this file.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/fft_routines_simd.c
+    PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-aggressive-loop-optimizations>")
+
 # Optimized math tables + CVD fast log. Must stay consistent with mpcenc,
 # which also uses the FAST_MATH path.
 target_compile_definitions(mpcpsy PUBLIC FAST_MATH CVD_FASTLOG)

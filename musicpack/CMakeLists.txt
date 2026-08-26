@@ -23,6 +23,20 @@ set_source_files_properties(
     ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson/cJSON.c
     PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>")
 
+# The CLI builds filesystem paths by chained snprintf() of the form
+# out_dir + "/subdir" + "/NN - <title>.<ext>". GCC's -Wformat-truncation
+# assumes every %s argument can be a full MUSICPACK_PATH_MAX path and so
+# concludes the fixed-size buffers could overflow; this is a known false
+# positive for path joining where the inputs are already bounded by
+# MUSICPACK_PATH_MAX. The buffers are sized to hold a single full path plus
+# suffix, so suppress the diagnostic for the tool sources rather than inflate
+# every buffer to multiples of MUSICPACK_PATH_MAX.
+set_source_files_properties(
+    ${PROJECT_SOURCE_DIR}/musicpack/main.c
+    ${PROJECT_SOURCE_DIR}/musicpack/draft.c
+    ${PROJECT_SOURCE_DIR}/musicpack/tool_path.c
+    PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-format-truncation>")
+
 # Historical-ish binary name "musicpack" (target is musicpack_cmd to avoid
 # clashing with the musicpack library target).
 set_target_properties(musicpack_cmd PROPERTIES OUTPUT_NAME musicpack)
