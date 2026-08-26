@@ -28,8 +28,10 @@ use std::time::{Duration, Instant};
 /// Version 2 adds `encode-draft`; version 3 removes its `--ffmpeg` argument
 /// (FLAC/WAV decode is native); version 4 moves MusicBrainz transport here;
 /// version 6 adds package open (`inspect` on an .mpack) and in-place save
-/// (`build-draft --replace --sync-tags`).
-const EXPECTED_AUTHOR_API: u32 = 6;
+/// (`build-draft --replace --sync-tags`); version 7 keeps track
+/// `representations[]` in the draft so Author saves preserve the Phase 3
+/// alternates.
+const EXPECTED_AUTHOR_API: u32 = 7;
 
 #[derive(Debug, Clone)]
 pub enum AuthorError {
@@ -883,9 +885,9 @@ mod tests {
     #[test]
     fn handshake_accepts_matching_api() {
         let info =
-            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\n")
+            AuthorService::parse_author_api("{\"musicpackVersion\":\"0.1.0\",\"authorApi\":7}\n")
                 .unwrap();
-        assert_eq!(info.author_api, 6);
+        assert_eq!(info.author_api, 7);
         assert_eq!(info.musicpack_version, "0.1.0");
     }
 
@@ -896,7 +898,7 @@ mod tests {
                 .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("author API 3"), "{msg}");
-        assert!(msg.contains("requires 6"), "{msg}");
+        assert!(msg.contains("requires 7"), "{msg}");
     }
 
     #[test]
@@ -912,11 +914,11 @@ mod tests {
         let bin = make_cli(
             tmp.path(),
             "MacOS",
-            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\\n'\n",
+            "#!/bin/sh\nprintf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":7}\\n'\n",
         );
         let mut service = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
         let info = service.ensure_handshake().unwrap();
-        assert_eq!(info.author_api, 6);
+        assert_eq!(info.author_api, 7);
         // Cached: a second call still succeeds.
         assert!(service.ensure_handshake().is_ok());
     }
@@ -1199,7 +1201,7 @@ mod tests {
             "MacOS",
             "#!/bin/sh\n\
              if [ \"$1\" = \"author-api-version\" ]; then\n\
-             printf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":6}\\n'\n\
+             printf '{\"musicpackVersion\":\"0.1.0\",\"authorApi\":7}\\n'\n\
              exit 0\n\
              fi\n\
              printf '%s\\n' \"$@\" > \"$MUSICPACK_TEST_ARGV\"\nprintf '{}'\n",
