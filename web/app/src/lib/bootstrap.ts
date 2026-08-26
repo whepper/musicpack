@@ -18,6 +18,7 @@ import { createTransitionPlanner } from './playback/transition-profiles';
 import { createRouter, type Router } from './router';
 import { createOfflineManager } from './offline/manager';
 import { offlineAwareStorage } from './offline/snapshot-storage';
+import { repairingStorage } from './playback/duration-repair-storage';
 
 export const api = new ApiClient({});
 export const session: SessionStore = bindSession(api);
@@ -58,17 +59,19 @@ export const player = new PlayerController(queue, {
   planTransition: (query) => transitionPlanner.plan(query),
   selection: currentSelection,
   // Restored sessions play installed content locally (D1) without the
-  // core learning anything about offline state.
+  // core learning anything about offline state. Repair of hint-less
+  // durations composes INSIDE the offline remap: the transforms are
+  // disjoint (hints vs source), so nesting order is irrelevant.
   storage: offline.enabled
     ? offlineAwareStorage(
-        {
+        repairingStorage({
           get: () => (typeof localStorage === 'undefined' ? null : localStorage.getItem('musicpack.player.v1')),
           set: (v) => {
             if (typeof localStorage === 'undefined') return;
             if (v === null) localStorage.removeItem('musicpack.player.v1');
             else localStorage.setItem('musicpack.player.v1', v);
           },
-        },
+        }),
         { localKeyFor: (trackId, candidate) => offline.availability.localKeyFor(trackId, candidate) },
       )
     : undefined,

@@ -29,6 +29,7 @@ import { bindMediaActions, setMediaMetadata, setMediaPosition } from './media-se
 import { browserSupportsMime, isMusepackCodec } from './capability';
 import { MusepackEngine } from './musepack-engine';
 import { NativeBackend } from './native-backend';
+import { repairingStorage } from './duration-repair-storage';
 import type { QueueItem, QueueStore, SelectionContext } from '../state/queue';
 import type { PlayerEvent } from '../../../../player-core/src/events';
 
@@ -179,7 +180,7 @@ export class PlayerController {
       storage:
         (opts.storage as StoragePort | undefined) ??
         o.portsOverride?.storage ??
-        localStoragePort(),
+        repairingStorage(localStoragePort()),
       mediaControls,
       // Host-owned clock + timer (core purity law 2). Looked up dynamically
       // so fake timers in tests intercept these as intended.

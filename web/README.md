@@ -298,6 +298,19 @@ single-track repeat-all loop, never manual skips or seeks.
   seam instead of fading. The historical short-track progression stall was
   root-caused (a lost decode-pump credit) and fixed; boundaries now advance
   exactly once even across rapid sub-fade-length tracks.
+- **Deterministic end-of-track queue jump (fixed):** with crossfade OFF, a
+  queue whose future items carried no `durationHintSeconds` collapsed every
+  later track's offset onto the current track's end; a single rendered tick
+  past that instant then reported the LAST such index and playback jumped
+  from song 1 straight to the last song. Two layers address it: player-core
+  caps the tick catch-up at one proven step (d23e8ad), and restored
+  snapshots are healed by `repairingStorage()` — missing/invalid hints are
+  re-derived from the persisted item's own `track.duration`, never
+  invented. Snapshots persisted before the player-core extraction (bare
+  `{track,...}` items) are rejected at restore instead of being
+  resurrected as unplayable entries. Follow-ups: server-side ingest
+  duration backfill for legacy packages (opt-in migration, header-only);
+  audit of hint sample-rate scaling for non-device-rate sources.
 
 ## BS.1770 loudness normalization
 

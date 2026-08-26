@@ -23,7 +23,14 @@ export const SNAPSHOT_VERSION_V1 = 1;
 export interface SnapshotItemBase {
   /** Minimal identity contract for restoration; hosts may persist richer
    *  item shapes verbatim (the web persists QueueItems). */
-  track?: { id?: number; audio?: { url?: string } };
+  track?: { id?: number; audio?: { url?: string }; duration?: number };
+  /** Modern item identity. Writers since the player-core extraction
+   *  (c5bf447) always emit these; the restorer requires them so payloads
+   *  persisted by PRE-extraction bundles (bare `{track,...}` items) are
+   *  dropped wholesale instead of restoring unplayable queue entries that
+   *  a later persist would write back over good storage. */
+  id?: string;
+  source?: { kind?: string; url?: string };
 }
 
 export interface SessionSnapshotV1 extends SnapshotItemBase {
@@ -52,10 +59,16 @@ export interface SessionSnapshot {
 
 function isRestorableItem(item: unknown): item is SnapshotItemBase {
   return (
-    !!item &&
     typeof item === 'object' &&
-    !!(item as SnapshotItemBase).track?.audio?.url &&
-    typeof (item as SnapshotItemBase).track?.id === 'number'
+    !!item &&
+    typeof (item as SnapshotItemBase).id === 'string' &&
+    ((item as SnapshotItemBase).id as string).length > 0 &&
+    !!(item as SnapshotItemBase).source &&
+    typeof (item as SnapshotItemBase).source?.kind === 'string' &&
+    typeof (item as SnapshotItemBase).source?.url === 'string' &&
+    ((item as SnapshotItemBase).source?.url as string).length > 0 &&
+    typeof (item as SnapshotItemBase).track?.id === 'number' &&
+    !!(item as SnapshotItemBase).track?.audio?.url
   );
 }
 

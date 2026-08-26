@@ -746,5 +746,67 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
       expect(queue.get().index).toBe(2);
       expect(player.model.get().current?.id).toBe('t3');
     });
+
+    // Duration-hint repair coexistence (see duration-repair-storage):
+    // with every successor's hint present, offsets stay strictly increasing
+    // and boundary ownership walks EXACTLY one track per handoff — the
+    // pre-repair collapse geometry is impossible on healthy data.
+    it('healthy hinted queues keep offsets increasing and walk sequentially', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30), mk(4, 30), mk(5, 30), mk(6, 30)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(player.model.get().durationSeconds).toBeCloseTo(180, 3);
+
+      const starts: number[] = [0];
+      for (let i = 1; i < 6; i++) {
+        if (i === 1) {
+          h.rendered = 31 * RATE;
+          h.handlers.tick();
+          await flush();
+        } else {
+          h.handlers.eos();
+          await flush();
+        }
+        expect(queue.get().index).toBe(i); // exactly one step per boundary
+        const start = player.model.get().currentTrackStartSeconds;
+        expect(start).toBeCloseTo(30 * i, 3);
+        starts.push(start);
+        expect(starts[starts.length - 1]!).toBeGreaterThan(starts[starts.length - 2]!);
+      }
+      expect(player.model.get().durationSeconds).toBeCloseTo(180, 3);
+
+      // Termination still ends the session cleanly at the drained end.
+      h.rendered = 181 * RATE;
+      h.handlers.eos();
+      await flush();
+      h.handlers.tick();
+      await flush();
+      expect(player.model.get().state).toBe('ended');
+    });
+
+    // Repair supplies truth for the IMMEDIATE successor while later tracks
+    // stay unknown: the catch-up may adopt that one provable step (positive
+    // length under it) yet must never ride the remaining collapsed region.
+    it('adopting a repaired successor never unlocks the collapsed tail (coexistence)', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false, standbyFails: true });
+      player.init();
+      await player.playSequence([item(1), mk(2, 25), item(3), item(4), item(5), item(6)], 'AL', 'A');
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      for (const secs of [31, 61, 91, 181]) {
+        h.rendered = secs * RATE;
+        h.handlers.tick();
+        await flush();
+        expect(queue.get().index).toBe(1); // provable step taken once; tail locked
+      }
+      // EOS chain remains the sole owner past the provable boundary.
+      for (const id of ['t3', 't4', 't5', 't6']) {
+        h.handlers.eos();
+        await flush();
+        expect(queue.get().index).toBe(queue.get().items.findIndex((it) => it.id === id));
+      }
+    });
   });
 });

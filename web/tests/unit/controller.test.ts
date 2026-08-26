@@ -797,7 +797,10 @@ describe('PlayerController', () => {
       JSON.stringify({
         v: 1,
         items: [
-          { track: { id: 11, audio: { url: '/api/v1/tracks/11/audio' } }, releaseId: 9, albumId: 1, albumTitle: 'A', artist: 'X' },
+          // v1 policy era (pre-repeat/shuffle fields); items still carry the
+          // modern identity the restorer requires — bare pre-c5bf447 shapes
+          // are rejected wholesale (see snapshot.test.ts).
+          { id: 't11', source: { kind: 'http-range', url: '/api/v1/tracks/11/audio', byteSize: 100 }, track: { id: 11, audio: { url: '/api/v1/tracks/11/audio' } }, releaseId: 9, albumId: 1, albumTitle: 'A', artist: 'X' },
         ],
         index: 0,
         positionSeconds: 4,
