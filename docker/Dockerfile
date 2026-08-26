@@ -34,7 +34,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DMPC_BUILD_MPCGAIN=OFF -DMPC_BUILD_MPCCHAP=OFF \
  && cmake --build build -j"$(nproc)" \
  && find build \( -name 'libmusicpack.so*' -o -name 'libmusepack.so*' \) \
-      -exec cp {} /usr/local/lib/ \; && ldconfig
+      -exec cp -P {} /usr/local/lib/ \; && ldconfig
 
 # ---- 4. Runtime image ----------------------------------------------------
 FROM debian:bookworm-slim AS runtime
