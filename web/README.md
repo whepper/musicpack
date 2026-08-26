@@ -114,6 +114,26 @@ node tests/perf/perf.mjs   # performance report
 The `web_wasm_gapless` ctest (registered under the wasm build) runs the Node
 harness in CI.
 
+### E2E / CI reliability notes
+
+Known test-infra behavior, recorded so future investigation starts in the
+right place — neither item indicates a production defect:
+
+- **Offline journey (`offline.spec.ts` "download once via the UI…")** is
+  intentionally an end-to-end integration test: it exercises real
+  network-severance, the service-worker shell, OPFS storage and session
+  restore together. It has exhibited intermittent **CI-only** failures
+  during offline mid-album reload/resume while passing consistently in
+  local CI-mode runs (including full-suite repetitions). If the failure
+  recurs, investigate **test synchronization around restored
+  playback/session state** before touching production offline or player
+  code.
+- **`playback.spec.ts` "removing the playing queue item…"** has a
+  documented load race (asserting player state while the core may still be
+  loading the neighbor). It is **pre-existing** and was observed flaking on
+  CI commits *before* the Offline & Representation UX milestone; it passes
+  on retry.
+
 ## Gapless and native playback notes
 
 - **Musepack (exact):** two decoder workers — the current track's worker and a
