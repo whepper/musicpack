@@ -218,9 +218,9 @@ immutable).
 cmake -S . -B build -DMPC_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j --target mpcenc mpc_enc_synth_ab
 python3 tests/generate_encoder_corpus.py /tmp/enc-corpus
-bash tests/run_enc_compat.sh build/mpcenc/mpcenc            # manifest mode
-bench/encode_bench.sh /tmp/enc-corpus build/mpcenc/mpcenc 5,6,7 3
-build/mpcenc/mpcenc --silent --overwrite --impl scalar --quality 6 in.wav a.mpc
-build/mpcenc/mpcenc --silent --overwrite --impl simd   --quality 6 in.wav b.mpc
+bash tests/run_enc_compat.sh build/codec/mpcenc/mpcenc            # manifest mode
+bench/encode_bench.sh /tmp/enc-corpus build/codec/mpcenc/mpcenc 5,6,7 3
+build/codec/mpcenc/mpcenc --silent --overwrite --impl scalar --quality 6 in.wav a.mpc
+build/codec/mpcenc/mpcenc --silent --overwrite --impl simd   --quality 6 in.wav b.mpc
 cmp a.mpc b.mpc                                            # byte-identical
 ```

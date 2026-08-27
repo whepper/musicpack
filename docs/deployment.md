@@ -545,7 +545,7 @@ server {
 
 ## 12. systemd service
 
-A production-grade unit ships at `packaging/systemd/musicpack-server.service`
+A production-grade unit ships at `platform/packaging/systemd/musicpack-server.service`
 (plus an optional environment template `musicpack-server.env.example`). It
 runs as the dedicated unprivileged `musicpack` user, binds loopback, uses
 explicit paths, restarts on failure, and hardens the process.
@@ -558,7 +558,7 @@ sudo mkdir -p /srv/musicpack/library /srv/musicpack/data \
              /srv/musicpack/incoming /srv/musicpack/web
 sudo chown -R musicpack:musicpack /srv/musicpack/data /srv/musicpack/incoming
 
-sudo cp packaging/systemd/musicpack-server.service /etc/systemd/system/
+sudo cp platform/packaging/systemd/musicpack-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now musicpack-server
 ```
@@ -692,4 +692,4 @@ MUSICPACK_LOG=info
 If you use it, remove the corresponding `--library/--database/--listen/--port`
 flags from the unit's `ExecStart` (flags win over the environment), and keep
 `--static-dir` explicit since there is no `MUSICPACK_STATIC_DIR` variable.
-A template ships at `packaging/systemd/musicpack-server.env.example`.
+A template ships at `platform/packaging/systemd/musicpack-server.env.example`.

@@ -186,7 +186,7 @@ browser conditions.
 ```sh
 cmake -S . -B build -DMPC_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release   # SIMD on (default)
 cmake --build build -j --target mpc_bench mpcenc
-bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
+bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/codec/mpcenc/mpcenc"
 bench/run_bench.sh /tmp/mpc-bench                                   # scalar + simd
 # wasm matrix (3 configs) and methodology: bench/README.md
 ```

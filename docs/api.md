@@ -8,7 +8,7 @@ JNI (Android) wrappers.
 Header layout:
 
 ```text
-include/musepack/
+codec/include/musepack/
 ├── musepack.h      umbrella header (include this one)
 ├── decoder.h       opaque musepack_decoder session API
 ├── reader.h        input abstraction (mpc_reader) + memory adapter
@@ -273,4 +273,4 @@ pointer) and were fixed by honoring the documented buffer contract with
 leading pad bytes in `tests/unit_tests.c` and `mpccut.c`. The demux satisfies
 the contract by embedding its buffer in a larger zero-initialized struct, so
 its backward reads stay inside the allocation; this is documented in
-`libmpcdec/mpc_bits_reader.h`.
+`codec/libmpcdec/mpc_bits_reader.h`.

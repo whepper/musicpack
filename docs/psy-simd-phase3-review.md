@@ -93,7 +93,7 @@ ctest --test-dir build-enc-rel -R '^(psy_ab|enc_ab|synth_ab)$' --output-on-failu
 ctest --test-dir /tmp/psy-gcc14 -R '^(psy_ab|enc_ab|synth_ab)$' --output-on-failure
 # 3/3 pass, GCC 14 Release
 
-tests/run_enc_compat.sh build-enc-rel/mpcenc/mpcenc /tmp/ref-build/mpcenc/mpcenc
+tests/run_enc_compat.sh build-enc-rel/codec/mpcenc/mpcenc /tmp/ref-build/mpcenc/mpcenc
 # 282/282 q5/q6/q7 outputs byte-identical
 
 ctest --test-dir build-enc-rel -E '^compat$' --output-on-failure
