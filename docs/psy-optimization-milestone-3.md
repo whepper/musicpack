@@ -85,3 +85,17 @@ exact optimizations remain justified by measured 5-10% end-to-end gains.
 
 The final verdict is **COMPLETE**. Stop here; the measured FFT share does not
 justify the planned broader FFT rewrite.
+
+## Follow-up: final psychoacoustic SIMD investigation (encoder track closed)
+
+A later, finer-grained investigation (`docs/psy-optimization-final.md`) profiled
+the individual functions inside `Psychoakustisches_Modell` on **both** ARM64 and
+x86-64 (the x86-64 per-function attribution was previously missing; see
+`docs/measurements/psy-model-profile/x86_64-rosetta.md`). It showed the five
+suspected candidates (`CalcUnpred`, `SubbandEnergy`, `ApplyLtq`, `CalculateSMR`,
+`PreechoControl`) are each ≤3.4% of encoder CPU and mostly libm-bound
+(`cos`/`sqrt`/`pow`) or branchy/data-dependent, while the dominant cost
+`CVD2048` was already vectorized at the cepstrum-FFT level and its remaining
+cross-correlation/max-search internals were already ruled out as not
+bit-exact-vectorizable. **No further SIMD was justified; the encoder SIMD
+optimization track is formally closed.**
