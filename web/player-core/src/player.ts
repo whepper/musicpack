@@ -559,6 +559,13 @@ export class Player {
     // clamped to the audio that is actually left; on decline/failure the
     // normal gapless handoff below runs unchanged.
     if (await this.tryFadeAtEos(seq)) return;
+    // This eos's own fade attempt declined, but ANOTHER fade owns this
+    // exact boundary (positional trigger priming/mixing): that owner
+    // performs the advancement. Running the gapless handoff here would
+    // double-step the cursor past its head ("track N -> N+1 -> instantly
+    // N+2"). Eoses belonging to LATER tracks are unaffected: by then the
+    // owner has finished and crossfadeInProgress is false again.
+    if (this.crossfadeInProgress) return;
     const engine = this.engine;
     // The policy target as of NOW — not what the standby happened to be
     // prepared with. The engine refuses (and the recovery branch below

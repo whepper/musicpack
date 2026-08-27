@@ -918,5 +918,64 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
       expect(queue.get().index).toBe(0);
       expect(player.model.get().current?.id).toBe('t1'); // reload semantics win
     });
+
+    // Crossfade ON, chained boundaries (the 2 -> 3 -> "instantly" 4 report):
+    // a second decoder eos arriving WHILE a fade owns the current boundary
+    // must be swallowed by the owner, never run as a competing gapless
+    // handoff over the same stale cursor/standby pair.
+    it('R6: an eos arriving while a fade owns the boundary is swallowed', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30)], 'AL', 'A');
+      player.setCrossfade(4);
+      await primeAndPlay(h);
+      expect(queue.get().index).toBe(0);
+
+      // Positional trigger starts the 2->3 fade; beginCrossfade parks on
+      // resolveFade (fade OWNS this boundary from here).
+      h.rendered = 27 * RATE;
+      h.handlers.tick();
+      await flush();
+      expect(h.beginCrossfade).toHaveBeenCalledOnce();
+
+      // Duplicate/late eos lands during the held fade (synthetic-eos
+      // misfire class). It must not run a second boundary handoff.
+      h.handlers.eos();
+      await flush();
+      expect(queue.get().index).toBe(0);
+
+      // Owner completes: exactly ONE advance results for the whole episode.
+      h.resolveFade!({ ...FADE_OK });
+      await flush();
+      expect(queue.get().index).toBe(1);
+      expect(player.model.get().current?.id).toBe('t2');
+      expect(h.beginCrossfade).toHaveBeenCalledOnce(); // no re-entrant fade
+    });
+
+    it('R7: coalesced late eos after completion cannot stack a second advance', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: true, deferredFade: true });
+      player.init();
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30)], 'AL', 'A');
+      player.setCrossfade(4);
+      await primeAndPlay(h);
+
+      h.rendered = 27 * RATE;
+      h.handlers.tick();
+      await flush();
+      void h.handlers.eos(); // duplicate DURING hold
+      await flush();
+      h.resolveFade!({ ...FADE_OK }); // owner finishes 1->2
+      await flush();
+      const cursorAfterOwner = queue.get().index;
+      expect(cursorAfterOwner).toBe(1);
+
+      h.handlers.eos(); // SAME window's duplicate arriving LATE
+      await flush();
+      h.handlers.eos(); // …and once more for good measure
+      await flush();
+      // Still one advancement total: duplicates belong to t1's spent eos.
+      expect(queue.get().index).toBe(1);
+      expect(player.model.get().current?.id).toBe('t2');
+    });
   });
 });
