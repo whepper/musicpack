@@ -9,7 +9,7 @@ function(install_packages producer_build install_stage output_prefix)
     set(installed_prefix "${install_stage}${INSTALL_PREFIX}")
   endif()
 
-  foreach(install_subdir include libmpcdec libmusicpack)
+  foreach(install_subdir codec/include codec/libmpcdec core/libmusicpack)
     if(IS_WINDOWS)
       set(install_command "${CMAKE_COMMAND}"
           "-DCMAKE_INSTALL_PREFIX=${install_stage}")

@@ -38,8 +38,8 @@ target_include_directories(musicpack_server
 
 if(WIN32)
   target_include_directories(musicpack_server PRIVATE
-      ${PROJECT_SOURCE_DIR}/win32)
-  target_sources(musicpack_server PRIVATE ${PROJECT_SOURCE_DIR}/win32/dirent.c)
+      ${PROJECT_SOURCE_DIR}/platform/win32)
+  target_sources(musicpack_server PRIVATE ${PROJECT_SOURCE_DIR}/platform/win32/dirent.c)
   target_link_libraries(musicpack_server PRIVATE bcrypt)
 endif()
 

@@ -450,22 +450,28 @@ ctest --test-dir build
 
 ## Layout
 
-- `libmpcdec/` — SV7/SV8 decoder + `musepack_decoder` facade (the codec)
-- `libmpcenc/` — SV8 encoder core
-- `libmpcpsy/` — psychoacoustic model
-- `libwavformat/` — WAV read/write helper
-- `include/musepack/` — stable `libmusepack` public API
-- `include/mpc/` — historical public headers (installed for compatibility)
-- `libmusicpack/` — `.mpack` package library (`libmusicpack`)
-- `musicpack/` — `musicpack` CLI (info/verify/create/import/update-metadata + the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/`build-draft`/`identify-draft`)
+- `codec/` — Musepack codec domain:
+  - `codec/libmpcdec/` — SV7/SV8 decoder + `musepack_decoder` facade (the codec)
+  - `codec/libmpcenc/` — SV8 encoder core
+  - `codec/libmpcpsy/` — psychoacoustic model
+  - `codec/libwavformat/` — WAV read/write helper
+  - `codec/include/musepack/` — stable `libmusepack` public API
+  - `codec/include/mpc/` — historical public headers (installed for compatibility)
+  - `codec/common/` — shared sources (crc32, fast-math tables, tag handling)
+  - `codec/mpcdec/`, `codec/mpcenc/`, `codec/mpc2sv8/`, `codec/mpccut/`, `codec/mpcgain/`, `codec/mpcchap/`, `codec/wavcmp/` — CLI tools
+- `core/` — MusicPack format domain:
+  - `core/libmusicpack/` — `.mpack` package library (`libmusicpack`)
+  - `core/musicpack/` — `musicpack` CLI (info/verify/create/import/update-metadata + the authoring draft commands `inspect`/`validate-draft`/`encode-draft`/`build-draft`/`identify-draft`)
+  - `core/sonic/` — Sonic analysis
 - `author/` — **MusicPack Author**: the Tauri 2 + Svelte 5 desktop authoring GUI (`author/README.md`)
 - `server/` — `musicpack-server`: scanner, SQLite collector library, HTTP API v1, direct streaming (vendored SQLite in `server/vendor/`)
 - `web/` — the web client (Svelte 5 + Vite + TS): the digital record shelf
-- `packaging/` — systemd service unit + optional environment template (see `docs/deployment.md`)
+- `platform/` — platform-specific code:
+  - `platform/win32/` — Windows compatibility shims
+  - `platform/packaging/` — systemd service unit + optional environment template (see `docs/deployment.md`)
 - `wasm/` — Emscripten build of the decoder + WASM wrapper + smoke test
 - `demo/` — low-level browser playback proof-of-concept
 - `specs/` — `.mpack` v1 spec + JSON Schema, and the server API spec (`musicpack-api-v1.md`)
-- `common/` — shared sources (crc32, fast-math tables, tag handling)
 - `tests/` — fixture generator, corpus generator, and regression harnesses
 - `legacy/` — retired autotools and Visual Studio 2005 build files
 

@@ -38,8 +38,8 @@ endif()
 add_executable(mpc_unit_tests unit_tests.c)
 target_link_libraries(mpc_unit_tests PRIVATE ${MPC_WHITEBOX_LIB} mpcenc_static)
 target_include_directories(mpc_unit_tests PRIVATE
-    ${PROJECT_SOURCE_DIR}/libmpcdec
-    ${PROJECT_SOURCE_DIR}/libmpcenc)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec
+    ${PROJECT_SOURCE_DIR}/codec/libmpcenc)
 
 add_test(NAME unit COMMAND mpc_unit_tests)
 if(WIN32)
@@ -51,7 +51,7 @@ endif()
 # ---- stable libmusepack API tests -----------------------------------------
 add_executable(mpc_api_tests api_tests.c)
 target_link_libraries(mpc_api_tests PRIVATE musepack)
-target_include_directories(mpc_api_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
+target_include_directories(mpc_api_tests PRIVATE ${PROJECT_SOURCE_DIR}/codec/libmpcdec)
 
 add_test(NAME api COMMAND mpc_api_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc
@@ -64,9 +64,9 @@ endif()
 # ---- musicpack CLI executable discovery -----------------------------------
 add_executable(mpc_musicpack_tool_path_tests
     musicpack_tool_path_tests.c
-    ${PROJECT_SOURCE_DIR}/musicpack/tool_path.c)
+    ${PROJECT_SOURCE_DIR}/core/musicpack/tool_path.c)
 target_include_directories(mpc_musicpack_tool_path_tests PRIVATE
-    ${PROJECT_SOURCE_DIR}/musicpack)
+    ${PROJECT_SOURCE_DIR}/core/musicpack)
 add_test(NAME musicpack_tool_path COMMAND mpc_musicpack_tool_path_tests)
 
 # ---- scalar-vs-SIMD synthesis differential test ---------------------------
@@ -81,7 +81,7 @@ else()
 endif()
 add_executable(mpc_synth_diff synth_diff.c)
 target_link_libraries(mpc_synth_diff PRIVATE ${MPC_WHITEBOX_LIB})
-target_include_directories(mpc_synth_diff PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
+target_include_directories(mpc_synth_diff PRIVATE ${PROJECT_SOURCE_DIR}/codec/libmpcdec)
 if(MPC_DECODER_SIMD_ENABLED)
   target_compile_definitions(mpc_synth_diff PRIVATE MPC_ENABLE_SIMD_KERNEL)
 endif()
@@ -102,7 +102,7 @@ endif()
 add_executable(mpc_synth_dispatch_negative synth_dispatch_negative.c)
 target_link_libraries(mpc_synth_dispatch_negative PRIVATE ${MPC_WHITEBOX_LIB})
 target_include_directories(mpc_synth_dispatch_negative PRIVATE
-    ${PROJECT_SOURCE_DIR}/libmpcdec)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec)
 add_test(NAME synth_simd_unavailable COMMAND mpc_synth_dispatch_negative)
 set_tests_properties(synth_simd_unavailable PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -110,7 +110,7 @@ if(MPC_DECODER_SIMD_ENABLED)
   add_executable(mpc_synth_state_ab synth_state_ab.c)
   target_link_libraries(mpc_synth_state_ab PRIVATE ${MPC_WHITEBOX_LIB})
   target_include_directories(mpc_synth_state_ab PRIVATE
-      ${PROJECT_SOURCE_DIR}/libmpcdec)
+      ${PROJECT_SOURCE_DIR}/codec/libmpcdec)
   target_compile_definitions(mpc_synth_state_ab PRIVATE MPC_ENABLE_SIMD_KERNEL)
   add_test(NAME synth_state_ab COMMAND mpc_synth_state_ab)
 endif()
@@ -121,7 +121,7 @@ target_link_libraries(mpc_mpack_tests PRIVATE musicpack musepack)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_mpack_tests PRIVATE m)
 endif()
-target_include_directories(mpc_mpack_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+target_include_directories(mpc_mpack_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
 
 add_test(NAME mpack COMMAND mpc_mpack_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-musicpack-album.mpack
@@ -134,7 +134,7 @@ target_link_libraries(mpc_audio_tests PRIVATE musicpack musepack)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_audio_tests PRIVATE m)
 endif()
-target_include_directories(mpc_audio_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+target_include_directories(mpc_audio_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
 
 add_test(NAME audio_decode COMMAND mpc_audio_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio
@@ -147,7 +147,7 @@ endif()
 # Native APEv2 tag dump used by the encode integration test (run_encode.sh).
 add_executable(mpc_ape_tag_dump ape_tags.c)
 target_link_libraries(mpc_ape_tag_dump PRIVATE musicpack)
-target_include_directories(mpc_ape_tag_dump PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+target_include_directories(mpc_ape_tag_dump PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
 if(WIN32)
   set_target_properties(mpc_ape_tag_dump PROPERTIES
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
@@ -172,7 +172,7 @@ target_link_libraries(mpc_sonic_tests PRIVATE musicpack)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_sonic_tests PRIVATE m)
 endif()
-target_include_directories(mpc_sonic_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+target_include_directories(mpc_sonic_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
 
 add_test(NAME sonic_unit COMMAND mpc_sonic_tests)
 if(WIN32)
@@ -186,7 +186,7 @@ target_link_libraries(mpc_waveform_tests PRIVATE musicpack)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_waveform_tests PRIVATE m)
 endif()
-target_include_directories(mpc_waveform_tests PRIVATE ${PROJECT_SOURCE_DIR}/libmusicpack)
+target_include_directories(mpc_waveform_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
 
 add_test(NAME waveform_unit COMMAND mpc_waveform_tests)
 if(WIN32)
@@ -200,8 +200,8 @@ target_link_libraries(mpc_server_tests PRIVATE musicpack_server)
 target_include_directories(mpc_server_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/server/vendor/sqlite)
 if(WIN32)
-  target_include_directories(mpc_server_tests PRIVATE ${PROJECT_SOURCE_DIR}/win32)
-  target_sources(mpc_server_tests PRIVATE ${PROJECT_SOURCE_DIR}/win32/dirent.c)
+  target_include_directories(mpc_server_tests PRIVATE ${PROJECT_SOURCE_DIR}/platform/win32)
+  target_sources(mpc_server_tests PRIVATE ${PROJECT_SOURCE_DIR}/platform/win32/dirent.c)
 endif()
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_server_tests PRIVATE m)
@@ -395,8 +395,8 @@ endif()
 add_executable(mpc_enc_synth_ab enc_synth_ab.c)
 target_link_libraries(mpc_enc_synth_ab PRIVATE mpcenc_static mpcpsy)
 target_include_directories(mpc_enc_synth_ab PRIVATE
-    ${PROJECT_SOURCE_DIR}/libmpcenc
-    ${PROJECT_SOURCE_DIR}/libmpcpsy)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcenc
+    ${PROJECT_SOURCE_DIR}/codec/libmpcpsy)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_enc_synth_ab PRIVATE m)
 endif()
@@ -412,7 +412,7 @@ endif()
 # otherwise the test fails closed.
 add_executable(mpc_psy_ab psy_ab.c)
 target_link_libraries(mpc_psy_ab PRIVATE mpcpsy)
-target_include_directories(mpc_psy_ab PRIVATE ${PROJECT_SOURCE_DIR}/libmpcpsy)
+target_include_directories(mpc_psy_ab PRIVATE ${PROJECT_SOURCE_DIR}/codec/libmpcpsy)
 if(UNIX AND NOT APPLE)
   target_link_libraries(mpc_psy_ab PRIVATE m)
 endif()

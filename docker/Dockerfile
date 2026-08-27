@@ -43,9 +43,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -m musicpack
 COPY --from=build /src/build/server/musicpack-server /usr/local/bin/
-COPY --from=build /src/build/musicpack/musicpack       /usr/local/bin/
-COPY --from=build /src/build/mpcenc/mpcenc             /usr/local/bin/
-COPY --from=build /src/build/mpcdec/mpcdec             /usr/local/bin/
+COPY --from=build /src/build/core/musicpack/musicpack   /usr/local/bin/
+COPY --from=build /src/build/codec/mpcenc/mpcenc       /usr/local/bin/
+COPY --from=build /src/build/codec/mpcdec/mpcdec       /usr/local/bin/
 COPY --from=web /src/web/app/dist /srv/web
 COPY --from=build /usr/local/lib/ /usr/local/lib/
 RUN ldconfig

@@ -12,13 +12,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'libmpcdec/**'
-      - 'libmpcenc/**'
-      - 'libmpcpsy/**'
-      - 'libwavformat/**'
-      - 'common/**'
-      - 'include/**'
-      - 'mpcenc/**'
+      - 'codec/libmpcdec/**'
+      - 'codec/libmpcenc/**'
+      - 'codec/libmpcpsy/**'
+      - 'codec/libwavformat/**'
+      - 'codec/common/**'
+      - 'codec/include/**'
+      - 'codec/mpcenc/**'
       - 'bench/CMakeLists.txt'
       - 'bench/*.c'
       - 'bench/*.sh'
@@ -73,7 +73,7 @@ jobs:
           python3 scripts/ci_config.py --build build-profile --role benchmark-psy-profile --selected-config Release --expect selected_configuration=Release --expect psy_profile=ON
 
       - name: Generate corpus
-        run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/mpcenc/mpcenc"
+        run: bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build/codec/mpcenc/mpcenc"
 
       - name: Run benchmark (scalar + simd)
         run: |
@@ -82,7 +82,7 @@ jobs:
       - name: Encoder corpus + benchmark (q5/q6/q7, scalar vs SIMD psycho)
         run: |
           python3 tests/generate_encoder_corpus.py /tmp/enc-corpus >/dev/null
-          MPC_BENCH_BUILD="$(pwd)/build" bench/encode_bench.sh /tmp/enc-corpus "$(pwd)/build/mpcenc/mpcenc" 5,6,7 5
+          MPC_BENCH_BUILD="$(pwd)/build" bench/encode_bench.sh /tmp/enc-corpus "$(pwd)/build/codec/mpcenc/mpcenc" 5,6,7 5
 
       - name: Psychoacoustic FFT kernel benchmark
         run: |
@@ -91,13 +91,13 @@ jobs:
       - name: Psychoacoustic CPU-share profile (q5/q6/q7)
         run: |
           python3 bench/profile_psy.py \
-            --mpcenc "$(pwd)/build-profile/mpcenc/mpcenc" \
+            --mpcenc "$(pwd)/build-profile/codec/mpcenc/mpcenc" \
             --input /tmp/enc-corpus/long_60s_44100.wav \
             --impl scalar --qualities 5,6,7 --warmup 1 --runs 5 \
             --build "$(pwd)/build-profile" \
             --output bench/results/psy-profile-x86_64-scalar.json
           python3 bench/profile_psy.py \
-            --mpcenc "$(pwd)/build-profile/mpcenc/mpcenc" \
+            --mpcenc "$(pwd)/build-profile/codec/mpcenc/mpcenc" \
             --input /tmp/enc-corpus/long_60s_44100.wav \
             --impl simd --qualities 5,6,7 --warmup 1 --runs 5 \
             --build "$(pwd)/build-profile" \
@@ -158,7 +158,7 @@ jobs:
           cmake -S . -B build-native -DMPC_BUILD_TESTS=OFF -DMPC_BUILD_MPCGAIN=OFF \
             -DMPC_BUILD_MPCCHAP=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build-native -j --target mpcenc
-          bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build-native/mpcenc/mpcenc"
+          bench/make_corpus.sh /tmp/mpc-bench "$(pwd)/build-native/codec/mpcenc/mpcenc"
 
       - name: Run wasm benchmarks
         shell: bash

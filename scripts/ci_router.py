@@ -21,28 +21,37 @@ IGNORED_ROOT_FILES = {
 
 GLOBAL_ROOT_FILES = {"CMakeLists.txt", "CMakePresets.json", "Makefile"}
 
+# Top-level domain mapping. For nested paths, NESTED_RULES takes precedence
+# (checked first) so that e.g. codec/libmpcdec routes to {codec, wasm, web}
+# while codec/libmpcenc routes to {codec} only.
 COMPONENT_RULES = {
-    "libmpcdec": {"codec", "wasm", "web"},
-    "libmpcenc": {"codec"},
-    "libmpcpsy": {"codec"},
-    "libwavformat": {"codec"},
-    "libmusicpack": {"core", "server", "author", "web"},
-    "musicpack": {"core", "server", "author", "web"},
+    "codec": {"codec", "wasm", "web"},
+    "core": {"core", "server", "author", "web"},
     "server": {"server", "web"},
-    "sonic": {"core"},
     "author": {"author"},
     "wasm": {"wasm", "web"},
     "web": {"web"},
     "research": {"research"},
-    "common": {"codec", "wasm", "web"},
-    "include": {"codec", "wasm", "web"},
-    "mpcdec": {"codec"},
-    "mpcenc": {"codec"},
-    "mpc2sv8": {"codec"},
-    "mpccut": {"codec"},
-    "wavcmp": {"codec"},
-    "mpcgain": {"codec"},
-    "mpcchap": {"codec"},
+    "platform": {"codec"},
+}
+
+NESTED_RULES = {
+    "codec/libmpcdec": {"codec", "wasm", "web"},
+    "codec/libmpcenc": {"codec"},
+    "codec/libmpcpsy": {"codec"},
+    "codec/libwavformat": {"codec"},
+    "codec/common": {"codec", "wasm", "web"},
+    "codec/include": {"codec", "wasm", "web"},
+    "codec/mpcdec": {"codec"},
+    "codec/mpcenc": {"codec"},
+    "codec/mpc2sv8": {"codec"},
+    "codec/mpccut": {"codec"},
+    "codec/wavcmp": {"codec"},
+    "codec/mpcgain": {"codec"},
+    "codec/mpcchap": {"codec"},
+    "core/libmusicpack": {"core", "server", "author", "web"},
+    "core/musicpack": {"core", "server", "author", "web"},
+    "core/sonic": {"core"},
 }
 
 
@@ -58,6 +67,11 @@ def classify(path: str) -> set[str]:
         path.startswith("scripts/") and path.rsplit("/", 1)[-1].startswith("ci_")
     ):
         return set(ALL)
+
+    # Check nested (two-component) prefixes first for precise routing.
+    two = path.split("/", 2)[0] + "/" + path.split("/", 2)[1] if "/" in path else None
+    if two and two in NESTED_RULES:
+        return set(NESTED_RULES[two])
 
     top = path.split("/", 1)[0]
 

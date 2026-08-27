@@ -7,7 +7,7 @@
 
 add_executable(musepack_wasm musepack_wasm.c)
 target_link_libraries(musepack_wasm PRIVATE musepack)
-target_include_directories(musepack_wasm PRIVATE ${PROJECT_SOURCE_DIR}/libmpcdec)
+target_include_directories(musepack_wasm PRIVATE ${PROJECT_SOURCE_DIR}/codec/libmpcdec)
 
 set_target_properties(musepack_wasm PROPERTIES OUTPUT_NAME musepack)
 

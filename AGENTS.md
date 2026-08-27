@@ -6,9 +6,9 @@ before making changes.
 ## What this repository is
 
 Musepack is an open-source lossy audio codec. This repo contains the decoder
-(`libmpcdec`), the encoder core (`libmpcenc`, `libmpcpsy`), a WAV helper
-(`libwavformat`), shared sources (`common/`), and the CLI tools (`mpcdec`,
-`mpcenc`, `mpc2sv8`, `mpccut`, `mpcgain`, `mpcchap`, `wavcmp`). The decoder
+(`codec/libmpcdec`), the encoder core (`codec/libmpcenc`, `codec/libmpcpsy`), a WAV helper
+(`codec/libwavformat`), shared sources (`codec/common/`), and the CLI tools (`codec/mpcdec`,
+`codec/mpcenc`, `codec/mpc2sv8`, `codec/mpccut`, `codec/mpcgain`, `codec/mpcchap`, `codec/wavcmp`). The decoder
 supports SV7/SV8; the encoder produces SV8.
 
 This is a **modernized** copy of upstream Musepack r475 (git `05d97a5`).
@@ -99,7 +99,7 @@ Library target is `musepack` (output `libmusepack`), exported as
 
 ## Package library (`libmusicpack`)
 
-Since Phase 2, `.mpack` package semantics live in `libmusicpack/` (manifest,
+Since Phase 2, `.mpack` package semantics live in `core/libmusicpack/` (manifest,
 album/track model, assets, SHA-256, BS.1770 loudness, directory storage),
 exported as `MusicPack::Package`. The `musicpack` CLI (`info`/`verify`/
 `create`/`import`) and the `mpack` CTest suites cover it. The dependency
@@ -108,7 +108,7 @@ reader handoff), never the reverse. The normative spec is
 `specs/musicpack-v1.md`; reference packages live in `tests/reference/`.
 `libmusepack` must remain codec-only and package-agnostic.
 
-Since Phase 4 (MusicPack v1), `libmusicpack` also owns the **waveform
+Since Phase 4 (MusicPack v1), `core/libmusicpack` also owns the **waveform
 envelope** binary format and the per-track manifest reference (see
 `specs/musicpack-waveform-v1.md`). Waveform is track-scoped derived data
 generated from source PCM during authoring; `libmusicpack` parses,
