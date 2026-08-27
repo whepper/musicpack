@@ -78,7 +78,6 @@ FLAC → MusicPack Author → metadata → encode → .mpack → MusicPack Serve
 Do **not** start implementing these now; they remain future ideas where already
 documented, to be reconsidered only after dogfooding produces evidence:
 
-- WavPack
 - native iOS
 - server-side recommendations
 - scrobbling

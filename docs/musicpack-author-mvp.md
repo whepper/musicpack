@@ -345,6 +345,5 @@ personal filesystem data beyond paths required for debugging.
   policy.
 - Post-encode re-tagging from the final manifest (closing the §12 gap).
 - Universal (arm64 + x86_64) app bundle, signing + notarization, CI packaging.
-- WavPack/hybrid support, alternate codecs, packed `MPAK` container — all
-  deliberately out of scope for the MVP but designed for in the `.mpack`
-  storage abstraction.
+- Packed `MPAK` container — deliberately out of scope for the MVP but designed
+  for in the `.mpack` storage abstraction.
