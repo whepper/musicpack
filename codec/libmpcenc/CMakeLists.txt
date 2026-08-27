@@ -4,7 +4,7 @@ set(MPCENC_SOURCES
     encode_sv7.c
     huffsv7.c
     quant.c
-    ${PROJECT_SOURCE_DIR}/common/crc32.c)
+    ${PROJECT_SOURCE_DIR}/codec/common/crc32.c)
 
 # Bit-exact encoder SIMD analysis filterbank (analy_filter_simd.c) via the
 # shared common/mpc_simd.h. Supported on aarch64 (NEON) and x86-64 (SSE2

@@ -5,11 +5,11 @@ add_executable(mpcenc
     stderr.c
     wave_in.c
     winmsg.c
-    ${PROJECT_SOURCE_DIR}/common/tags.c)
+    ${PROJECT_SOURCE_DIR}/codec/common/tags.c)
 
 target_include_directories(mpcenc PRIVATE
-    ${PROJECT_SOURCE_DIR}/libmpcpsy
-    ${PROJECT_SOURCE_DIR}/libmpcenc
+    ${PROJECT_SOURCE_DIR}/codec/libmpcpsy
+    ${PROJECT_SOURCE_DIR}/codec/libmpcenc
     ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(mpcenc PRIVATE mpcpsy mpcenc_static)

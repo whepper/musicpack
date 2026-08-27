@@ -8,7 +8,7 @@ set(MPCDEC_SOURCES
     requant.c
     streaminfo.c
     synth_filter.c
-    ${PROJECT_SOURCE_DIR}/common/crc32.c)
+    ${PROJECT_SOURCE_DIR}/codec/common/crc32.c)
 
 # ---------------------------------------------------------------------------
 # SIMD synthesis filter kernel (NEON / SSE2 / wasm SIMD128 via mpc_simd.h).

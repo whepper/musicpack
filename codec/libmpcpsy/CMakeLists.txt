@@ -7,7 +7,7 @@ add_library(mpcpsy STATIC
     psy.c
     psy_profile.c
     psy_tab.c
-    ${PROJECT_SOURCE_DIR}/common/fastmath.c)
+    ${PROJECT_SOURCE_DIR}/codec/common/fastmath.c)
 
 # Bit-exact psychoacoustic SIMD kernels (Phase 3): fft_routines_simd.c
 # (windowing/power lane=bin) and fft4g_simd.c (lane-parallel FFT). Supported

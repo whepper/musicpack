@@ -14,15 +14,15 @@ add_executable(mpcchap
     mpcchap.c
     dictionary.c
     iniparser.c
-    ${PROJECT_SOURCE_DIR}/common/tags.c)
+    ${PROJECT_SOURCE_DIR}/codec/common/tags.c)
 
 # The project's own <mpc/*.h> headers must be searched before any
 # system-installed copy of libmpcdec (e.g. Homebrew).
 target_include_directories(mpcchap PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/codec/include
     ${CUEFILE_INCLUDE_DIR}
-    ${PROJECT_SOURCE_DIR}/libmpcdec
-    ${PROJECT_SOURCE_DIR}/libmpcenc)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec
+    ${PROJECT_SOURCE_DIR}/codec/libmpcenc)
 target_link_libraries(mpcchap PRIVATE musepack mpcenc_static ${CUEFILE_LIBRARY})
 
 if(NOT MSVC)

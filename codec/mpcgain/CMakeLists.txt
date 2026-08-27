@@ -19,8 +19,8 @@ add_executable(mpcgain mpcgain.c)
 # The project's own <mpc/*.h> headers must be searched before any
 # system-installed copy of libmpcdec (e.g. Homebrew).
 target_include_directories(mpcgain PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
-    ${PROJECT_SOURCE_DIR}/libmpcdec
+    ${PROJECT_SOURCE_DIR}/codec/include
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec
     ${REPLAY_GAIN_INCLUDE_DIR})
 target_link_libraries(mpcgain PRIVATE musepack ${REPLAY_GAIN_LIBRARY})
 

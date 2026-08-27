@@ -4,23 +4,23 @@ set(MUSICPACK_TOOL_SOURCES main.c draft.c tool_path.c)
 # when the library is built shared). Compiling it into the CLI target keeps
 # the tool self-contained for both shared and static library builds.
 set(MUSICPACK_TOOL_SOURCES ${MUSICPACK_TOOL_SOURCES}
-    ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson/cJSON.c)
+    ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson/cJSON.c)
 
 if(MSVC)
-  list(APPEND MUSICPACK_TOOL_SOURCES ${PROJECT_SOURCE_DIR}/win32/attgetopt.c)
+  list(APPEND MUSICPACK_TOOL_SOURCES ${PROJECT_SOURCE_DIR}/platform/win32/attgetopt.c)
 endif()
 
 add_executable(musicpack_cmd ${MUSICPACK_TOOL_SOURCES})
 if(MSVC)
-  target_include_directories(musicpack_cmd PRIVATE ${PROJECT_SOURCE_DIR}/win32)
+  target_include_directories(musicpack_cmd PRIVATE ${PROJECT_SOURCE_DIR}/platform/win32)
 endif()
 target_include_directories(musicpack_cmd PRIVATE
-    ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson)
+    ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson)
 target_link_libraries(musicpack_cmd PRIVATE musicpack musepack)
 
 # Vendored code is third-party: suppress warnings from it entirely.
 set_source_files_properties(
-    ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson/cJSON.c
+    ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson/cJSON.c
     PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-w>")
 
 # The CLI builds filesystem paths by chained snprintf() of the form
@@ -32,9 +32,9 @@ set_source_files_properties(
 # suffix, so suppress the diagnostic for the tool sources rather than inflate
 # every buffer to multiples of MUSICPACK_PATH_MAX.
 set_source_files_properties(
-    ${PROJECT_SOURCE_DIR}/musicpack/main.c
-    ${PROJECT_SOURCE_DIR}/musicpack/draft.c
-    ${PROJECT_SOURCE_DIR}/musicpack/tool_path.c
+    ${PROJECT_SOURCE_DIR}/core/musicpack/main.c
+    ${PROJECT_SOURCE_DIR}/core/musicpack/draft.c
+    ${PROJECT_SOURCE_DIR}/core/musicpack/tool_path.c
     PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:MSVC>:/W0>;$<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-format-truncation>")
 
 # Historical-ish binary name "musicpack" (target is musicpack_cmd to avoid

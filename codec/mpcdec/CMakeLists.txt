@@ -1,11 +1,11 @@
 set(MPCDEC_TOOL_SOURCES mpcdec.c)
 set(MPCDEC_TOOL_INCLUDES
-    ${PROJECT_SOURCE_DIR}/libmpcdec
-    ${PROJECT_SOURCE_DIR}/libwavformat)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec
+    ${PROJECT_SOURCE_DIR}/codec/libwavformat)
 
 if(MSVC)
-  list(APPEND MPCDEC_TOOL_SOURCES ${PROJECT_SOURCE_DIR}/win32/attgetopt.c)
-  list(APPEND MPCDEC_TOOL_INCLUDES ${PROJECT_SOURCE_DIR}/win32)
+  list(APPEND MPCDEC_TOOL_SOURCES ${PROJECT_SOURCE_DIR}/platform/win32/attgetopt.c)
+  list(APPEND MPCDEC_TOOL_INCLUDES ${PROJECT_SOURCE_DIR}/platform/win32)
 endif()
 
 add_executable(mpcdec_cmd ${MPCDEC_TOOL_SOURCES})

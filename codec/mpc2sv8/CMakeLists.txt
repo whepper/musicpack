@@ -1,14 +1,14 @@
 set(MPC2SV8_SOURCES mpc2sv8.c)
 set(MPC2SV8_INCLUDES
-    ${PROJECT_SOURCE_DIR}/libmpcdec
-    ${PROJECT_SOURCE_DIR}/libmpcenc)
+    ${PROJECT_SOURCE_DIR}/codec/libmpcdec
+    ${PROJECT_SOURCE_DIR}/codec/libmpcenc)
 
 if(MSVC)
   list(APPEND MPC2SV8_SOURCES
-      ${PROJECT_SOURCE_DIR}/win32/attgetopt.c
-      ${PROJECT_SOURCE_DIR}/win32/basename.c
-      ${PROJECT_SOURCE_DIR}/win32/dirent.c)
-  list(APPEND MPC2SV8_INCLUDES ${PROJECT_SOURCE_DIR}/win32)
+      ${PROJECT_SOURCE_DIR}/platform/win32/attgetopt.c
+      ${PROJECT_SOURCE_DIR}/platform/win32/basename.c
+      ${PROJECT_SOURCE_DIR}/platform/win32/dirent.c)
+  list(APPEND MPC2SV8_INCLUDES ${PROJECT_SOURCE_DIR}/platform/win32)
 endif()
 
 add_executable(mpc2sv8 ${MPC2SV8_SOURCES})

@@ -16,8 +16,8 @@ add_library(sonic_core STATIC ${SONIC_CORE_SOURCES})
 target_include_directories(sonic_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE
-        ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson
-        ${PROJECT_SOURCE_DIR}/libmusicpack/vendor)
+        ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson
+        ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor)
 target_link_libraries(sonic_core PUBLIC musicpack)
 
 # ---- the analyzer executable (requires ONNX Runtime) ------------------------
@@ -50,10 +50,10 @@ endif()
 
 if(SONIC_ONNXRUNTIME_DIR)
   add_executable(musicpack_sonic_cmd main.c model.c acquire.c
-      ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson/cJSON.c)
+      ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson/cJSON.c)
   target_include_directories(musicpack_sonic_cmd PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
-      ${PROJECT_SOURCE_DIR}/libmusicpack/vendor/cjson
+      ${PROJECT_SOURCE_DIR}/core/libmusicpack/vendor/cjson
       ${SONIC_ONNXRUNTIME_DIR}/include)
   target_link_libraries(musicpack_sonic_cmd PRIVATE sonic_core musicpack musepack)
   if(APPLE)
