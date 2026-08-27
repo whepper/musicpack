@@ -1021,8 +1021,34 @@ export class Player {
       }
     }
     if (decline || overlapSeconds <= 0) return false;
+    // The eos-race blend starts AT decode-eos: the worklet plays the last
+    // `overlap` frames of this track blended with the successor's head, then
+    // swaps — discarding whatever buffered audio remained beyond the blend
+    // window. The declared offsets must place the successor at
+    // (raw end − remaining-at-eos) so the model matches the engine clock;
+    // shrinking by only the blended overlap leaves a fade-window wedge that
+    // made the positional trigger instant-fade the successor right after
+    // this boundary ("2 -> 3 -> almost instantly 4").
+    const remainingSamplesAtEos = remaining;
+    const rawLenSamples = this.lengthOf(qi);
     await this.beginCrossfadeTransition(overlapSeconds, seq);
-    return this.queue.get().index !== qi;
+    const taken = this.queue.get().index !== qi;
+    if (taken && rawLenSamples > 0) {
+      const outgoing = this.queue.at(qi);
+      if (outgoing) {
+        const declaredEnd = Math.max(0, rawLenSamples - remainingSamplesAtEos);
+        this.lengths.set(outgoing.trackId, declaredEnd);
+        const offs = this.offsets();
+        const qiNow = this.queue.get().index;
+        this.model.update((m) => ({
+          ...m,
+          currentTrackStartSeconds: (offs[qiNow] ?? 0) / this.rate(),
+          currentTrackDurationSeconds: this.lengthOf(qiNow) / this.rate(),
+          durationSeconds: this.totalLength() / this.rate(),
+        }));
+      }
+    }
+    return taken;
   }
 
   private currentIndexAt(pos: number): number {

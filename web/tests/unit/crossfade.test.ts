@@ -1030,5 +1030,34 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
       expect(queue.get().index).toBe(1);
       expect(player.model.get().current?.id).toBe('t2');
     });
+
+    // EOS-race fade accounting: the blend starts AT decode-eos and the swap
+    // happens after only `overlap` seconds — the buffered tail beyond the
+    // blend window is discarded by the swap. The declared offsets must
+    // place the successor at (raw end − remaining-at-eos), NOT at
+    // (raw end − overlap); otherwise the engine clock runs ahead of the
+    // declared offsets and the positional trigger instant-fades the
+    // successor ("2 fades into 3, instantly 4").
+    it('R8: eos-race fade declares the discarded tail in the offsets', async () => {
+      const { player, h } = makePlayer({
+        crossfadeCapable: true,
+        planTransition: () => ({ type: 'sweet-fade', overlapSeconds: 1 }),
+      });
+      player.init();
+      player.setCrossfade(4); // planner overlap capped to 1 s below
+      await player.playSequence([mk(1, 30), mk(2, 30), mk(3, 30)], 'AL', 'A');
+      await primeAndPlay(h);
+
+      // Decoder eos arrives with 2 s still buffered (rendered = 28 s).
+      h.rendered = 28 * RATE;
+      h.handlers.eos();
+      await flush();
+
+      expect(player.model.get().current?.id).toBe('t2');
+      // Declared start of track 2 = raw end (30) − remaining-at-eos (2) = 28.
+      // (The old bookkeeping shrank by the 1 s blend → 29, and by overlap=0
+      // fake variants → 30; both left a fade-window-sized wedge.)
+      expect(player.model.get().currentTrackStartSeconds).toBeCloseTo(28, 1);
+    });
   });
 });
