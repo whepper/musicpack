@@ -7,12 +7,12 @@
 #
 # Usage: make_corpus.sh <outdir> [mpcenc]
 #   outdir   directory that will contain corpus/*.mpc (created)
-#   mpcenc   path to the mpcenc binary (default: <repo>/build/mpcenc/mpcenc)
+#   mpcenc   path to the mpcenc binary (default: <repo>/build/codec/mpcenc/mpcenc)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:?outdir}"
-MPCENC="${2:-$ROOT/build/mpcenc/mpcenc}"
+MPCENC="${2:-$ROOT/build/codec/mpcenc/mpcenc}"
 
 [ -x "$MPCENC" ] || { echo "mpcenc not found at $MPCENC"; exit 1; }
 

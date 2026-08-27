@@ -41,21 +41,21 @@ fi
 echo "== running fixture regression tests =="
 
 if [ -z "$MPCDEC" ]; then
-    if [ -x "$BUILD/mpcdec/mpcdec" ]; then
-        MPCDEC="$BUILD/mpcdec/mpcdec"
-    elif [ -x "$BUILD/mpcdec/mpcdec_cmd" ]; then
-        MPCDEC="$BUILD/mpcdec/mpcdec_cmd"
+    if [ -x "$BUILD/codec/mpcdec/mpcdec" ]; then
+        MPCDEC="$BUILD/codec/mpcdec/mpcdec"
+    elif [ -x "$BUILD/codec/mpcdec/mpcdec_cmd" ]; then
+        MPCDEC="$BUILD/codec/mpcdec/mpcdec_cmd"
     else
         # Build first if needed (for the mktemp path)
         if [ -z "${_MPC_BUILT:-}" ]; then
             echo "-- configuring build in $BUILD"
             cmake -S "$ROOT" -B "$BUILD" -DMPC_BUILD_TESTS=OFF >/dev/null
-            cmake --build "$BUILD" --target mpcdec -j >/dev/null
+            cmake --build "$BUILD" --target mpcdec_cmd -j >/dev/null
             _MPC_BUILT=1
-            if [ -x "$BUILD/mpcdec/mpcdec" ]; then
-                MPCDEC="$BUILD/mpcdec/mpcdec"
-            elif [ -x "$BUILD/mpcdec/mpcdec_cmd" ]; then
-                MPCDEC="$BUILD/mpcdec/mpcdec_cmd"
+            if [ -x "$BUILD/codec/mpcdec/mpcdec" ]; then
+                MPCDEC="$BUILD/codec/mpcdec/mpcdec"
+            elif [ -x "$BUILD/codec/mpcdec/mpcdec_cmd" ]; then
+                MPCDEC="$BUILD/codec/mpcdec/mpcdec_cmd"
             fi
         fi
     fi

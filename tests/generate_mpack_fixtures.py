@@ -14,8 +14,8 @@ for .mpc, native libmusicpack decode for .flac).
 
 Usage:
   python3 tests/generate_mpack_fixtures.py \
-      --mpcenc build/mpcenc/mpcenc \
-      --musicpack build/musicpack/musicpack \
+      --mpcenc build/codec/mpcenc/mpcenc \
+      --musicpack build/core/musicpack/musicpack \
       [--ffmpeg ffmpeg] [--out tests/reference]
 
 Note: this is a one-shot developer generator (the outputs are committed).

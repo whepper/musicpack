@@ -36,8 +36,8 @@ AUDIO_FIXTURES="$ROOT/tests/fixtures/audio"
 PY=python3
 
 MPCENC="${MPCENC:-}"
-if [ -z "$MPCENC" ] && [ -x "$ROOT/build/mpcenc/mpcenc" ]; then
-    MPCENC="$ROOT/build/mpcenc/mpcenc"
+if [ -z "$MPCENC" ] && [ -x "$ROOT/build/codec/mpcenc/mpcenc" ]; then
+    MPCENC="$ROOT/build/codec/mpcenc/mpcenc"
 fi
 if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     if command -v mpcenc >/dev/null 2>&1; then
@@ -45,7 +45,7 @@ if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
     fi
 fi
 if [ -z "$MPCENC" ] || [ ! -x "$MPCENC" ]; then
-    echo "FAIL  run_encode.sh: mpcenc not found (set MPCENC or build build/mpcenc)" >&2
+    echo "FAIL  run_encode.sh: mpcenc not found (set MPCENC or build build/codec/mpcenc)" >&2
     exit 1
 fi
 

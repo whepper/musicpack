@@ -44,7 +44,7 @@ tests/run_tests.sh
 tests/run_tests.sh /path/to/build
 
 # Use a specific mpcdec binary
-tests/run_tests.sh /path/to/build /path/to/build/mpcdec/mpcdec
+tests/run_tests.sh /path/to/build /path/to/build/codec/mpcdec/mpcdec
 ```
 
 ### Regenerating fixtures
@@ -56,8 +56,8 @@ recreated:
 
 ```sh
 python3 tests/generate_fixtures.py \
-    --mpcenc build/mpcenc/mpcenc \
-    --mpcdec  build/mpcdec/mpcdec
+    --mpcenc build/codec/mpcenc/mpcenc \
+    --mpcdec  build/codec/mpcdec/mpcdec
 ```
 
 The golden files are committed so that decode output is pinned for

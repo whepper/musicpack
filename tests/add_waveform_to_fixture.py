@@ -14,7 +14,7 @@ quarantine, web waveform parsing/render) consumes.
 
 Usage:
   python3 tests/add_waveform_to_fixture.py \
-      --musicpack build/musicpack/musicpack
+      --musicpack build/core/musicpack/musicpack
 """
 import argparse
 import hashlib

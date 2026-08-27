@@ -37,7 +37,7 @@ the optimized kernels are unavailable.
 
 ```sh
 python3 tests/generate_encoder_corpus.py /tmp/enc-corpus
-bench/encode_bench.sh /tmp/enc-corpus build/mpcenc/mpcenc 5,6,7 5
+bench/encode_bench.sh /tmp/enc-corpus build/codec/mpcenc/mpcenc 5,6,7 5
 MPC_PSY_FFT_BENCH="$PWD/build/bench/psy_fft_bench" bench/run_psy_fft_bench.sh 1000
 ```
 
@@ -68,7 +68,7 @@ remainder. Native sampling is retained separately for libm attribution.
 ## Corpus
 
 ```sh
-bench/make_corpus.sh /tmp/bench-corpus build/mpcenc/mpcenc
+bench/make_corpus.sh /tmp/bench-corpus build/codec/mpcenc/mpcenc
 ```
 
 Generates ~17 deterministic signal kinds at 32/44.1/48 kHz (from
