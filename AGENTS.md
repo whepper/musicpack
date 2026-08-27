@@ -306,9 +306,15 @@ in `docs/psy-optimization-milestone-3.md`.
 
 ## Encoder SIMD optimization track: closed
 
-The encoder SIMD optimization track is **complete**. The final measured step
-was CVD L/R cepstrum FFT batching and the fine-grained CVD/CEP profiling that
-followed it (see `docs/measurements/cvd-analysis-profile/`). The verdict:
+The encoder SIMD optimization track is **complete** (officially closed
+2026-08-27). The final measured step was CVD L/R cepstrum FFT batching and the
+fine-grained CVD/CEP profiling that followed it (see
+`docs/measurements/cvd-analysis-profile/`). The final psychoacoustic
+investigation confirmed on both ARM64 and x86-64 that no remaining high-value,
+bit-exact SIMD optimization exists in `Psychoakustisches_Modell` (see
+`docs/psy-optimization-final.md`). The project's primary focus is now
+real-world MusicPack validation and dogfooding — see `docs/ROADMAP.md`. The
+verdict:
 
 > Further encoder SIMD optimization is not justified at this point — expected
 > gains are now marginal relative to implementation complexity, portability

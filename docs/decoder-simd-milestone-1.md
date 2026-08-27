@@ -181,6 +181,13 @@ gain warrants it, AVX2 only after that, and optionally a bigger JS<->wasm
 read block (4608) in the web client if boundary overhead is measured in
 browser conditions.
 
+> **Status update (2026-08-27):** the encoder optimization track — including
+> Phase 2 (analysis-filterbank SIMD), Phase 3 (psychoacoustic SIMD), and the
+> final psychoacoustic investigation — is now **complete**. The decoder
+> follow-up candidates above were never blocking and remain unstarted. The
+> project's primary focus moved to real-world MusicPack validation and
+> dogfooding (see `docs/ROADMAP.md`); encoder SIMD is not an active task.
+
 ## Reproducing
 
 ```sh

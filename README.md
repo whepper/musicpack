@@ -68,6 +68,11 @@ The guiding rule of this repository:
 - **WASM + demo** — the decoder builds to WebAssembly (Emscripten); `demo/` is
   a low-level playback proof-of-concept kept as a development/test artifact.
 
+> **Project status:** Musepack encoder optimization is complete (2026-08-27);
+> the codec foundation is no longer the primary active engineering area. The
+> project is now in real-world MusicPack validation and dogfooding — see
+> [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ---
 
 ## The web client — a digital record shelf
