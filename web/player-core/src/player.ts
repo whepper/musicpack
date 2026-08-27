@@ -573,6 +573,12 @@ export class Player {
     // N+2"). Eoses belonging to LATER tracks are unaffected: by then the
     // owner has finished and crossfadeInProgress is false again.
     if (this.crossfadeInProgress) return;
+    // A natural boundary may no longer own the transport: the user can pause
+    // (or otherwise take control) while a handoff already dispatched its
+    // standby advance is still in flight. An auto-advancing handoff that
+    // resumes after a pause would clobber the paused state and restart audio;
+    // bail and let the paused session stand (it resumes/advances on play()).
+    if (this.pauseIntent) return;
     const engine = this.engine;
     // The policy target as of NOW — not what the standby happened to be
     // prepared with. The engine refuses (and the recovery branch below
@@ -584,6 +590,10 @@ export class Player {
       info = await engine.advance(expected ? expected.item : null);
     }
     if (seq !== this.loadingSeq) return;
+    // The pause may have landed while the standby advance was awaited above:
+    // re-check before touching the cursor, otherwise the handoff resumes into
+    // a paused session and restarts audio against the user's intent.
+    if (this.pauseIntent) return;
 
     // Repeat-one: fresh reload of the SAME item (sample-exact via the normal
     // load path; no timeline concept needed).

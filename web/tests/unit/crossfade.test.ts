@@ -1059,5 +1059,45 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
       // fake variants → 30; both left a fade-window-sized wedge.)
       expect(player.model.get().currentTrackStartSeconds).toBeCloseTo(28, 1);
     });
+
+    // Stale decode-eos after removing the PAUSED playing item: replacing the
+    // discarded stream with open(successor) can still surface the old track's
+    // end-of-stream. A natural-boundary handoff that fires on that stale eos
+    // must NOT advance the cursor or restart audio — the pause intent stands.
+    // Without the pauseIntent guard in runEosBoundary the handoff advanced to
+    // the next track (leaving the e2e player in `loading`/`playing`), so the
+    // paused removal test failed on slow CI.
+    it('R9: a stale eos after removing the paused playing item does not advance the cursor', async () => {
+      const { player, h, queue } = makePlayer({ crossfadeCapable: false });
+      player.init();
+      await player.playSequence([item(1), item(2), item(3), item(4)], 'AL', 'A');
+      await primeAndPlay(h);
+
+      // Off track 1 so the playing item is identifiable.
+      h.handlers.eos();
+      await flush();
+      expect(player.model.get().current?.id).toBe('t2');
+
+      // Pause, then remove the playing item through the queue store (the
+      // panel's ✕ button): the player reloads the successor under pause intent.
+      await player.pause();
+      expect(player.model.get().state).toBe('paused');
+      const removedId = queue.current()!.id; // t2
+      queue.removeAt(queue.get().index);
+      await flush();
+      expect(player.model.get().state).toBe('paused');
+      const successorId = player.model.get().current?.id;
+      expect(successorId).not.toBe(removedId); // t3 loaded, cursor moved off t2
+
+      // Stale decode-eos from the discarded stream fires now. The successor
+      // (t3) still has a following track (t4), so without the guard the
+      // handoff would advance to it and clobber the paused state.
+      h.handlers.eos();
+      await flush();
+
+      // The paused session must stand — no auto-advance, no `loading`.
+      expect(player.model.get().state).toBe('paused');
+      expect(player.model.get().current?.id).toBe(successorId);
+    });
   });
 });
