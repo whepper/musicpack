@@ -168,6 +168,13 @@ export class Player {
    *  would double-advance past the successor. Same ownership contract as
    *  crossfadeInProgress. Single-writer (onEos), so no epoch tracking. */
   private eosInFlight = false;
+  /** Fix (c), scoped: the queue index a just-completed crossfade boundary
+   *  authoritatively moved the cursor to, and the loadingSeq at that
+   *  moment. tick() consumes this exactly once (its very next run) to
+   *  verify the rebased position agrees with that index before ANY
+   *  polling catch-up gets a chance to quietly paper over a disagreement.
+   *  Cleared without checking if a new load supersedes it first. */
+  private pendingBoundaryCheck: { idx: number; seq: number } | null = null;
   private loadingSeq = 0;
   private transportSeq = 0;
   private mutating = false;
@@ -701,6 +708,23 @@ export class Player {
     const dur = this.totalLength();
     const qi = this.queue.get().index;
     const idx = this.currentIndexAt(pos);
+    // Fix (c), scoped: consume the one-shot post-crossfade boundary check
+    // BEFORE any catch-up logic runs, so a real disagreement is reported
+    // as itself rather than silently blended into the heuristic below.
+    // A superseded load (seq mismatch) discards the check without judging
+    // it — the boundary it was about is no longer the one being played.
+    if (this.pendingBoundaryCheck !== null) {
+      const check = this.pendingBoundaryCheck;
+      this.pendingBoundaryCheck = null;
+      if (check.seq === this.loadingSeq && idx !== check.idx) {
+        this.emit({
+          t: 'boundary-drift',
+          expectedIndex: check.idx,
+          observedIndex: idx,
+          positionSamples: pos,
+        });
+      }
+    }
     // onEos() owns forward advancement. Only a LATER index may be adopted
     // here (never a regression): the output ring renders ahead, so at a
     // gapless handoff the rendered position can still describe the previous
@@ -917,6 +941,10 @@ export class Player {
       this.mutating = true;
       this.queue.moveTo(idxAfter);
       this.mutating = false;
+      // Fix (c), scoped: arm the one-shot boundary check for the very next
+      // tick(). seqAtStart is fine here — we already returned above if a
+      // newer load/engine swap superseded this attempt.
+      this.pendingBoundaryCheck = { idx: idxAfter, seq: seqAtStart };
       this.lengths.set(nextItem.trackId, result.info.lengthSamples);
       const offs = this.offsets();
       const nqi = this.queue.get().index;

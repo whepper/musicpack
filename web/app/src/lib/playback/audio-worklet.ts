@@ -68,6 +68,19 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
   private xfadeFrames = 0;
   private xoutgoingAtSwap = 0;
   private xincomingAtSwap = 0;
+  /** Outgoing ring's own renderedFrames at the instant mixing began (i.e.
+   *  the album-clock position of the boundary itself, BEFORE any overlap).
+   *  This is the swap's rebase target: the promoted ring should report as
+   *  if it started exactly here, so the reported position advances by the
+   *  same amount the caller compresses the outgoing track's declared
+   *  length by (`overlapFrames` below) — position and declared duration
+   *  can never disagree by construction, instead of both drifting by the
+   *  nominal fade window on every single transition. */
+  private xoutgoingAtMixStart = 0;
+  /** True frames of the outgoing track's tail actually blended with the
+   *  incoming lane (bounded by the fade window, and SHORTER than it
+   *  whenever the outgoing ring ran dry before the window elapsed). */
+  private xoverlapAtSwap = 0;
   /** Interleaved scratch for one outgoing + one incoming frame. */
   private mixScratch = new Float32Array(4);
 
@@ -238,6 +251,11 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
             break;
           }
           this.xmixing = true;
+          // Snapshot the outgoing ring's position right as mixing begins:
+          // the swap rebase target, so the boundary lands exactly here
+          // regardless of how much of the fade window the outgoing ring
+          // can actually still supply.
+          this.xoutgoingAtMixStart = this.ring ? this.ring.renderedFrames : 0;
           break;
         }
         case 'xfade-cancel': {
@@ -455,6 +473,8 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
             token: this.xtoken,
             outgoingFrames: this.xoutgoingAtSwap,
             incomingFrames: this.xincomingAtSwap,
+            swapBaseFrames: this.xoutgoingAtMixStart,
+            overlapFrames: this.xoverlapAtSwap,
           });
         }
         this.cancelXfade();
@@ -570,14 +590,24 @@ export class MusicPackPcmProcessor extends AudioWorkletProcessor {
     if (!lane || !outgoing) return;
     this.xoutgoingAtSwap = outgoing.renderedFrames;
     this.xincomingAtSwap = lane.ring.renderedFrames;
+    // The true overlap is what the outgoing ring actually supplied during
+    // the mix window — bounded by the fade window, and SHORTER whenever
+    // the outgoing ring ran dry before the window elapsed (it simply stops
+    // advancing once availableFrames hits 0, see processMixing above).
+    this.xoverlapAtSwap = Math.max(0, this.xoutgoingAtSwap - this.xoutgoingAtMixStart);
     this.ring = lane.ring;
-    // Continue the album clock: the promoted ring's playhead restarts near
-    // zero, so rebase its REPORTED count by the outgoing playhead. Reads
-    // and writes keep their physical layout; every downstream consumer
-    // (rendered reports, underruns, end detection) sees one continuous
-    // frame count across the swap instead of a position regression of
-    // roughly the whole played track.
-    const delta = this.xoutgoingAtSwap - this.xincomingAtSwap;
+    // Continue the album clock from the BOUNDARY itself (xoutgoingAtMixStart),
+    // not from the outgoing ring's raw swap-time count: the caller (Player)
+    // compresses the outgoing track's declared length by the same overlap,
+    // so rebasing to the boundary keeps the reported position and the
+    // declared offsets model in agreement by construction. Rebasing to the
+    // raw swap-time count instead (the previous behavior) credited the
+    // outgoing track with its FULL uncompressed length every time, so the
+    // reported position silently ran one fade-window ahead of the declared
+    // offsets after every single crossfade — tick()'s cursor catch-up would
+    // then "resolve" that manufactured gap by force-advancing the queue,
+    // visible as skipping through several tracks right after a fade.
+    const delta = this.xoutgoingAtMixStart - this.xincomingAtSwap;
     if (delta > 0) this.ring.continuePlayheadFrom(delta);
     this.resampler = lane.resampler;
     this.pending = lane.pending;

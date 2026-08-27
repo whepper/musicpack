@@ -125,4 +125,17 @@ export interface WorkletReport {
   /** `xfaded`: frames consumed from the outgoing/incoming lane at the swap. */
   outgoingFrames?: number;
   incomingFrames?: number;
+  /** `xfaded`: outgoing ring's own position when mixing began — the
+   *  boundary itself, before any overlap. The rebase target that keeps the
+   *  reported position aligned with the declared (overlap-compressed)
+   *  offsets model on the caller side. */
+  swapBaseFrames?: number;
+  /** `xfaded`: true frames of the outgoing track's tail actually blended
+   *  with the incoming lane (≤ fadeFrames; shorter when the outgoing ring
+   *  ran dry before the fade window elapsed). This is what the caller
+   *  should shrink the outgoing track's declared length by — NOT
+   *  `incomingFrames`, which is (almost always) just the nominal fade
+   *  window regardless of how much of the outgoing track it actually
+   *  overlapped. */
+  overlapFrames?: number;
 }

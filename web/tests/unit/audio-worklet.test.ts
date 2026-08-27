@@ -267,9 +267,31 @@ describe('MusicPackPcmProcessor crossfade lane (M8 Phase B)', () => {
     expect(xfaded?.available).toBe(0); // ring swapped to the drained lane
   });
 
-  it('keeps the absolute playhead continuous across the ring swap (BUG-2)', () => {
-    // Outgoing consumed 4 frames at the swap, lane consumed 3: the promoted
-    // ring must continue counting from 4 (the album clock), not restart at 3.
+  it('rebases the promoted ring to the swap BOUNDARY, not the raw outgoing count (BUG-2, redesigned)', () => {
+    // This processor is created fresh and armed immediately, so mixing
+    // begins at outgoing.renderedFrames === 0 — the boundary itself is 0
+    // here (no pre-roll before the fade). Outgoing goes on to supply all 4
+    // fade frames (no underrun on that side); the lane only had 3 xsamples
+    // queued, so it runs dry on the 4th fade frame (a defensive edge case
+    // per the next test's comment, not a production path).
+    //
+    // Earlier revision of this test asserted 4 here ("continue counting
+    // from the outgoing ring's raw swap-time count"), which kept the raw
+    // engine counter monotonic across the swap but is what let the exposed
+    // album position silently run ahead of the declared (overlap-shrunk)
+    // offsets by one fade window on EVERY crossfade — the root cause behind
+    // multi-track skips right after a fade (see player.ts's
+    // beginCrossfadeTransition, which shrinks the outgoing track's declared
+    // length by the reported overlap). Rebasing to the boundary instead
+    // means the promoted ring reports exactly what the declared offsets
+    // model expects once the incoming track becomes current: here, that is
+    // the boundary itself (0), plus however far the incoming lane's own
+    // reads have progressed (3) — NOT the outgoing side's unrelated raw
+    // count. The one-time backward step this produces is the
+    // necessary, self-correcting price of that consistency: two tracks
+    // briefly share the timeline during the overlap, so no single
+    // continuous low-level counter can describe both without a snap at the
+    // instant one of them stops being "current".
     const { processor, port, go } = armFade(4);
     sendX(port, 'xsamples', Float32Array.of(0.5, 0.5, 0.5), 7);
     port.send({ type: 'samples', buffer: Float32Array.of(1, 1, 1, 1, 1, 1).buffer, generation: 1 });
@@ -282,7 +304,76 @@ describe('MusicPackPcmProcessor crossfade lane (M8 Phase B)', () => {
     const ring = (
       processor as unknown as { ring: { renderedFrames: number; availableFrames: number; capacity: number } }
     ).ring;
-    expect(ring.renderedFrames).toBe(4); // RED: today this is 3 (lane counter)
+    expect(ring.renderedFrames).toBe(3);
+  });
+
+  it('reports the TRUE overlap (bounded by what the outgoing side actually supplied), not the lane count', () => {
+    // Same defensive scenario as above (lane underruns on the 4th fade
+    // frame), but this pins the 'xfaded' message's new overlapFrames field
+    // directly: the outgoing side truly supplied all 4 fade frames, so
+    // overlapFrames must be 4, even though the lane's OWN count only
+    // reached 3. Before this fix, callers read `incomingFrames` (3) as the
+    // overlap — silently wrong whenever the two lanes' counts diverge, of
+    // which an underrunning lane is the most severe case.
+    const { processor, port, go } = armFade(4);
+    sendX(port, 'xsamples', Float32Array.of(0.5, 0.5, 0.5), 7);
+    port.send({ type: 'samples', buffer: Float32Array.of(1, 1, 1, 1, 1, 1).buffer, generation: 1 });
+    sendX(port, 'xend', null, 7);
+    go();
+    render(processor, 5);
+
+    const xfaded = port.messages.find((m) => m.type === 'xfaded');
+    expect(xfaded).toMatchObject({
+      outgoingFrames: 4,
+      incomingFrames: 3,
+      swapBaseFrames: 0,
+      overlapFrames: 4,
+    });
+  });
+
+  it('recovers correctly when the outgoing ring underruns mid-fade (fix b: short remaining audio at trigger time)', () => {
+    // The scenario this session's biggest coverage gap was missing: the
+    // engine only arms a fade once trackRemainingSamples() looks like it
+    // covers the whole fade window, but that estimate can be stale (late
+    // length correction, a seek just before the trigger, resampler
+    // rounding) — so the outgoing ring can still run dry PARTWAY through
+    // an active mix. Six frames of real outgoing content already played
+    // BEFORE the fade arms (the boundary is 6, not 0, unlike the tests
+    // above), then only 2 more frames of true content exist when mixing
+    // starts — less than the 4-frame fade window requested. The incoming
+    // lane is fully supplied (4/4), isolating the outgoing side's underrun.
+    const { processor, port } = createProcessor(10, 1, 1);
+    port.send({
+      type: 'samples',
+      buffer: Float32Array.of(9, 9, 9, 9, 9, 9, 9, 9).buffer,
+      generation: 1,
+    });
+    render(processor, 6); // consumes 6 of the 8 queued frames — boundary = 6
+
+    port.send({ type: 'xfade', sourceRate: 10, sourceChannels: 1, fadeFrames: 4, token: 7, generation: 1 });
+    sendX(port, 'xsamples', Float32Array.of(0.5, 0.5, 0.5, 0.5), 7); // lane: full 4, no lane underrun
+    sendX(port, 'xend', null, 7);
+    port.send({ type: 'xfade-go', token: 7, generation: 1 });
+    render(processor, 5); // mixes 4 frames (2 real + 2 silent on the outgoing side), then swaps
+
+    const xfaded = port.messages.find((m) => m.type === 'xfaded');
+    // The TRUE overlap is bounded by what the outgoing ring actually had
+    // left (2), never the nominal fade window (4) it was asked for.
+    expect(xfaded).toMatchObject({
+      outgoingFrames: 8, // boundary (6) + the 2 real frames it had left
+      incomingFrames: 4,
+      swapBaseFrames: 6,
+      overlapFrames: 2,
+    });
+    const ring = (
+      processor as unknown as { ring: { renderedFrames: number } }
+    ).ring;
+    // Because the lane's own natural count (4) stayed within the boundary
+    // (6), the rebase fully corrects for the underrun: the album clock
+    // lands EXACTLY on the boundary post-swap, with no drift carried
+    // forward — despite the outgoing side having delivered only half of
+    // the requested overlap.
+    expect(ring.renderedFrames).toBe(6);
   });
 
   it('reports xfadeReady only when the whole incoming track is queued', () => {

@@ -22,7 +22,23 @@ export type PlayerEvent =
   | { t: 'policy'; repeat: 'off' | 'one' | 'all'; shuffle: boolean }
   | { t: 'crossfade'; seconds: number }
   | { t: 'gain'; normDb: number }
-  | { t: 'error'; message: string };
+  | { t: 'error'; message: string }
+  /** Diagnostic (fix c, scoped): fires when the FIRST tick() after a
+   *  crossfade boundary lands finds the album-clock position describing a
+   *  different queue index than the boundary itself just moved the cursor
+   *  to. The crossfade path is fully authoritative about its own boundary
+   *  (position and declared offsets are rebased in lockstep — see
+   *  audio-worklet.ts's completeXfadeSwap), so this should never fire; if
+   *  it ever does, tick()'s polling catch-up will still resolve the queue
+   *  position safely, but this event is the signal that the accounting
+   *  invariant broke somewhere and needs investigating, instead of the
+   *  drift being silently absorbed the way it always was before. */
+  | {
+      t: 'boundary-drift';
+      expectedIndex: number;
+      observedIndex: number;
+      positionSamples: number;
+    };
 
 export type PlayerListener = (event: PlayerEvent) => void;
 

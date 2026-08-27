@@ -334,6 +334,59 @@ describe('crossfade trigger semantics (M8 Phase A)', () => {
     expect(m.durationSeconds).toBeCloseTo(52, 3);
   });
 
+  it('fix (c): does not report boundary-drift when the post-fade position matches the declared boundary', async () => {
+    // The crossfade boundary is now fully authoritative (fix a): the real
+    // worklet rebase in audio-worklet.ts guarantees the reported position
+    // lands exactly on the boundary the fade just declared (22 s here, per
+    // the BUG-2 test above). This simulates that healthy production case
+    // directly — the engine reporting exactly 22 s on the very next render
+    // tick — and pins that the new diagnostic stays silent for it.
+    const { player, h } = makePlayer({ crossfadeCapable: true, overlapFrames: 8 * RATE });
+    const events: PlayerEvent[] = [];
+    player.on((e) => events.push(e));
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+    h.rendered = 25 * RATE; // inside the window
+    h.handlers.tick();
+    await flush();
+
+    h.rendered = 22 * RATE; // exactly the boundary beginCrossfadeTransition declared
+    h.handlers.tick();
+    await flush();
+
+    expect(events.some((e) => e.t === 'boundary-drift')).toBe(false);
+  });
+
+  it('fix (c): reports boundary-drift when the reported position disagrees with the declared boundary', async () => {
+    // Inverse of the test above: if the engine's reported position ever
+    // disagreed with the boundary the fade declared (a bug regression, or
+    // an engine that doesn't implement fix (a)'s rebase), this must be
+    // surfaced as an explicit, observable event instead of silently
+    // falling through to the position-based catch-up heuristic below —
+    // which would not even catch THIS direction of disagreement, since it
+    // only ever adopts a LATER index, never an earlier one.
+    const { player, h } = makePlayer({ crossfadeCapable: true, overlapFrames: 8 * RATE });
+    const events: PlayerEvent[] = [];
+    player.on((e) => events.push(e));
+    await player.playSequence([item(1), item(2)], 'AL', 'A');
+    player.setCrossfade(8);
+    await primeAndPlay(h);
+    h.rendered = 25 * RATE; // inside the window
+    h.handlers.tick();
+    await flush();
+
+    h.rendered = 20 * RATE; // short of the declared 22 s boundary
+    h.handlers.tick();
+    await flush();
+
+    const drift = events.find((e) => e.t === 'boundary-drift');
+    expect(drift).toMatchObject({ expectedIndex: 1, observedIndex: 0, positionSamples: 20 * RATE });
+    // The cursor itself is untouched by the diagnostic — it only ever
+    // reports; the catch-up below cannot regress it, so t2 stays current.
+    expect(player.model.get().current?.id).toBe('t2');
+  });
+
   it('completes the handoff after a pause mid-fade and never re-triggers (BUG-4)', async () => {
     const { player, h } = makePlayer({ crossfadeCapable: true, deferredFade: true });
     await player.playSequence([item(1), item(2)], 'AL', 'A');

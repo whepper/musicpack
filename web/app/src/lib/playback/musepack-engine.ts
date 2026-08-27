@@ -91,7 +91,12 @@ interface XfadeAttempt {
   swapResolve: ((ok: boolean) => void) | null;
   swapTimer: ReturnType<typeof setTimeout> | null;
   /** Frame accounting reported by the worklet's 'xfaded' message. */
-  swapFacts: { outgoingFrames: number; incomingFrames: number } | null;
+  swapFacts: {
+    outgoingFrames: number;
+    incomingFrames: number;
+    swapBaseFrames: number;
+    overlapFrames: number;
+  } | null;
 }
 
 export class MusepackEngine implements Engine {
@@ -377,6 +382,10 @@ export class MusepackEngine implements Engine {
         xfade.swapFacts = {
           outgoingFrames: msg.outgoingFrames ?? 0,
           incomingFrames: msg.incomingFrames ?? 0,
+          // Fall back to the legacy (uncompressed) accounting when talking
+          // to an older worklet build that hasn't sent these yet.
+          swapBaseFrames: msg.swapBaseFrames ?? msg.outgoingFrames ?? 0,
+          overlapFrames: msg.overlapFrames ?? msg.incomingFrames ?? 0,
         };
         const resolve = xfade.swapResolve;
         if (resolve) {
@@ -741,11 +750,19 @@ export class MusepackEngine implements Engine {
       if (incoming.eos && incoming.info) {
         incoming.eos = false;
         incoming.syntheticEosPending = true;
+        // Expressed from the swap's BOUNDARY (swapBaseFrames), not the
+        // outgoing ring's raw uncompressed swap-time count — the promoted
+        // ring's own playhead was rebased to that same boundary in
+        // completeXfadeSwap(), so the two stay in the same frame space.
         incoming.syntheticEosAt =
-          this.resetBase + facts.outgoingFrames + Math.max(0, incoming.info.lengthSamples - facts.incomingFrames);
+          this.resetBase + facts.swapBaseFrames + Math.max(0, incoming.info.lengthSamples - facts.incomingFrames);
       }
       await this.closeWorker(outgoing);
-      return { info: incoming.info, overlapFrames: facts.incomingFrames };
+      // overlapFrames is the TRUE overlap the outgoing ring actually
+      // supplied (bounded by the fade window, shorter when it ran dry) —
+      // not incomingFrames, which is ~always just the nominal fade window
+      // regardless of how much of the outgoing track it really covered.
+      return { info: incoming.info, overlapFrames: facts.overlapFrames };
     } catch {
       this.cancelXfadeAttempt();
       return null;
