@@ -5,12 +5,27 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { player, playerModel } from '../bootstrap';
-  import { fmtTime, qualityLine } from '../format';
-  import Artwork from './Artwork.svelte';
+  import { fmtTime, playingFormatLine } from '../format';
   import WaveformSeek from './WaveformSeek.svelte';
   import type { Track } from '../api/types';
 
-  const item = $derived($playerModel.current);
+  /**
+   * Structural view of the playing queue item (player-core QueueItem):
+   * codec hint + representation id feed the format line, `source.kind`
+   * distinguishes offline playback.
+   */
+  type NowPlayingItem = {
+    artworkUrl?: string;
+    artist: string;
+    albumTitle: string;
+    edition?: string;
+    codec?: string;
+    representationId?: number;
+    source: { kind: string };
+    track: Track;
+  };
+
+  const item = $derived($playerModel.current as NowPlayingItem | null);
   let drag = $state<number | null>(null);
 
   const pos = $derived(drag ?? $playerModel.positionSeconds);
@@ -31,21 +46,13 @@ SPDX-License-Identifier: BSD-3-Clause
   const wfTrack = $derived<Track | null>(item?.track ?? null);
   // Codec transparency: what is actually sounding (codec +, for lossless,
   // rate/channels when probed). The manifest label wins when present.
-  const playingFormat = $derived(
-    item
-      ? qualityLine({
-          codec: item.codec,
-          sampleRate: (item.track.representations ?? []).find(
-            (r) => r.id === item.representationId,
-          )?.codec.sampleRate ?? item.track.codec.sampleRate,
-          channels: (item.track.representations ?? []).find(
-            (r) => r.id === item.representationId,
-          )?.codec.channels ?? item.track.codec.channels,
-          label: (item.track.representations ?? []).find(
-            (r) => r.id === item.representationId,
-          )?.label,
-        })
-      : '',
+  const playingFormat = $derived(item ? playingFormatLine(item) : '');
+  // Offline playback: the source kind is the real state, never inferred.
+  const offlinePlayback = $derived(item?.source.kind === 'local-file');
+  // Thin gold progress fill for the linear-range fallback (waveform tracks
+  // render their own elapsed region).
+  const rangeFill = $derived(
+    dur > 0 ? Math.max(0, Math.min(100, (pos / dur) * 100)) : 0,
   );
 </script>
 
@@ -54,9 +61,13 @@ SPDX-License-Identifier: BSD-3-Clause
     <div class="now">
       <img class="thumb" src={item.artworkUrl ?? '/placeholder.svg'} alt="" aria-hidden="true"
         onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}>
-      <div style="min-width:0">
+      <div class="now-meta">
         <div class="tt">{item.track.title}</div>
-        <div class="art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}{playingFormat ? ` · ${playingFormat}` : ''}</div>
+        <div class="art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</div>
+        <div class="pb-format smallcaps">
+          {#if offlinePlayback}<span class="pb-offline">⤓ Offline</span>{/if}
+          {#if playingFormat}<span>{playingFormat}</span>{/if}
+        </div>
       </div>
     </div>
 
@@ -64,11 +75,11 @@ SPDX-License-Identifier: BSD-3-Clause
       <button aria-label="Previous track" onclick={() => void player.previous()}>
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14l-11-7z"/></svg>
       </button>
-      <button aria-label={$playerModel.state === 'playing' ? 'Pause' : 'Play'} onclick={() => void player.togglePlay()}>
+      <button class="play-toggle" aria-label={$playerModel.state === 'playing' ? 'Pause' : 'Play'} onclick={() => void player.togglePlay()}>
         {#if $playerModel.state === 'playing'}
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
         {:else}
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>
         {/if}
       </button>
       <button aria-label="Next track" onclick={() => void player.next()}>
@@ -93,6 +104,7 @@ SPDX-License-Identifier: BSD-3-Clause
             step="0.5"
             value={pos}
             aria-label="Seek position"
+            style={`--range-fill:${rangeFill}%`}
             oninput={(e) => (drag = Number((e.currentTarget as HTMLInputElement).value))}
             onchange={(e) => {
               drag = null;
@@ -110,7 +122,7 @@ SPDX-License-Identifier: BSD-3-Clause
         class="smallcaps"
         aria-label={`Repeat: ${$playerModel.repeat === 'off' ? 'off' : $playerModel.repeat === 'one' ? 'one track' : 'all'}. Click to change.`}
         title={`Repeat: ${$playerModel.repeat}`}
-        style={$playerModel.repeat !== 'off' ? 'color:var(--accent,#b0632f)' : ''}
+        style={$playerModel.repeat !== 'off' ? 'color:var(--accent)' : ''}
         onclick={() =>
           player.setRepeat(
             $playerModel.repeat === 'off' ? 'all' : $playerModel.repeat === 'all' ? 'one' : 'off',
@@ -123,7 +135,7 @@ SPDX-License-Identifier: BSD-3-Clause
         class="smallcaps"
         aria-label={`Shuffle: ${$playerModel.shuffle ? 'on' : 'off'}. Click to toggle.`}
         title="Shuffle"
-        style={$playerModel.shuffle ? 'color:var(--accent,#b0632f)' : ''}
+        style={$playerModel.shuffle ? 'color:var(--accent)' : ''}
         onclick={() => player.setShuffle(!$playerModel.shuffle)}
       >
         ⤨
@@ -132,7 +144,7 @@ SPDX-License-Identifier: BSD-3-Clause
         class="smallcaps"
         aria-label={`${$playerModel.crossfadeSeconds === 0 ? 'Crossfade off' : `Maximum Crossfade: ${$playerModel.crossfadeSeconds} s`} (Smart Fades adapt to the music). Click to change.`}
         title={`${$playerModel.crossfadeSeconds === 0 ? 'Crossfade off' : `Maximum Crossfade: ${$playerModel.crossfadeSeconds} s`} (Smart Fades adapt to the music)`}
-        style={$playerModel.crossfadeSeconds > 0 ? 'color:var(--accent,#b0632f)' : ''}
+        style={$playerModel.crossfadeSeconds > 0 ? 'color:var(--accent)' : ''}
         onclick={() =>
           player.setCrossfade(
             $playerModel.crossfadeSeconds === 0 ? 4 : $playerModel.crossfadeSeconds === 4 ? 8 : $playerModel.crossfadeSeconds === 8 ? 12 : 0,
@@ -160,7 +172,7 @@ SPDX-License-Identifier: BSD-3-Clause
           value={$playerModel.volume}
           aria-label="Volume"
           oninput={(e) => player.setVolume(Number((e.currentTarget as HTMLInputElement).value))}
-          style="width:90px"
+          style={`width:90px;--range-fill:${($playerModel.volume * 100).toFixed(1)}%`}
         >
       </label>
       <button class="smallcaps" aria-label="Open the queue" onclick={() => window.dispatchEvent(new CustomEvent('musicpack:queue'))}>

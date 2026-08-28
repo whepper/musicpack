@@ -28,6 +28,34 @@ describe('ApiClient', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/albums?limit=50');
   });
 
+  it('normalizes the flattened track-detail wire shape into track + context', async () => {
+    // The endpoint spreads the Track fields at the top level and appends
+    // `context`; the client owns that quirk, callers see { track, context }.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          id: 30,
+          number: 1,
+          title: 'Big in Japan',
+          artists: [],
+          codec: { codec: 'musepack-sv8', mimeType: 'audio/musepack', streamVersion: 8, sampleRate: 44100, channels: 2 },
+          audio: { id: 30, size: 493369, sha256: 'ab'.repeat(32), url: '/api/v1/tracks/30/audio' },
+          context: { disc: 1, albumId: 5, albumTitle: 'Long Player', releaseId: 8, releaseEdition: '1986 Original CD' },
+        }),
+      ),
+    );
+    const api = new ApiClient();
+    const detail = await api.trackDetail(30);
+    expect(detail.track.id).toBe(30);
+    expect(detail.track.title).toBe('Big in Japan');
+    expect(detail.track.codec.streamVersion).toBe(8);
+    expect(detail.context.releaseId).toBe(8);
+    expect(detail.context.albumTitle).toBe('Long Player');
+    // no context leakage onto the track object itself
+    expect('context' in detail.track).toBe(false);
+  });
+
   it('maps typed server error codes to friendly ApiErrors', async () => {
     vi.stubGlobal(
       'fetch',

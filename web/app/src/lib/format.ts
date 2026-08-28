@@ -3,6 +3,8 @@
 
 // Small formatting helpers for the record-shelf UI.
 
+import type { Track } from './api/types';
+
 export function fmtTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
   const s = Math.floor(seconds);
@@ -89,6 +91,16 @@ export function codecLabel(codec?: string): string {
   return codec.toUpperCase();
 }
 
+/** Full display name for a codec — the voice used by tiles, cards and
+ *  key/value rows ("Musepack", "FLAC"). `codecLabel` stays the compact
+ *  chip voice ("MPC") for dense tables, meta lines and the player bar.
+ *  Pick by context, never hand-roll the mapping at call sites. */
+export function codecName(codec?: string): string {
+  if (!codec) return '';
+  if (isMusepackFamily(codec)) return 'Musepack';
+  return codecLabel(codec);
+}
+
 /** Byte size -> compact display ("412 kB", "38.4 MB", "1.2 GB"). Null or
  *  non-positive input yields '' so callers can omit the segment entirely. */
 export function formatBytes(bytes?: number | null): string {
@@ -107,6 +119,27 @@ export function formatBytes(bytes?: number | null): string {
 function isMusepackFamily(codec: string): boolean {
   const c = codec.toLowerCase();
   return c === 'musepack' || c === 'musepack-sv7' || c === 'musepack-sv8';
+}
+
+/** Format line for what is actually sounding: the playback codec hint when
+ *  present, otherwise the primary track codec; rate/channels come from the
+ *  selected representation when one is playing. Same facts as the player
+ *  bar has always shown — shared by the bar, mobile player and the
+ *  Now Playing page. */
+export function playingFormatLine(item: {
+  codec?: string;
+  representationId?: number;
+  track: Track;
+}): string {
+  const rep = (item.track.representations ?? []).find(
+    (r) => r.id === item.representationId,
+  );
+  return qualityLine({
+    codec: item.codec ?? item.track.codec.codec,
+    sampleRate: rep?.codec.sampleRate ?? item.track.codec.sampleRate,
+    channels: rep?.codec.channels ?? item.track.codec.channels,
+    label: rep?.label,
+  });
 }
 
 /** Human-readable quality line for one audio representation, built ONLY

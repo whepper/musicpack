@@ -6,9 +6,13 @@
 //   /                     albums shelf
 //   /albums/:id           album detail (editions)
 //   /albums/:id?release=N deep-link to a specific edition
+//   /albums/:id?section=S deep-link to an album section
+//   /tracks/:id           track detail (technical inspector)
+//   /search?q=            collection search (albums + artists)
 //   /artists              artist list
 //   /artists/:id          artist detail
 //   /queue                now playing / queue
+//   /settings             playback quality + storage
 import { writable, type Readable } from './store';
 
 export interface Route {
@@ -27,6 +31,8 @@ const DEFINITIONS: RouteDef[] = [
   { pattern: /^\/$/, name: 'albums', keys: [] },
   { pattern: /^\/albums\/?$/, name: 'albums', keys: [] },
   { pattern: /^\/albums\/([0-9]+)$/, name: 'album', keys: ['id'] },
+  { pattern: /^\/tracks\/([0-9]+)$/, name: 'track', keys: ['id'] },
+  { pattern: /^\/search\/?$/, name: 'search', keys: [] },
   { pattern: /^\/artists\/?$/, name: 'artists', keys: [] },
   { pattern: /^\/artists\/([0-9]+)$/, name: 'artist', keys: ['id'] },
   { pattern: /^\/queue\/?$/, name: 'queue', keys: [] },
@@ -51,7 +57,12 @@ export function parseRoute(path: string): Route | null {
 }
 
 export function createRouter() {
-  const current = writable<Route>(parseRoute(location.pathname) ?? { name: 'notfound', params: {}, query: new URLSearchParams() });
+  // Include the search string: deep links like /albums/2?release=7&section=audio
+  // must resolve their query on a hard load, not only on in-app navigations.
+  const current = writable<Route>(
+    parseRoute(location.pathname + location.search) ??
+      { name: 'notfound', params: {}, query: new URLSearchParams() },
+  );
 
   function go(path: string): void {
     history.pushState({}, '', path);

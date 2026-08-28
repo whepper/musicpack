@@ -10,7 +10,9 @@ authenticate (token once) → HttpOnly session cookie
     ↓
 album shelf (artwork-first grid, infinite scroll, search, recently added)
     ↓
-album page → edition selector → disc-grouped track list → release info panel
+album page → hero + seven ?section= panels + context rail → track detail
+    ↓
+/tracks/:id → playback actions, waveform, loudness, representations, hashes
     ↓
 Play Album → BS.1770 album normalization → Musepack demand-driven WASM
              decoding → AudioWorklet ring → gapless to the next track
@@ -124,10 +126,12 @@ right place — neither item indicates a production defect:
   network-severance, the service-worker shell, OPFS storage and session
   restore together. It has exhibited intermittent **CI-only** failures
   during offline mid-album reload/resume while passing consistently in
-  local CI-mode runs (including full-suite repetitions). If the failure
-  recurs, investigate **test synchronization around restored
-  playback/session state** before touching production offline or player
-  code.
+  local CI-mode runs (including full-suite repetitions). The final
+  playback wait now polls the debug hook and, on timeout, self-reports the
+  restored player/queue state in the failure message. If the failure
+  recurs, start from that state dump — investigate **test synchronization
+  around restored playback/session state** before touching production
+  offline or player code.
 - **`playback.spec.ts` "removing the playing queue item…"** has a
   documented load race (asserting player state while the core may still be
   loading the neighbor). It is **pre-existing** and was observed flaking on
@@ -175,7 +179,8 @@ so Player Core, the engines and the queue model stay representation-blind:
   an exact codec family (`codec: "flac"`), or `lossless` (closed set:
   flac/wav/aiff). It persists under its own localStorage key
   (`musicpack.audio-preference.v1`) — deliberately outside the player-core
-  snapshot schema. No settings UI yet; set it via the debug hook.
+  snapshot schema. The user-facing control lives on `/settings` (see
+  "Audio preference & settings" below).
 - Fallback is deterministic and total: a preference that matches nothing
   falls back to the primary; an unplayable primary may be rescued by the
   first playable alternate in manifest order; if nothing is playable the
@@ -228,7 +233,7 @@ rules:
 - **Offline session:** a boot network failure WITH installed content
   enters `AuthState 'offline'` (degraded-authenticated) instead of the
   sign-in screen; `navigator.onLine` is deliberately not consulted.
-  The NavBar shows an Offline chip while degraded, and the app re-probes
+  The top bar shows an Offline chip while degraded, and the app re-probes
   on connectivity return (an `online` listener plus a slow fallback timer,
   since a page booted offline may never receive the event). Reconnect
   never demotes an offline session to sign-in.

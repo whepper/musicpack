@@ -11,6 +11,7 @@ import type {
   ReleaseDetail,
   SessionInfo,
   Track,
+  TrackDetail,
 } from './types';
 
 export interface ApiClientOptions {
@@ -129,6 +130,18 @@ export class ApiClient {
 
   track(id: number | string): Promise<Track> {
     return this.json(`/api/v1/tracks/${id}`);
+  }
+
+  /** Track detail including the owning release/album context block —
+   *  the bare `track()` endpoint stays available for callers that only
+   *  need the playback fields. The endpoint spreads the Track fields at
+   *  the top level and appends `context`; normalized here into
+   *  `{ track, context }` so callers never see the wire quirk. */
+  async trackDetail(id: number | string): Promise<TrackDetail> {
+    const { context, ...track } = await this.json<
+      Track & { context: TrackDetail['context'] }
+    >(`/api/v1/tracks/${id}`);
+    return { track, context };
   }
 
   artists(params: { limit?: number; offset?: number; q?: string } = {}): Promise<ArtistPage> {

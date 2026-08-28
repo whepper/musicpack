@@ -15,7 +15,7 @@
  * responses for anything but its precache list.
  */
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `musicpack-shell-${VERSION}`;
 
 const SHELL_ASSETS = [

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseRoute } from '../../app/src/lib/router';
-import { fmtTime, yearOf, formatDate, countryName, mediumLabel, collectorLine, formatBytes, qualityLine } from '../../app/src/lib/format';
+import { fmtTime, yearOf, formatDate, countryName, mediumLabel, collectorLine, formatBytes, qualityLine, codecName } from '../../app/src/lib/format';
 
 describe('router', () => {
   it('parses all route shapes', () => {
@@ -85,5 +85,17 @@ describe('format', () => {
     // Absent/unknown metadata degrades honestly; never invents detail.
     expect(qualityLine({ codec: 'flac' })).toBe('FLAC');
     expect(qualityLine(undefined)).toBe('');
+  });
+
+  it('separates the editorial codec name from the compact label', () => {
+    // Editorial voice: the full family name.
+    expect(codecName('musepack-sv8')).toBe('Musepack');
+    expect(codecName('musepack-sv7')).toBe('Musepack');
+    expect(codecName('Musepack')).toBe('Musepack');
+    // Everything else falls through to the compact label unchanged.
+    expect(codecName('flac')).toBe('FLAC');
+    expect(codecName('mp3')).toBe('MP3');
+    expect(codecName('unknown-xyz')).toBe('UNKNOWN-XYZ');
+    expect(codecName(undefined)).toBe('');
   });
 });

@@ -163,17 +163,19 @@ responsibility; this component only renders when waveform is present.
       if (hPeak === 0 && hRms === 0) continue;
       const fracX = (x + 0.5) / W;
       const elapsed = fracX <= elapsedFrac;
-      ctx.fillStyle = elapsed ? 'rgba(122,79,42,0.95)' : 'rgba(60,55,48,0.55)';
+      // Dark-theme palette: gold for the elapsed region, quiet cream for
+      // what remains. Must stay legible on both --surface and --bg.
+      ctx.fillStyle = elapsed ? 'rgba(217,168,86,0.95)' : 'rgba(241,238,231,0.28)';
       ctx.fillRect(x, midY - hPeak, 1, hPeak);
       if (hRms > 0) {
-        ctx.fillStyle = elapsed ? 'rgba(176,99,47,0.85)' : 'rgba(120,112,100,0.45)';
+        ctx.fillStyle = elapsed ? 'rgba(230,195,122,0.8)' : 'rgba(241,238,231,0.14)';
         ctx.fillRect(x, midY - hRms, 1, hRms);
       }
     }
 
     // Playhead overlay.
     const px = Math.round(elapsedFrac * W);
-    ctx.fillStyle = 'rgba(176,99,47,0.95)';
+    ctx.fillStyle = 'rgba(230,195,122,0.95)';
     ctx.fillRect(px, 0, 1, H);
   }
 
@@ -281,7 +283,7 @@ responsibility; this component only renders when waveform is present.
     align-items: center;
     justify-content: center;
     font-size: 0.75em;
-    color: var(--ink-muted, #7a7268);
+    color: var(--text-faint);
     pointer-events: none;
   }
   .wf-hidden {
@@ -296,7 +298,7 @@ responsibility; this component only renders when waveform is present.
   }
   /* Visible focus ring around the canvas while the hidden range has focus. */
   .waveform:focus-within {
-    outline: 2px solid var(--focus, #b0632f);
+    outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
 </style>

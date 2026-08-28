@@ -14,53 +14,55 @@ SPDX-License-Identifier: BSD-3-Clause
 </script>
 
 {#if $queue.items.length === 0}
-  <p class="empty-state" style="padding:var(--space-6) 0;font-size:var(--fs-md);font-family:var(--sans)">
+  <p class="empty-state queue-empty">
     Nothing in the queue. Play an album from the shelf.
   </p>
 {:else}
-  <div style="display:flex;justify-content:space-between;align-items:center;padding:0 var(--space-4) var(--space-2)">
+  <div class="queue-meta">
     <span class="smallcaps">{`${$queue.items.length} item${$queue.items.length === 1 ? '' : 's'}`}</span>
-    <button class="smallcaps" style="color:var(--danger)" onclick={() => queue.clear()}>
+    <button class="smallcaps queue-clear" onclick={() => queue.clear()}>
       Clear queue
     </button>
   </div>
-  <div style="overflow-y:auto;flex:1">
+  <div class="queue-list">
     {#each $queue.items as item, i (item.track.id)}
       <div class="queue-item" aria-current={i === currentIndex ? 'true' : undefined}>
-        <div style="min-width:0">
+        <img class="queue-thumb" src={item.artworkUrl ?? '/placeholder.svg'} alt="" aria-hidden="true"
+          onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}>
+        <div class="queue-item-body">
           <button
-            style="text-align:left;width:100%;display:block"
+            class="queue-open"
             aria-current={i === currentIndex ? 'true' : undefined}
             onclick={() => {
               void player.playQueueIndex(i);
             }}
           >
             <div class="queue-tt">
-              <span class="num" style="color:var(--ink-faint);font-size:var(--fs-xs)">{i + 1}.</span>
+              <span class="num">{i + 1}.</span>
               {' '}{item.track.title}
               {#if i === currentIndex}
-                <span class="muted" style="font-size:var(--fs-xs)"> · {fmtTime(Math.max(0, $playerModel.positionSeconds - $playerModel.currentTrackStartSeconds))}</span>
+                <span class="muted queue-elapsed"> · {fmtTime(Math.max(0, $playerModel.positionSeconds - $playerModel.currentTrackStartSeconds))}</span>
               {/if}
             </div>
             <div class="queue-art">{item.artist} — {item.albumTitle}{item.edition ? ` · ${item.edition}` : ''}</div>
           </button>
         </div>
-        <div style="display:flex;gap:2px;align-items:center">
+        <div class="queue-ops">
           <button
+            class="queue-move"
             aria-label={`Move ${item.track.title} up in the queue`}
             disabled={i === 0}
-            style="color:var(--ink-faint);font-size:var(--fs-xs);padding:2px 4px"
             onclick={() => queue.move(i, i - 1)}
           >▲</button>
           <button
+            class="queue-move"
             aria-label={`Move ${item.track.title} down in the queue`}
             disabled={i === $queue.items.length - 1}
-            style="color:var(--ink-faint);font-size:var(--fs-xs);padding:2px 4px"
             onclick={() => queue.move(i, i + 1)}
           >▼</button>
           <button
+            class="queue-remove"
             aria-label={`Remove ${item.track.title} from the queue`}
-            style="color:var(--ink-faint);font-size:var(--fs-md)"
             onclick={() => queue.removeAt(i)}>✕</button>
         </div>
       </div>

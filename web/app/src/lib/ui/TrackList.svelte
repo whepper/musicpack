@@ -87,6 +87,11 @@ SPDX-License-Identifier: BSD-3-Clause
               {/if}
             </span>
           </button>
+          <a
+            class="track-detail"
+            href={`/tracks/${track.id}`}
+            aria-label={`Open ${track.title} track detail`}
+          >…</a>
           <button
             class="queue-add"
             aria-label={`Add ${track.title} to queue`}

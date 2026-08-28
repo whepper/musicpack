@@ -103,10 +103,36 @@ test.describe('offline downloads', () => {
     await expect(page.getByText('Offline', { exact: true })).toBeVisible({ timeout: 20_000 });
 
     await page.locator('.playerbar').getByRole('button', { name: 'Play', exact: true }).click();
-    await waitFor(page, async () => (await playerState(page)).state === 'playing', {
-      label: 'offline playback after reload',
-      timeout: 30_000,
-    });
+    // Poll through the debug hook so that, if this ever times out, the
+    // failure message carries the exact restored player/queue state (the
+    // historical flake signature was a fetch error on the restored item —
+    // see web/README.md "E2E / CI reliability notes").
+    let lastPoll: Record<string, unknown> | null = null;
+    try {
+      await waitFor(page, async () => {
+        lastPoll = await page.evaluate(() => {
+          const m = window.__musicpack?.player?.model?.get();
+          const items = window.__musicpack?.queue?.items?.get?.() ?? [];
+          return {
+            state: m?.state,
+            error: m?.error,
+            pos: m?.positionSeconds,
+            current: m?.current?.track?.title ?? null,
+            currentSource: m?.current?.source?.kind ?? null,
+            index: window.__musicpack?.queue?.index?.get?.(),
+            sources: items.map((i) => i.source?.kind),
+          };
+        });
+        return lastPoll?.state === 'playing';
+      }, {
+        label: 'offline playback after reload',
+        timeout: 30_000,
+      });
+    } catch {
+      throw new Error(
+        `offline playback after reload | restored state: ${JSON.stringify(lastPoll)}`,
+      );
+    }
     await waitFor(page, async () => (await playerState(page)).positionSeconds > 1, {
       label: 'offline position advances',
     });
@@ -262,7 +288,9 @@ test.describe('offline downloads', () => {
     // Reload: the boot audit reconciles files vs catalog and strips the
     // damaged asset; the manager presents 'damaged', never plain 'stale'.
     await page.reload();
-    await page.getByText('Long Player').click();
+    // Already on the album page after the reload; the heading locator is
+    // unambiguous now that the breadcrumb also carries the album title.
+    await page.getByRole('heading', { name: 'Long Player' }).click();
     await expect(page.locator('.dl-badge')).toHaveText(/Needs repair/, { timeout: 30_000 });
 
     const reinstall = page.getByRole('button', { name: 'Reinstall Long Player download' });

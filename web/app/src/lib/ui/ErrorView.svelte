@@ -7,9 +7,9 @@ SPDX-License-Identifier: BSD-3-Clause
   let { message, detail }: { message: string; detail?: string } = $props();
 </script>
 
-<div role="alert" class="empty-state" style="font-family:var(--sans);font-size:var(--fs-md)">
-  <p style="margin:0 0 var(--space-2)">{message}</p>
+<div role="alert" class="empty-state error-state">
+  <p>{message}</p>
   {#if detail}
-    <p class="muted" style="font-size:var(--fs-sm);margin:0">{detail}</p>
+    <p class="muted error-detail">{detail}</p>
   {/if}
 </div>

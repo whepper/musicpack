@@ -5,8 +5,10 @@ SPDX-License-Identifier: BSD-3-Clause
 
 <script lang="ts">
   import { library } from '../bootstrap';
+  import AlbumCard from './AlbumCard.svelte';
   import ErrorView from './ErrorView.svelte';
   import { onMount } from 'svelte';
+  import type { AlbumSummary } from '../api/types';
 
   let { artistId }: { artistId: string } = $props();
 
@@ -19,6 +21,21 @@ SPDX-License-Identifier: BSD-3-Clause
       .then((d) => (detail = d))
       .catch((e) => (error = e instanceof Error ? e.message : 'Could not load artist.'));
   });
+
+  // Artist-detail albums carry no artwork reference; AlbumCard's shared
+  // monogram fallback covers presentation, exactly like the shelf.
+  const cards = $derived.by(() => {
+    if (!detail) return [] as Array<AlbumSummary>;
+    const d = detail;
+    return detail.albums.map((album) => ({
+      id: album.id,
+      title: album.title,
+      releaseType: album.releaseType,
+      originalReleaseDate: album.originalReleaseDate,
+      artists: [{ id: d.id, name: d.name }],
+      releaseCount: 0,
+    }));
+  });
 </script>
 
 {#if error}
@@ -27,25 +44,16 @@ SPDX-License-Identifier: BSD-3-Clause
   <div class="spinner" role="status" aria-label="Loading artist"></div>
 {:else}
   <div class="shelf-header">
-    <div>
+    <div class="shelf-title-wrap">
       <p class="eyebrow">Artist</p>
       <h1>{detail.name}</h1>
     </div>
   </div>
   <h2 class="smallcaps" style="margin:var(--space-4) 0">Albums</h2>
   <div class="shelf-grid">
-    {#each detail.albums as album}
+    {#each cards as album (album.id)}
       <div>
-        <a class="album-card" href={`/albums/${album.id}`}>
-          <div class="cover">
-            <div class="artwork-fallback" style="background:#7a5c3e" role="img" aria-label={`${album.title} — ${detail.name}`}>
-              <span style="font-size:1.6em;letter-spacing:.05em">{album.title.slice(0, 2).toUpperCase()}</span>
-            </div>
-          </div>
-          <div class="title">{album.title}</div>
-          <div class="artist">{detail.name}</div>
-          <div class="collector">{album.originalReleaseDate?.slice(0, 4) ?? ''}</div>
-        </a>
+        <AlbumCard {album} count={1} />
       </div>
     {/each}
   </div>

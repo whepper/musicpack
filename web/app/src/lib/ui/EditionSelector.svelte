@@ -27,6 +27,9 @@ SPDX-License-Identifier: BSD-3-Clause
         title={release.edition ?? `Release ${release.id}`}
         onclick={() => onSelect(release.id)}
       >
+        {#if release.artwork}
+          <img class="edition-chip-art" src={release.artwork.url} alt="" aria-hidden="true">
+        {/if}
         {mediumLabel(release.media[0])}
         {release.releaseDate ? `· ${yearOf(release.releaseDate)}` : ''}
         {release.edition ? `· ${release.edition}` : ''}

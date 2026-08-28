@@ -166,7 +166,7 @@ SPDX-License-Identifier: BSD-3-Clause
     color: var(--accent);
   }
   .dl-attention {
-    color: var(--ink);
+    color: var(--text);
     border: 1px solid var(--accent);
     border-radius: 999px;
     padding: 2px 10px;
@@ -193,7 +193,7 @@ SPDX-License-Identifier: BSD-3-Clause
     stroke-linecap: round;
   }
   .dl-error {
-    color: var(--danger, #a03030);
+    color: var(--danger);
   }
   @media (max-width: 680px) {
     .dl-menu-btn {

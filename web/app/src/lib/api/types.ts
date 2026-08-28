@@ -125,6 +125,23 @@ export interface Track {
   representations?: RepresentationRef[];
 }
 
+/** `GET /api/v1/tracks/{id}` returns the `Track` fields flattened at the
+ *  top level with a `context` block appended (owning release/album, so the
+ *  track page can deep-link back without a second round trip). The client
+ *  normalizes that wire shape into this nested type at the API boundary:
+ *  components read `detail.track` for the track and `detail.context` for
+ *  where it lives. */
+export interface TrackDetail {
+  track: Track;
+  context: {
+    disc: number;
+    albumId: number;
+    albumTitle: string;
+    releaseId: number;
+    releaseEdition?: string;
+  };
+}
+
 export interface RepresentationRef {
   id: number;
   size: number;

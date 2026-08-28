@@ -42,11 +42,14 @@ SPDX-License-Identifier: BSD-3-Clause
 </script>
 
 <div class="shelf-header">
-  <h1>Artists</h1>
-  <span class="muted eyebrow" style="margin-left:auto">{`${total} artist${total === 1 ? '' : 's'}`}</span>
+  <div class="shelf-title-wrap">
+    <p class="eyebrow">The collection</p>
+    <h1 id="artist-title">Artists</h1>
+  </div>
+  <span class="shelf-count smallcaps">{`${total} artist${total === 1 ? '' : 's'}`}</span>
 </div>
 
-<SearchBox value={q} onSearch={onSearch} onSort={() => undefined} sort="" />
+<SearchBox value={q} onSearch={onSearch} />
 
 {#if error}
   <ErrorView message={error} />
@@ -55,14 +58,11 @@ SPDX-License-Identifier: BSD-3-Clause
 {:else if artists.length === 0}
   <p class="empty-state">No artists in the collection yet.</p>
 {:else}
-  <ul style="list-style:none;margin:0;padding:0;border-top:1px solid var(--hairline)">
-    {#each artists as artist}
+  <ul class="artist-rows" role="list" aria-labelledby="artist-title">
+    {#each artists as artist (artist.id)}
       <li>
-        <a
-          href={`/artists/${artist.id}`}
-          style="display:flex;justify-content:space-between;align-items:baseline;padding:var(--space-3) var(--space-2);border-bottom:1px solid var(--hairline)"
-        >
-          <span style="font-family:var(--serif);font-size:var(--fs-lg)">{artist.name}</span>
+        <a class="artist-row" href={`/artists/${artist.id}`}>
+          <span class="artist-name">{artist.name}</span>
           <span class="smallcaps">{artist.albumCount} album{artist.albumCount === 1 ? '' : 's'}</span>
         </a>
       </li>

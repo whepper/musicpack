@@ -17,7 +17,7 @@ SPDX-License-Identifier: BSD-3-Clause
   aria-hidden={!open}
 >
   <header>
-    <h2 class="smallcaps" style="margin:0">Queue</h2>
+    <h2 class="smallcaps">Queue</h2>
     <button aria-label="Close the queue" onclick={onClose}>✕</button>
   </header>
   <QueueList />

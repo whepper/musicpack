@@ -17,21 +17,27 @@ test('album page groups editions and lets you switch between them', async ({ pag
   await page.getByText('Synthetic Test Compilation').click();
   await expect(page.getByRole('heading', { name: 'Synthetic Test Compilation' })).toBeVisible();
 
-  // The fixture album has three editions — they must never be flattened.
+  const firstTracklist = page.locator('.tracklist').innerText();
+
+  // UI v2: the edition chips live in the Edition section (the rail's
+  // thumbnails switch editions from the default view). The fixture album
+  // has three editions — they must never be flattened.
+  await page.getByRole('tab', { name: 'Edition' }).click();
   const chips = page.locator('.edition-chip');
   await expect(chips).toHaveCount(3);
   await expect(chips.nth(0)).toHaveAttribute('aria-pressed', 'true');
-
-  const firstTracklist = page.locator('.tracklist').innerText();
   await chips.nth(1).click();
   await expect(chips.nth(1)).toHaveAttribute('aria-pressed', 'true');
+
   // A different edition carries a different track list (nothing flattened).
+  await page.getByRole('tab', { name: 'Overview' }).click();
   await expect(page.locator('.tracklist')).not.toHaveText(await firstTracklist);
 
-  // Release information panel exposes collector details.
-  await page.getByText('Release information').click();
-  await expect(page.getByText('BS.1770 loudness', { exact: false })).toBeVisible();
+  // Collector details remain exposed (Edition / Analysis sections).
+  await page.getByRole('tab', { name: 'Edition' }).click();
   await expect(page.getByText('Catalogue number', { exact: false })).toBeVisible();
+  await page.getByRole('tab', { name: 'Analysis' }).click();
+  await expect(page.getByText('BS.1770 loudness', { exact: false })).toBeVisible();
 });
 
 test('search filters the shelf server-side', async ({ page }) => {

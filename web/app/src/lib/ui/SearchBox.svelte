@@ -6,6 +6,9 @@ SPDX-License-Identifier: BSD-3-Clause
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
+  // Shared collection-search header. The sort group is optional: callers
+  // without sorting (e.g. the artist list) render just the search pill,
+  // so no dead "All / Recently added" chips appear.
   let {
     value,
     onSearch,
@@ -14,18 +17,17 @@ SPDX-License-Identifier: BSD-3-Clause
     children,
   }: {
     value: string;
-    sort: string;
     onSearch: (q: string) => void;
-    onSort: (sort: string) => void;
+    onSort?: (sort: string) => void;
+    sort?: string;
     children?: Snippet;
   } = $props();
 </script>
 
-<div class="search-row" style="display:flex;gap:var(--space-4);align-items:center;margin-bottom:var(--space-5);flex-wrap:wrap">
-  <label class="searchbox" style="display:flex;align-items:center;gap:var(--space-2);border:1px solid var(--hairline);border-radius:999px;padding:6px 16px;background:var(--paper-raised);flex:1;min-width:220px">
-    <span aria-hidden="true" style="color:var(--ink-faint)">⌕</span>
+<div class="search-row">
+  <label class="search-field">
+    <span class="search-glyph" aria-hidden="true">⌕</span>
     <input
-      style="border:none;background:transparent;font:inherit;outline:none;width:100%"
       type="search"
       placeholder="Search title or artist"
       value={value}
@@ -33,15 +35,19 @@ SPDX-License-Identifier: BSD-3-Clause
       oninput={(e) => onSearch((e.currentTarget as HTMLInputElement).value)}
     >
   </label>
-  <div class="sort" role="group" aria-label="Filter and sort the shelf">
-    {@render children?.()}
-    <button
-      class="edition-chip"
-      aria-pressed={sort === ''}
-      onclick={() => onSort('')}>All</button>
-    <button
-      class="edition-chip"
-      aria-pressed={sort === 'recent'}
-      onclick={() => onSort('recent')}>Recently added</button>
-  </div>
+  {#if onSort || children}
+    <div class="sort" role="group" aria-label="Filter and sort the shelf">
+      {@render children?.()}
+      {#if onSort}
+        <button
+          class="edition-chip"
+          aria-pressed={sort === ''}
+          onclick={() => onSort('')}>All</button>
+        <button
+          class="edition-chip"
+          aria-pressed={sort === 'recent'}
+          onclick={() => onSort('recent')}>Recently added</button>
+      {/if}
+    </div>
+  {/if}
 </div>

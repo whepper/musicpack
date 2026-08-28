@@ -4,7 +4,7 @@ SPDX-License-Identifier: BSD-3-Clause
 -->
 
 <script lang="ts">
-  import { library, session, offline, offlineStates } from '../bootstrap';
+  import { library, router, session, offline, offlineStates } from '../bootstrap';
   import AlbumCard from './AlbumCard.svelte';
   import SearchBox from './SearchBox.svelte';
   import ErrorView from './ErrorView.svelte';
@@ -12,15 +12,16 @@ SPDX-License-Identifier: BSD-3-Clause
   import type { AlbumSummary } from '../api/types';
 
   const shelf = library.shelf;
+  const routeStore = router.route;
   const sessionState = $derived($session.state);
-  let q = $state('');
+  let q = $state(new URLSearchParams(location.search).get('q') ?? '');
   let sort = $state('');
   let offlineOnly = $state(false);
 
   let sentinel: HTMLDivElement | undefined = $state();
 
   onMount(() => {
-    void library.browse({});
+    void library.browse(q ? { q } : {});
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) void library.loadMore();
@@ -29,6 +30,19 @@ SPDX-License-Identifier: BSD-3-Clause
     );
     if (sentinel) io.observe(sentinel);
     return () => io.disconnect();
+  });
+
+  // Top-bar searches deep-link to /albums?q=…; pick the query up
+  // reactively so a search submitted while already on the shelf re-runs.
+  // `lastUrlQ` is intentionally non-reactive: reading `q` here would make
+  // the effect depend on its own write and reset the search box.
+  let lastUrlQ: string = new URLSearchParams(location.search).get('q') ?? '';
+  $effect(() => {
+    const urlQ = $routeStore.query.get('q') ?? '';
+    if (urlQ === lastUrlQ) return;
+    lastUrlQ = urlQ;
+    q = urlQ;
+    void library.browse({ q, sort });
   });
 
   function onSearch(value: string): void {
@@ -80,11 +94,14 @@ SPDX-License-Identifier: BSD-3-Clause
 </script>
 
 <div class="shelf-header">
-  <h1 id="shelf-title">The shelf</h1>
+  <div class="shelf-title-wrap">
+    <p class="eyebrow">The collection</p>
+    <h1 id="shelf-title">The shelf</h1>
+  </div>
   {#if sessionState === 'offline'}
     <span class="smallcaps" role="status" style="color:var(--accent)">Offline — showing downloaded music</span>
   {/if}
-  <span class="muted eyebrow" style="margin-left:auto">{`${$shelf.total} album${$shelf.total === 1 ? '' : 's'}`}</span>
+  <span class="shelf-count smallcaps">{`${$shelf.total} album${$shelf.total === 1 ? '' : 's'}`}</span>
 </div>
 
 <SearchBox value={q} onSearch={onSearch} onSort={onSort} sort={sort}>
