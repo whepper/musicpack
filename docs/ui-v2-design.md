@@ -370,11 +370,15 @@ Recorded, none blocking, none faked in the UI:
 2. **Sub-minimum Author widths**: below the declared `minWidth: 760`, the
    wrapped status bar can exceed the footer clearance; supported sizes are
    clean. Accepted degradation.
-3. **Suite flake**: `offline.spec.ts` "download once via the UI…" (and, under
-   heavy load, one `playback.spec.ts` timing assertion) intermittently fail
-   in full-suite runs and pass in isolation — documented as
-   test-synchronization/timing, not production defects (see
-   `web/README.md` §E2E/CI reliability notes).
+3. **Suite flake**: `offline.spec.ts` "download once via the UI…" was the
+   historical CI-only flake, now root-caused and fixed: its offline seek ran
+   on a ~1 s fixture clip, so the slider clamped a 10 s seek to the track
+   boundary and queued the auto-advance chain into the album end — a race
+   against the reload that CI timing lost. The seek now runs on the 48 s
+   track (real OPFS random access), so the persisted session is
+   deterministically playable. One `playback.spec.ts` timing assertion still
+   flakes under heavy load — test-synchronization, not a production defect
+   (see `web/README.md` §E2E/CI reliability notes).
 4. **Faint micro-copy** (codec tags, artwork placeholder text) sits at the
    contrast floor by policy; raised only if a real legibility report arrives.
 5. **API gaps awaiting product decisions**: sonic-analysis exposure to the

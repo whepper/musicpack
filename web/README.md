@@ -124,14 +124,17 @@ right place — neither item indicates a production defect:
 - **Offline journey (`offline.spec.ts` "download once via the UI…")** is
   intentionally an end-to-end integration test: it exercises real
   network-severance, the service-worker shell, OPFS storage and session
-  restore together. It has exhibited intermittent **CI-only** failures
-  during offline mid-album reload/resume while passing consistently in
-  local CI-mode runs (including full-suite repetitions). The final
-  playback wait now polls the debug hook and, on timeout, self-reports the
-  restored player/queue state in the failure message. If the failure
-  recurs, start from that state dump — investigate **test synchronization
-  around restored playback/session state** before touching production
-  offline or player code.
+  restore together. It exhibited intermittent **CI-only** failures during
+  offline mid-album reload/resume while passing consistently in local
+  CI-mode runs (including full-suite repetitions). **Root-caused** via the
+  self-reporting state dump: the seek step ran on track 2 — a ~1 s fixture
+  clip — and the slider clamps a 10 s seek to the track boundary, which
+  queued the auto-advance chain into the album end. Reloading before the
+  chain finished restored a playable mid-album session (local timing);
+  reloading after it persisted `ended` and Play never resumed (CI timing).
+  The seek now happens on the 48 s track 1, so the persisted session is
+  deterministically playable; cross-track offline coverage moved to the
+  post-reload Next step.
 - **`playback.spec.ts` "removing the playing queue item…"** has a
   documented load race (asserting player state while the core may still be
   loading the neighbor). It is **pre-existing** and was observed flaking on

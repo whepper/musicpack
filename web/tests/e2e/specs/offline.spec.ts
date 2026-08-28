@@ -10,8 +10,9 @@
 // records and served-byte accounting — things a DOM cannot express.
 //
 // Flow: sign in → download a release via the UI → sever the network →
-// reload (shell SW + 'offline' session state) → play the installed album
-// locally → seek → navigate → restore network → confirm non-installed
+// seek on the installed long track (OPFS random access) → reload (shell
+// SW + 'offline' session state) → play the restored session locally →
+// navigate across tracks → restore network → confirm non-installed
 // releases still stream remotely. Cancel / stale / damaged lifecycles get
 // dedicated tests below.
 
@@ -77,22 +78,28 @@ test.describe('offline downloads', () => {
 
     // ---- go offline mid-session -------------------------------------
     await context.setOffline(true);
-    await page.locator('.playerbar').getByRole('button', { name: 'Next track' }).click();
-    await waitFor(page, async () => (await playerState(page)).positionSeconds > 0.3, {
-      label: 'offline track 2 playing',
-      timeout: 20_000,
-    });
-    expect((await playerState(page)).state).not.toBe('error');
-    expect((await queueItems(page))[1]?.kind).toBe('local-file');
 
-    // Seek offline (random access over OPFS).
+    // Seek offline (random access over OPFS) while still on the 48 s
+    // track. Tracks 2-4 are ~1 s clips, and the seek slider's max is the
+    // current track's duration: a committed 10 s seek there lands on the
+    // track boundary and queues the auto-advance chain into the album
+    // end. Whether the reload below beat that chain to persist a
+    // playable session was the historical CI-only flake (web/README.md
+    // "E2E / CI reliability notes").
     await page.locator('.playerbar input[type=range]').first().evaluate((el) => {
       const input = el as HTMLInputElement;
       input.value = String(10);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    await expect.poll(async () => (await playerState(page)).state).not.toBe('error');
+    await waitFor(
+      page,
+      async () =>
+        (await playerState(page)).state === 'playing' &&
+        (await playerState(page)).positionSeconds > 5,
+      { label: 'offline seek resumes playback', timeout: 20_000 },
+    );
+    expect((await playerState(page)).error).toBeUndefined();
 
     // ---- full offline reload ----------------------------------------
     await page.reload();
@@ -112,14 +119,14 @@ test.describe('offline downloads', () => {
       await waitFor(page, async () => {
         lastPoll = await page.evaluate(() => {
           const m = window.__musicpack?.player?.model?.get();
-          const items = window.__musicpack?.queue?.items?.get?.() ?? [];
+          const items = window.__musicpack?.queue?.get?.().items ?? [];
           return {
             state: m?.state,
             error: m?.error,
             pos: m?.positionSeconds,
             current: m?.current?.track?.title ?? null,
             currentSource: m?.current?.source?.kind ?? null,
-            index: window.__musicpack?.queue?.index?.get?.(),
+            index: window.__musicpack?.queue?.get?.().index,
             sources: items.map((i) => i.source?.kind),
           };
         });
@@ -145,6 +152,7 @@ test.describe('offline downloads', () => {
       { label: 'offline track progression', timeout: 20_000 },
     );
     expect((await playerState(page)).error).toBeUndefined();
+    expect((await queueItems(page))[1]?.kind).toBe('local-file');
 
     // ---- restore the network ----------------------------------------
     await context.setOffline(false);
