@@ -50,17 +50,12 @@
 #endif
 
 #include <musicpack/checksum.h>
+#include "sha256_internal.h"
 
 /* ------------------------------------------------------------------ */
 /* SHA-256 core                                                       */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    unsigned int h[8];
-    unsigned long long len;
-    unsigned char block[64];
-    unsigned int block_used;
-} mpc_sha256_ctx;
 
 static const unsigned int SHA256_K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -88,7 +83,7 @@ rotr32(unsigned int x, unsigned int n)
 }
 
 static void
-sha256_transform(mpc_sha256_ctx *c, const unsigned char *block)
+sha256_transform(musicpack_sha256_ctx *c, const unsigned char *block)
 {
     unsigned int w[64];
     unsigned int a, b, d, e, f, g, h, c2;
@@ -124,8 +119,8 @@ sha256_transform(mpc_sha256_ctx *c, const unsigned char *block)
     c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
 }
 
-static void
-sha256_init(mpc_sha256_ctx *c)
+void
+musicpack_sha256_init(musicpack_sha256_ctx *c)
 {
     c->h[0] = 0x6a09e667u; c->h[1] = 0xbb67ae85u;
     c->h[2] = 0x3c6ef372u; c->h[3] = 0xa54ff53au;
@@ -135,8 +130,8 @@ sha256_init(mpc_sha256_ctx *c)
     c->block_used = 0;
 }
 
-static void
-sha256_update(mpc_sha256_ctx *c, const void *data, size_t len)
+void
+musicpack_sha256_update(musicpack_sha256_ctx *c, const void *data, size_t len)
 {
     const unsigned char *p = (const unsigned char *) data;
     c->len += (unsigned long long) len;
@@ -154,8 +149,8 @@ sha256_update(mpc_sha256_ctx *c, const void *data, size_t len)
     }
 }
 
-static void
-sha256_final(mpc_sha256_ctx *c, unsigned char out[32])
+void
+musicpack_sha256_final(musicpack_sha256_ctx *c, unsigned char out[32])
 {
     unsigned long long bitlen = c->len * 8;
     unsigned char pad = 0x80;
@@ -167,10 +162,10 @@ sha256_final(mpc_sha256_ctx *c, unsigned char out[32])
     for (i = 0; i < 8; i++)
         lenbuf[i] = (unsigned char) (bitlen >> (56 - i * 8));
 
-    sha256_update(c, &pad, 1);
+    musicpack_sha256_update(c, &pad, 1);
     while (c->block_used != 56)
-        sha256_update(c, &zero, 1);
-    sha256_update(c, lenbuf, 8);
+        musicpack_sha256_update(c, &zero, 1);
+    musicpack_sha256_update(c, lenbuf, 8);
 
     for (i = 0; i < 8; i++) {
         out[i * 4]     = (unsigned char) (c->h[i] >> 24);
@@ -187,16 +182,16 @@ sha256_final(mpc_sha256_ctx *c, unsigned char out[32])
 musicpack_status
 musicpack_sha256(const void *data, size_t len, char *hex, size_t cap)
 {
-    mpc_sha256_ctx c;
+    musicpack_sha256_ctx c;
     unsigned char digest[32];
     static const char hexc[] = "0123456789abcdef";
     size_t i;
 
     if (hex == 0 || cap < MUSICPACK_SHA256_HEX_SIZE)
         return MUSICPACK_ERR_INVALID;
-    sha256_init(&c);
-    sha256_update(&c, data, len);
-    sha256_final(&c, digest);
+    musicpack_sha256_init(&c);
+    musicpack_sha256_update(&c, data, len);
+    musicpack_sha256_final(&c, digest);
     for (i = 0; i < 32; i++) {
         hex[i * 2] = hexc[digest[i] >> 4];
         hex[i * 2 + 1] = hexc[digest[i] & 0xF];
@@ -208,7 +203,7 @@ musicpack_sha256(const void *data, size_t len, char *hex, size_t cap)
 musicpack_status
 musicpack_sha256_file(const char *path, char *hex, size_t cap)
 {
-    mpc_sha256_ctx c;
+    musicpack_sha256_ctx c;
     unsigned char digest[32];
     unsigned char buf[65536];
     static const char hexc[] = "0123456789abcdef";
@@ -253,9 +248,9 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
 #endif
                 return MUSICPACK_ERR_IO;
             }
-            sha256_init(&c);
+            musicpack_sha256_init(&c);
             while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-                sha256_update(&c, buf, n);
+                musicpack_sha256_update(&c, buf, n);
             if (ferror(f)) {
                 fclose(f);
                 return MUSICPACK_ERR_IO;
@@ -263,7 +258,7 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
             fclose(f);
         }
     }
-    sha256_final(&c, digest);
+    musicpack_sha256_final(&c, digest);
     for (i = 0; i < 32; i++) {
         hex[i * 2] = hexc[digest[i] >> 4];
         hex[i * 2 + 1] = hexc[digest[i] & 0xF];
@@ -276,7 +271,7 @@ musicpack_status
 musicpack_sha256_file_range(const char *path, uint64_t offset, uint64_t length,
                             char *hex, size_t cap)
 {
-    mpc_sha256_ctx c;
+    musicpack_sha256_ctx c;
     unsigned char digest[32];
     unsigned char buf[65536];
     static const char hexc[] = "0123456789abcdef";
@@ -336,7 +331,7 @@ musicpack_sha256_file_range(const char *path, uint64_t offset, uint64_t length,
                 fclose(f);
                 return MUSICPACK_ERR_IO;
             }
-            sha256_init(&c);
+            musicpack_sha256_init(&c);
             remaining = length;
             while (remaining > 0) {
                 size_t want = remaining > sizeof buf ? sizeof buf
@@ -346,13 +341,13 @@ musicpack_sha256_file_range(const char *path, uint64_t offset, uint64_t length,
                     fclose(f);
                     return MUSICPACK_ERR_IO;
                 }
-                sha256_update(&c, buf, n);
+                musicpack_sha256_update(&c, buf, n);
                 remaining -= n;
             }
             fclose(f);
         }
     }
-    sha256_final(&c, digest);
+    musicpack_sha256_final(&c, digest);
     for (i = 0; i < 32; i++) {
         hex[i * 2] = hexc[digest[i] >> 4];
         hex[i * 2 + 1] = hexc[digest[i] & 0xF];

@@ -86,9 +86,11 @@ MUSICPACK_API musicpack_status musicpack_package_track_path(const musicpack_pack
 
 /// Opens a track's audio object as an `mpc_reader` (Musepack backend).
 ///
-/// The returned reader is a stdio reader over the contained file; the caller
-/// closes it with mpc_reader_exit_stdio(). Only meaningful for Musepack
-/// audio objects, but the path is identical for any codec that consumes
+/// The reader is backed by the package's storage (directory file or
+/// container member) and borrows the package's underlying source: it
+/// must be closed with musicpack_package_track_close_reader() before
+/// the owning \p pkg is closed. Only meaningful for Musepack audio
+/// objects, but the path is identical for any codec that consumes
 /// `mpc_reader`.
 ///
 /// \param pkg    package

@@ -53,6 +53,7 @@
 #include <musicpack/error.h>
 #include <musicpack/export.h>
 #include <musicpack/package.h>
+#include <musicpack/range.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,39 @@ extern "C" {
 #define MUSICPACK_MPAK_MAJOR 1
 /// Header flag bit 0: an INDX block is present (hint only).
 #define MUSICPACK_MPAK_FLAG_INDX_PRESENT 0x0001u
+
+/// Opens a `.mpak` container through a caller-provided byte-range
+/// source (e.g. a remote HTTP Range adapter) and returns the same
+/// `musicpack_package` handle as local opens: manifest access, member
+/// lookup, verification, extra-file enumeration,
+/// musicpack_package_track_open_reader() and
+/// musicpack_package_read_member() all behave identically; only the
+/// byte transport differs. Directory-only mutation APIs
+/// (musicpack_package_save_manifest(), resolve_path) fail for
+/// range-backed packages exactly as for local ones.
+///
+/// The container is read with the same hardened scanner used for local
+/// files: framing is validated before lengths are trusted, INDX is
+/// used only after reconciliation against the sequential DATA scan,
+/// and INDX/TAIL remain optional. Normal (strict) reader semantics
+/// apply — recovery-mode preamble tolerance is an unpack-only policy.
+///
+/// The source is read during opening. On success the package takes
+/// ownership of `src->ctx` (`src->destroy` is called at
+/// musicpack_package_close()). On failure the package does NOT destroy
+/// the source — ownership stays with the caller, who must clean it up
+/// (the source may have been read from during the attempt).
+///
+/// The library applies no transport policy: an adapter may cache,
+/// read-ahead, or fetch eagerly behind the exact-read contract.
+///
+/// \param src    initialized range source (non-NULL `size` and `read`)
+/// \param status optional error out
+/// \return an owned handle, or NULL on failure
+MUSICPACK_API musicpack_package *
+musicpack_package_open_range(const musicpack_range_source *src,
+                             musicpack_status *status);
+
 
 /// Packs a directory-form `.mpack` package into a single-file `.mpak`.
 ///

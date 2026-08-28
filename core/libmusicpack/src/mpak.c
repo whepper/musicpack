@@ -68,6 +68,7 @@
 #endif
 
 #include "internal.h"
+#include "sha256_internal.h"
 #include <musicpack/checksum.h>
 #include <musicpack/mpak.h>
 #include <musicpack/path.h>
@@ -283,6 +284,277 @@ sha_bytes_to_hex(const unsigned char sha[32], char hex[MUSICPACK_SHA256_HEX_SIZE
 }
 
 /* ------------------------------------------------------------------ */
+/* container I/O                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Internal container-source abstraction: every byte the scanner, the
+   member I/O vtable and the member reader need is an exact read at an
+   absolute offset. Two backends implement it: a local FILE* (the
+   hardened-open path used by .mpak files) and a caller-provided
+   musicpack_range_source (the remote transport seam; the block cache
+   lives here so all readers share it). */
+typedef struct mpak_cio {
+    void *ctx;
+    /* Exact read: fills buf with len bytes at offset. len may be 0
+       (succeeds without I/O). Returns 1 on success, 0 on any failure
+       (short read, out-of-bounds range, transport error). Callers only
+       read within [0, file_size). */
+    int (*read_at)(void *ctx, uint64_t offset, unsigned char *buf,
+                   size_t len);
+    void (*close)(void *ctx);   /* releases backend resources */
+} mpak_cio;
+
+static int
+cio_read(const mpak_cio *cio, uint64_t offset, unsigned char *buf, size_t len)
+{
+    if (len == 0)
+        return 1;
+    return cio->read_at(cio->ctx, offset, buf, len);
+}
+
+/* ---- FILE* backend ------------------------------------------------- */
+
+typedef struct mpak_file_ctx {
+    FILE *f;
+    uint64_t size;
+} mpak_file_ctx;
+
+static int
+file_read_at(void *ctx, uint64_t offset, unsigned char *buf, size_t len)
+{
+    mpak_file_ctx *c = (mpak_file_ctx *) ctx;
+
+    if (len == 0)
+        return 1;
+    if (offset > c->size || len > c->size - offset)
+        return 0;
+    if (seek_absolute(c->f, offset) != 0)
+        return 0;
+    return fread(buf, 1, len, c->f) == len;
+}
+
+static void
+file_cio_close(void *ctx)
+{
+    mpak_file_ctx *c = (mpak_file_ctx *) ctx;
+
+    if (c == 0)
+        return;
+    if (c->f != 0)
+        fclose(c->f);
+    free(c);
+}
+
+/* Opens path with the hardened regular-file checks and fills cio.
+   Returns MUSICPACK_OK and the file size, or an error (cio close is
+   then the caller's no-op/owned as usual). */
+static musicpack_status
+mpak_open_file_cio(const char *path, mpak_cio *cio, uint64_t *size_out)
+{
+    mpak_file_ctx *c;
+    musicpack_status s = MUSICPACK_OK;
+
+    c = (mpak_file_ctx *) calloc(1, sizeof *c);
+    if (c == 0)
+        return MUSICPACK_ERR_NOMEM;
+    c->f = musicpack_open_regular_read(path);
+    if (c->f == 0) {
+        free(c);
+        return MUSICPACK_ERR_IO;
+    }
+    {
+#ifdef _WIN32
+        struct _stat st;
+        int fd = _fileno(c->f);
+        if (fd < 0 || _fstat(fd, &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
+#else
+        int fd = fileno(c->f);
+        struct stat st;
+        if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+#endif
+            file_cio_close(c);
+            return MUSICPACK_ERR_IO;
+        }
+        c->size = (uint64_t) st.st_size;
+    }
+    cio->ctx = c;
+    cio->read_at = file_read_at;
+    cio->close = file_cio_close;
+    *size_out = c->size;
+    return s;
+}
+
+/* ---- range-source backend (with the shared block cache) ------------ */
+
+/* Cache parameters follow specs/mpak-http-range-design.md §8 (the
+   parameters proven by demo/networker.js): 64 KiB block-aligned fetches,
+   16 blocks (~1 MiB), insertion-order eviction, no threads, no disk
+   cache, no speculative prefetching. The cache lives at the container
+   layer so the scanner, the member vtable and the member reader share
+   it; transport adapters stay free of container caching policy. */
+#define MPAK_CACHE_BLOCK (64u * 1024u)
+#define MPAK_CACHE_SLOTS 16u
+
+typedef struct mpak_cache_slot {
+    unsigned char *data;      /* MPAK_CACHE_BLOCK bytes */
+    uint64_t base;            /* block base offset; UINT64_MAX = empty */
+} mpak_cache_slot;
+
+typedef struct mpak_range_ctx {
+    musicpack_range_source src;   /* adopted on successful open */
+    int adopted;                  /* 1 once destroy is the package's job */
+    uint64_t size;
+    mpak_cache_slot slots[MPAK_CACHE_SLOTS];
+    unsigned next_victim;
+} mpak_range_ctx;
+
+static int
+range_fetch_block(mpak_range_ctx *r, mpak_cache_slot *slot, uint64_t base)
+{
+    uint64_t block_len = r->size - base;   /* caller guarantees base < size */
+
+    if (block_len > MPAK_CACHE_BLOCK)
+        block_len = MPAK_CACHE_BLOCK;
+    if (slot->data == 0) {
+        slot->data = (unsigned char *) malloc(MPAK_CACHE_BLOCK);
+        if (slot->data == 0)
+            return 0;
+    }
+    slot->base = base;
+    return r->src.read(r->src.ctx, base, slot->data, (size_t) block_len)
+               == MUSICPACK_OK;
+}
+
+static int
+range_read_at(void *ctx, uint64_t offset, unsigned char *buf, size_t len)
+{
+    mpak_range_ctx *r = (mpak_range_ctx *) ctx;
+
+    if (len == 0)
+        return 1;
+    if (offset > r->size || len > r->size - offset)
+        return 0;
+    while (len > 0) {
+        uint64_t base = offset & ~((uint64_t) MPAK_CACHE_BLOCK - 1);
+        size_t in_off = (size_t) (offset - base);
+        size_t avail = (size_t) (r->size - base);
+        size_t take = MPAK_CACHE_BLOCK - in_off;
+        mpak_cache_slot *slot = 0;
+        size_t i;
+        int found = 0;
+
+        if (take > len)
+            take = len;
+        if (take > avail - in_off)
+            take = avail - in_off;
+        for (i = 0; i < MPAK_CACHE_SLOTS; i++) {
+            if (r->slots[i].data != 0 && r->slots[i].base == base) {
+                slot = &r->slots[i];
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            slot = &r->slots[r->next_victim++ % MPAK_CACHE_SLOTS];
+            if (!range_fetch_block(r, slot, base))
+                return 0;
+        }
+        memcpy(buf, slot->data + in_off, take);
+        buf += take;
+        offset += take;
+        len -= take;
+    }
+    return 1;
+}
+
+static void
+range_cio_close(void *ctx)
+{
+    mpak_range_ctx *r = (mpak_range_ctx *) ctx;
+    size_t i;
+
+    if (r == 0)
+        return;
+    /* destroy is the package's job only once the open has adopted the
+       source; a failed open leaves caller ownership intact */
+    if (r->adopted && r->src.destroy != 0)
+        r->src.destroy(r->src.ctx);
+    for (i = 0; i < MPAK_CACHE_SLOTS; i++)
+        free(r->slots[i].data);
+    free(r);
+}
+
+/* Builds a container I/O over a caller-provided range source. The
+   source is NOT adopted here (a failed load must leave caller
+   ownership intact); the caller flips `adopted` on success. */
+static musicpack_status
+mpak_open_range_cio(const musicpack_range_source *src, mpak_cio *cio,
+                    uint64_t *size_out)
+{
+    mpak_range_ctx *r;
+    uint64_t size = 0;
+
+    if (src == 0 || src->size == 0 || src->read == 0)
+        return MUSICPACK_ERR_INVALID;
+    r = (mpak_range_ctx *) calloc(1, sizeof *r);
+    if (r == 0)
+        return MUSICPACK_ERR_NOMEM;
+    r->src = *src;
+    {
+        mpak_cache_slot empty = { 0, UINT64_MAX };
+        size_t i;
+        for (i = 0; i < MPAK_CACHE_SLOTS; i++)
+            r->slots[i] = empty;
+    }
+    if (src->size(src->ctx, &size) != MUSICPACK_OK) {
+        range_cio_close(r);
+        return MUSICPACK_ERR_IO;
+    }
+    r->size = size;
+    cio->ctx = r;
+    cio->read_at = range_read_at;
+    cio->close = range_cio_close;
+    *size_out = size;
+    return MUSICPACK_OK;
+}
+
+/* Incremental SHA-256 over a container range, through the container
+   I/O (so remote containers hash exactly the bytes they were opened
+   with). */
+static musicpack_status
+mpak_hash_range(const mpak_cio *cio, uint64_t offset, uint64_t length,
+                char *hex, size_t cap)
+{
+    musicpack_sha256_ctx c;
+    unsigned char digest[32];
+    unsigned char buf[65536];
+    static const char hexc[] = "0123456789abcdef";
+    uint64_t remaining = length;
+    uint64_t pos = offset;
+    size_t i;
+
+    if (hex == 0 || cap < MUSICPACK_SHA256_HEX_SIZE)
+        return MUSICPACK_ERR_INVALID;
+    musicpack_sha256_init(&c);
+    while (remaining > 0) {
+        size_t want = remaining > sizeof buf ? sizeof buf
+                                             : (size_t) remaining;
+        if (!cio_read(cio, pos, buf, want))
+            return MUSICPACK_ERR_IO;
+        musicpack_sha256_update(&c, buf, want);
+        pos += want;
+        remaining -= want;
+    }
+    musicpack_sha256_final(&c, digest);
+    for (i = 0; i < 32; i++) {
+        hex[i * 2] = hexc[digest[i] >> 4];
+        hex[i * 2 + 1] = hexc[digest[i] & 0xF];
+    }
+    hex[64] = '\0';
+    return MUSICPACK_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* container state                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -294,8 +566,7 @@ typedef struct mpak_member {
 } mpak_member;
 
 typedef struct musicpack_mpak {
-    char *path;               /* container file path */
-    FILE *f;                  /* open read handle for member access */
+    mpak_cio cio;             /* container byte source (owned) */
     uint64_t file_size;
     unsigned major, minor;
     unsigned flags;
@@ -343,9 +614,8 @@ mpak_free(musicpack_mpak *mf)
 
     if (mf == 0)
         return;
-    if (mf->f != 0)
-        fclose(mf->f);
-    free(mf->path);
+    if (mf->cio.close != 0)
+        mf->cio.close(mf->cio.ctx);
     for (i = 0; i < mf->scan_count; i++)
         free(mf->scan[i].path);
     free(mf->scan);
@@ -393,16 +663,14 @@ scan_data_payload(musicpack_mpak *mf, uint64_t payload_pos, uint64_t length)
 
     if (length < 2)
         MPAK_RECOVERY_SKIP(mf, MUSICPACK_ERR_INVALID);
-    if (seek_absolute(mf->f, payload_pos) != 0)
-        return MUSICPACK_ERR_IO;
-    if (fread(pbuf, 1, 2, mf->f) != 2)
+    if (!cio_read(&mf->cio, payload_pos, pbuf, 2))
         return MUSICPACK_ERR_IO;
     path_len = rd_u16(pbuf);
     if (path_len == 0 || path_len > MUSICPACK_PATH_MAX)
         MPAK_RECOVERY_SKIP(mf, MUSICPACK_ERR_PATH);
     if ((uint64_t) path_len + 2u > length)
         MPAK_RECOVERY_SKIP(mf, MUSICPACK_ERR_INVALID);
-    if (fread(path, 1, path_len, mf->f) != path_len)
+    if (!cio_read(&mf->cio, payload_pos + 2, path, path_len))
         return MUSICPACK_ERR_IO;
     path[path_len] = '\0';
     if (musicpack_path_validate((const char *) path) != MUSICPACK_OK)
@@ -451,9 +719,7 @@ parse_indx(musicpack_mpak *mf)
 
     if (mf->indx_length < 4 || mf->indx_length > MPAK_MANIFEST_MAX * 2u)
         return MUSICPACK_ERR_INVALID;
-    if (seek_absolute(mf->f, pos) != 0)
-        return MUSICPACK_ERR_IO;
-    if (fread(buf, 1, 4, mf->f) != 4)
+    if (!cio_read(&mf->cio, pos, buf, 4))
         return MUSICPACK_ERR_IO;
     count = rd_u32(buf);
     if (count > MPAK_MAX_MEMBERS)
@@ -468,12 +734,12 @@ parse_indx(musicpack_mpak *mf)
         uint16_t path_len;
         uint64_t offset, length, end;
 
-        if (fread(buf, 1, 2, mf->f) != 2)
+        if (!cio_read(&mf->cio, pos, buf, 2))
             goto malformed;
         path_len = rd_u16(buf);
         if (path_len == 0 || path_len > MUSICPACK_PATH_MAX)
             goto malformed;
-        if (fread(path, 1, path_len, mf->f) != path_len)
+        if (!cio_read(&mf->cio, pos + 2, path, path_len))
             goto malformed;
         path[path_len] = '\0';
         if (musicpack_path_validate((const char *) path) != MUSICPACK_OK)
@@ -482,17 +748,18 @@ parse_indx(musicpack_mpak *mf)
             mf->indx_duplicate = 1;
             goto malformed;
         }
-        if (fread(buf, 1, 8, mf->f) != 8)
+        if (!cio_read(&mf->cio, pos + 2 + path_len, buf, 8))
             goto malformed;
         offset = rd_u64(buf);
-        if (fread(buf, 1, 8, mf->f) != 8)
+        if (!cio_read(&mf->cio, pos + 2 + path_len + 8, buf, 8))
             goto malformed;
         length = rd_u64(buf);
         if (length > MPAK_MAX_MEMBER_BYTES)
             goto malformed;
         if (!u64_add(offset, length, &end) || end > mf->file_size)
             goto malformed;
-        if (fread(entries[i].sha256, 1, 32, mf->f) != 32)
+        if (!cio_read(&mf->cio, pos + 2 + path_len + 16, entries[i].sha256,
+                      32))
             goto malformed;
         entries[i].path = strdup((const char *) path);
         if (entries[i].path == 0) {
@@ -568,7 +835,8 @@ reconcile_indx(musicpack_mpak *mf)
 }
 
 static musicpack_status
-mpak_load(const char *file, int need_manifest, int recovery, musicpack_mpak **out)
+mpak_load_cio(uint64_t file_size, int need_manifest, int recovery,
+              const mpak_cio *cio, musicpack_mpak **out)
 {
     musicpack_mpak *mf;
     unsigned char hdr[MPAK_HEADER_SIZE];
@@ -582,40 +850,13 @@ mpak_load(const char *file, int need_manifest, int recovery, musicpack_mpak **ou
     if (mf == 0)
         return MUSICPACK_ERR_NOMEM;
     mf->recovery = recovery;
-    mf->f = musicpack_open_regular_read(file);
-    if (mf->f == 0) {
-        mpak_free(mf);
-        return MUSICPACK_ERR_IO;
-    }
-    mf->path = strdup(file);
-    if (mf->path == 0) {
-        mpak_free(mf);
-        return MUSICPACK_ERR_NOMEM;
-    }
-    {
-#ifdef _WIN32
-        struct _stat st;
-        int fd = _fileno(mf->f);
-        if (fd < 0 || _fstat(fd, &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
-            mpak_free(mf);
-            return MUSICPACK_ERR_IO;
-        }
-        mf->file_size = (uint64_t) st.st_size;
-#else
-        int fd = fileno(mf->f);
-        struct stat st;
-        if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-            mpak_free(mf);
-            return MUSICPACK_ERR_IO;
-        }
-        mf->file_size = (uint64_t) st.st_size;
-#endif
-    }
+    mf->cio = *cio;
+    mf->file_size = file_size;
     if (mf->file_size < MPAK_HEADER_SIZE) {
         mpak_free(mf);
         return MUSICPACK_ERR_INVALID;
     }
-    if (fread(hdr, 1, MPAK_HEADER_SIZE, mf->f) != MPAK_HEADER_SIZE) {
+    if (!cio_read(&mf->cio, 0, hdr, MPAK_HEADER_SIZE)) {
         mpak_free(mf);
         return MUSICPACK_ERR_IO;
     }
@@ -665,8 +906,7 @@ mpak_load(const char *file, int need_manifest, int recovery, musicpack_mpak **ou
             win_len = mf->file_size - pos;
             if (win_len > MPAK_SCAN_WINDOW)
                 win_len = MPAK_SCAN_WINDOW;
-            if (seek_absolute(mf->f, win_base) != 0 ||
-                fread(win, 1, (size_t) win_len, mf->f) != (size_t) win_len) {
+            if (!cio_read(&mf->cio, win_base, win, (size_t) win_len)) {
                 s = MUSICPACK_ERR_IO;
                 goto fail;
             }
@@ -695,10 +935,8 @@ mpak_load(const char *file, int need_manifest, int recovery, musicpack_mpak **ou
                     s = MUSICPACK_ERR_NOMEM;
                     goto fail;
                 }
-                if (seek_absolute(mf->f, payload_pos) != 0 ||
-                    (length > 0 &&
-                     fread(mf->manifest, 1, (size_t) length, mf->f)
-                         != (size_t) length)) {
+                if (!cio_read(&mf->cio, payload_pos, mf->manifest,
+                              (size_t) length)) {
                     s = MUSICPACK_ERR_IO;
                     goto fail;
                 }
@@ -721,8 +959,8 @@ mpak_load(const char *file, int need_manifest, int recovery, musicpack_mpak **ou
                     mf->tail_malformed = 1;
                 } else {
                     unsigned char tbuf[MPAK_TAIL_PAYLOAD_SIZE];
-                    if (seek_absolute(mf->f, payload_pos) != 0 ||
-                        fread(tbuf, 1, sizeof tbuf, mf->f) != sizeof tbuf) {
+                    if (!cio_read(&mf->cio, payload_pos, tbuf,
+                                  sizeof tbuf)) {
                         s = MUSICPACK_ERR_IO;
                         goto fail;
                     }
@@ -777,6 +1015,21 @@ fail:
     return s;
 }
 
+static musicpack_status
+mpak_load(const char *file, int need_manifest, int recovery,
+          musicpack_mpak **out)
+{
+    mpak_cio cio;
+    uint64_t size;
+    musicpack_status s = mpak_open_file_cio(file, &cio, &size);
+
+    if (s != MUSICPACK_OK)
+        return s;
+    /* ownership of the file cio passes to the loaded container (its
+       close runs from mpak_free on both success and failure paths) */
+    return mpak_load_cio(size, need_manifest, recovery, &cio, out);
+}
+
 /* ------------------------------------------------------------------ */
 /* member lookup + package-handle backend                              */
 /* ------------------------------------------------------------------ */
@@ -826,8 +1079,7 @@ io_sha256(void *ctx, const char *rel, char *hex, size_t cap)
 
     if (m == 0)
         return MUSICPACK_ERR_MISSING;
-    return musicpack_sha256_file_range(mf->path, m->offset, m->length, hex,
-                                       cap);
+    return mpak_hash_range(&mf->cio, m->offset, m->length, hex, cap);
 }
 
 static musicpack_status
@@ -846,8 +1098,7 @@ io_read(void *ctx, const char *rel, size_t max, unsigned char **out,
     if (buf == 0)
         return MUSICPACK_ERR_NOMEM;
     if (m->length > 0) {
-        if (seek_absolute(mf->f, m->offset) != 0 ||
-            fread(buf, 1, (size_t) m->length, mf->f) != (size_t) m->length) {
+        if (!cio_read(&mf->cio, m->offset, buf, (size_t) m->length)) {
             free(buf);
             return MUSICPACK_ERR_IO;
         }
@@ -887,26 +1138,12 @@ static const musicpack_member_io mpak_io = {
     0, io_size, io_sha256, io_read, io_list
 };
 
-musicpack_package *
-musicpack_mpak_open_package(const char *file, musicpack_status *status)
+static musicpack_package *
+mpak_build_package(musicpack_mpak *mf, const char *root_label,
+                   musicpack_status *status)
 {
-    musicpack_status local = MUSICPACK_OK, s;
-    musicpack_mpak *mf;
     musicpack_package *pkg;
     cJSON *root;
-
-    if (status == 0)
-        status = &local;
-    *status = MUSICPACK_OK;
-    if (file == 0) {
-        *status = MUSICPACK_ERR_INVALID;
-        return 0;
-    }
-    s = mpak_load(file, 1, 0, &mf);
-    if (s != MUSICPACK_OK) {
-        *status = s;
-        return 0;
-    }
 
     /* Parse the manifest exactly like the directory backend. */
     if (memchr(mf->manifest, '\0', mf->manifest_len) != 0) {
@@ -956,7 +1193,7 @@ musicpack_mpak_open_package(const char *file, musicpack_status *status)
         return 0;
     }
     pkg->original = root;
-    pkg->root = strdup(file);
+    pkg->root = strdup(root_label);
     if (pkg->root == 0) {
         musicpack_manifest_free(pkg->manifest);
         cJSON_Delete(pkg->original);
@@ -967,6 +1204,72 @@ musicpack_mpak_open_package(const char *file, musicpack_status *status)
     }
     pkg->io = &mpak_io;
     pkg->io_ctx = mf;
+    return pkg;
+}
+
+musicpack_package *
+musicpack_mpak_open_package(const char *file, musicpack_status *status)
+{
+    musicpack_status local = MUSICPACK_OK, s;
+    musicpack_mpak *mf;
+    musicpack_package *pkg;
+
+    if (status == 0)
+        status = &local;
+    *status = MUSICPACK_OK;
+    if (file == 0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    s = mpak_load(file, 1, 0, &mf);
+    if (s != MUSICPACK_OK) {
+        *status = s;
+        return 0;
+    }
+    pkg = mpak_build_package(mf, file, status);
+    if (pkg == 0)
+        return 0;
+    return pkg;
+}
+
+musicpack_package *
+musicpack_package_open_range(const musicpack_range_source *src,
+                             musicpack_status *status)
+{
+    musicpack_status local = MUSICPACK_OK, s;
+    mpak_cio cio;
+    uint64_t size;
+    musicpack_mpak *mf;
+    musicpack_package *pkg;
+
+    if (status == 0)
+        status = &local;
+    *status = MUSICPACK_OK;
+    if (src == 0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+    /* Strict normal-reader semantics: range-backed opening uses the
+       same hardened scanner and never the recovery policy. */
+    s = mpak_open_range_cio(src, &cio, &size);
+    if (s != MUSICPACK_OK) {
+        *status = s;
+        return 0;
+    }
+    s = mpak_load_cio(size, 1, 0, &cio, &mf);
+    if (s != MUSICPACK_OK) {
+        /* the failed load released the wrapper and cache but did NOT
+           destroy the caller's source: ownership stays with the caller */
+        *status = s;
+        return 0;
+    }
+    pkg = mpak_build_package(mf, "(range-source)", status);
+    if (pkg == 0)
+        return 0; /* released the container; source ownership NOT taken */
+    {   /* fully built: the package adopts the source (destroy at close) */
+        mpak_range_ctx *r = (mpak_range_ctx *) cio.ctx;
+        r->adopted = 1;
+    }
     return pkg;
 }
 
@@ -1164,8 +1467,8 @@ musicpack_mpak_verify_extra(const musicpack_package *pkg, musicpack_report *rep,
                 char hex[MUSICPACK_SHA256_HEX_SIZE];
                 unsigned char sha[32];
                 musicpack_status rs =
-                    musicpack_sha256_file_range(mf->path, 0, mf->tail_offset,
-                                                hex, sizeof hex);
+                    mpak_hash_range(&mf->cio, 0, mf->tail_offset, hex,
+                                    sizeof hex);
                 if (rs != MUSICPACK_OK) {
                     mpak_report(rep, fn, ctx,
                                 "tail: package digest cannot be computed", 1);
@@ -1188,9 +1491,15 @@ musicpack_mpak_verify_extra(const musicpack_package *pkg, musicpack_report *rep,
 
 #define MPAK_READER_MAGIC 0x4D50414Bu
 
+/* The reader borrows the container's byte source (the package owns it):
+   every read is an absolute read through the container I/O — for
+   range-backed packages this is the cached block source — so member
+   reads cannot cross member boundaries and reads never disturb any
+   other container state. The package must stay open while a reader
+   exists. */
 typedef struct mpak_member_reader_ctx {
     unsigned magic;
-    FILE *f;
+    mpak_cio cio;
     uint64_t base;
     uint64_t size;
     uint64_t pos;
@@ -1208,13 +1517,11 @@ member_reader_read(mpc_reader *r, void *ptr, mpc_int32_t size)
         return 0;
     remaining = c->size - c->pos;
     take = remaining < (uint64_t) size ? remaining : (uint64_t) size;
-    if (seek_absolute(c->f, c->base + c->pos) != 0)
+    if (!cio_read(&c->cio, c->base + c->pos, (unsigned char *) ptr,
+                  (size_t) take))
         return 0;
-    {
-        size_t n = fread(ptr, 1, (size_t) take, c->f);
-        c->pos += (uint64_t) n;
-        return (mpc_int32_t) n;
-    }
+    c->pos += take;
+    return (mpc_int32_t) take;
 }
 
 static mpc_bool_t
@@ -1250,9 +1557,11 @@ member_reader_get_size(mpc_reader *r)
     return (mpc_seek_t) c->size;
 }
 
-/* File-backed member reads are seekable. A future byte-range transport
-   that cannot seek flips this to MPC_FALSE and the SV8 demuxer falls
-   back to its sequential behavior (canseek == false). */
+/* Member reads through the container I/O are seekable — including over
+   remote range transports, where a seek only moves the virtual position
+   and the block cache serves the target bytes. The SV8 demuxer's
+   sequential/seek behavior is therefore identical for local and remote
+   packages. */
 static mpc_bool_t
 member_reader_canseek(mpc_reader *r)
 {
@@ -1273,12 +1582,8 @@ musicpack_mpak_member_reader(const musicpack_package *pkg, const char *rel,
     c = (mpak_member_reader_ctx *) malloc(sizeof *c);
     if (c == 0)
         return MUSICPACK_ERR_NOMEM;
-    c->f = musicpack_open_regular_read(mf->path);
-    if (c->f == 0) {
-        free(c);
-        return MUSICPACK_ERR_IO;
-    }
     c->magic = MPAK_READER_MAGIC;
+    c->cio = mf->cio;          /* borrowed; freed with the package */
     c->base = m->offset;
     c->size = m->length;
     c->pos = 0;
@@ -1313,8 +1618,7 @@ musicpack_package_track_close_reader(mpc_reader *reader)
         return;
     if (musicpack_mpak_reader_is_container(reader)) {
         c = (mpak_member_reader_ctx *) reader->data;
-        if (c->f != 0)
-            fclose(c->f);
+        /* the container source is borrowed: nothing to close here */
         free(c);
         memset(reader, 0, sizeof *reader);
     } else {
@@ -1984,18 +2288,20 @@ musicpack_mpak_unpack(const char *in_file, const char *out_dir,
             failed = 1;
             continue;
         }
-        if (seek_absolute(mf->f, m->offset) != 0)
-            copy_ok = 0;
         remaining = m->length;
         while (copy_ok && remaining > 0) {
             size_t want = remaining > sizeof buf ? sizeof buf
                                                   : (size_t) remaining;
-            size_t n = fread(buf, 1, want, mf->f);
-            if (n == 0 || fwrite(buf, 1, n, out) != n) {
+            if (!cio_read(&mf->cio, m->offset + (m->length - remaining),
+                          buf, want)) {
                 copy_ok = 0;
                 break;
             }
-            remaining -= n;
+            if (fwrite(buf, 1, want, out) != want) {
+                copy_ok = 0;
+                break;
+            }
+            remaining -= want;
         }
         fclose(out);
 
@@ -2009,8 +2315,8 @@ musicpack_mpak_unpack(const char *in_file, const char *out_dir,
         if (idx_entry != 0) {
             char hex[MUSICPACK_SHA256_HEX_SIZE];
             unsigned char sha[32];
-            if (musicpack_sha256_file_range(mf->path, m->offset, m->length,
-                                            hex, sizeof hex) == MUSICPACK_OK &&
+            if (mpak_hash_range(&mf->cio, m->offset, m->length,
+                                hex, sizeof hex) == MUSICPACK_OK &&
                 parse_sha256_hex(hex, sha) &&
                 memcmp(sha, idx_entry->sha256, 32) != 0) {
                 char msg[512];
@@ -2049,4 +2355,58 @@ musicpack_mpak_unpack(const char *in_file, const char *out_dir,
 
     mpak_free(mf);
     return failed ? MUSICPACK_ERR_CHECKSUM : MUSICPACK_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* local stdio range-source adapter                                    */
+/* ------------------------------------------------------------------ */
+
+/* The context is the same mpak_file_ctx the file container backend
+   uses, so the adapter is exactly the hardened local-file source the
+   container itself reads through. */
+static musicpack_status
+stdio_source_size(void *ctx, uint64_t *out)
+{
+    mpak_file_ctx *c = (mpak_file_ctx *) ctx;
+
+    if (c == 0)
+        return MUSICPACK_ERR_INVALID;
+    *out = c->size;
+    return MUSICPACK_OK;
+}
+
+static musicpack_status
+stdio_source_read(void *ctx, uint64_t offset, unsigned char *buf, size_t len)
+{
+    mpak_file_ctx *c = (mpak_file_ctx *) ctx;
+
+    if (c == 0)
+        return MUSICPACK_ERR_INVALID;
+    return file_read_at(ctx, offset, buf, len) ? MUSICPACK_OK
+                                               : MUSICPACK_ERR_IO;
+}
+
+static void
+stdio_source_destroy(void *ctx)
+{
+    file_cio_close(ctx);
+}
+
+musicpack_status
+musicpack_range_source_stdio(const char *path, musicpack_range_source *out)
+{
+    mpak_cio cio;
+    uint64_t size;
+    musicpack_status s;
+
+    if (path == 0 || out == 0)
+        return MUSICPACK_ERR_INVALID;
+    s = mpak_open_file_cio(path, &cio, &size);
+    if (s != MUSICPACK_OK)
+        return s;
+    out->ctx = cio.ctx;
+    out->size = stdio_source_size;
+    out->read = stdio_source_read;
+    out->destroy = stdio_source_destroy;
+    return MUSICPACK_OK;
 }

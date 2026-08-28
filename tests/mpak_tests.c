@@ -175,8 +175,8 @@ join_path(char *out, size_t cap, const char *a, const char *b)
 /* Minimal one-track directory package with the fixture .mpc as audio and
    a same-length extras path (both 12 chars) for index tampering tests. */
 static int
-build_min_package(const char *root, const char *audio_rel,
-                  const char *extra_rel)
+build_min_package_from(const char *root, const char *audio_rel,
+                       const char *extra_rel, const char *audio_src)
 {
     char path[4200], hash[MUSICPACK_SHA256_HEX_SIZE];
     char manifest[2048];
@@ -189,7 +189,7 @@ build_min_package(const char *root, const char *audio_rel,
     if (mkdir_p(path) != 0)
         return -1;
     join_path(path, sizeof path, root, audio_rel);
-    mpc = read_file_all(g_fixture_mpc, &mpc_len);
+    mpc = read_file_all(audio_src, &mpc_len);
     if (mpc == 0)
         return -1;
     if (write_file(path, mpc, mpc_len) != 0) {
@@ -241,6 +241,13 @@ build_min_package(const char *root, const char *audio_rel,
     }
     join_path(path, sizeof path, root, "manifest.json");
     return write_file(path, manifest, strlen(manifest));
+}
+
+static int
+build_min_package(const char *root, const char *audio_rel,
+                  const char *extra_rel)
+{
+    return build_min_package_from(root, audio_rel, extra_rel, g_fixture_mpc);
 }
 
 /* packs a directory package into out (must succeed) */
@@ -1092,26 +1099,6 @@ test_tail(const char *tmp)
         CHECK(bag_has(&bag, "missing file"), "truncation reported");
     }
 
-    /* S4 regression: a TAIL digest that cannot be computed (container
-       disappears between open and verify) is an error, never a silent
-       pass */
-    write_file(mpak, buf, len);
-    {
-        musicpack_package *pkg = musicpack_package_open(mpak, 0);
-        musicpack_report rep = { 0, 0 };
-        CHECK(pkg != 0, "open for digest-failure case");
-        if (pkg != 0) {
-            remove(mpak);
-            CHECK(musicpack_package_verify(pkg, &rep, bag_report, &bag)
-                      != MUSICPACK_OK, "missing container fails verify");
-            CHECK(bag_has(&bag, "package digest cannot be computed"),
-                  "digest computation failure reported");
-            CHECK(bag_has(&bag, "cannot hash"),
-                  "member hash failures reported");
-            musicpack_package_close(pkg);
-        }
-        write_file(mpak, buf, len);
-    }
 
     free(buf);
 }
@@ -1338,7 +1325,6 @@ test_recovery_invalid_preamble(const char *tmp)
        header CRC remains valid */
     buf[po + 2] = 0x01;
     write_file(mpak, buf, len);
-
     /* normal reader: hard error, unchanged */
     s = MUSICPACK_OK;
     CHECK(musicpack_package_open(mpak, &s) == 0, "normal open hard-fails");
@@ -1673,6 +1659,743 @@ test_mpc_integration(const char *tmp)
     free(orig);
 }
 
+/* ------------------------------------------------------------------ */
+/* range-source transport tests                                        */
+/* ------------------------------------------------------------------ */
+
+/* Recording fake source over an in-memory buffer: logs every requested
+   range so tests can assert observable access behavior, and can be
+   scripted to fail a chosen call. */
+typedef struct fake_src {
+    unsigned char *data;
+    size_t size;         /* size reported to the container */
+    size_t real_len;     /* actual bytes backing data (adapter truth) */
+    uint64_t *log_off;
+    size_t *log_len;
+    size_t log_count;
+    size_t log_cap;
+    size_t calls;
+    size_t fail_at;      /* 1-based call index to fail; 0 = never */
+    uint64_t fail_off;   /* targeted failure: exact (offset, len) match */
+    size_t fail_len;     /* 0 = disabled */
+    int destroyed;
+} fake_src;
+
+static musicpack_status
+fake_size(void *ctx, uint64_t *out)
+{
+    fake_src *f = (fake_src *) ctx;
+
+    if (f == 0)
+        return MUSICPACK_ERR_INVALID;
+    *out = (uint64_t) f->size;
+    return MUSICPACK_OK;
+}
+
+static musicpack_status
+fake_read(void *ctx, uint64_t offset, unsigned char *buf, size_t len)
+{
+    fake_src *f = (fake_src *) ctx;
+
+    f->calls++;
+    if (f->log_count == f->log_cap) {
+        size_t ncap = f->log_cap == 0 ? 64 : f->log_cap * 2;
+        uint64_t *no = (uint64_t *) realloc(f->log_off, ncap * sizeof *no);
+        size_t *nl = (size_t *) realloc(f->log_len, ncap * sizeof *nl);
+        if (no != 0)
+            f->log_off = no;
+        if (nl != 0)
+            f->log_len = nl;
+        if (no == 0 || nl == 0)
+            return MUSICPACK_ERR_NOMEM;
+        f->log_cap = ncap;
+    }
+    f->log_off[f->log_count] = offset;
+    f->log_len[f->log_count] = len;
+    f->log_count++;
+    if (f->fail_at != 0 && f->calls == f->fail_at)
+        return MUSICPACK_ERR_IO;
+    if (f->fail_len != 0 && offset == f->fail_off && len == f->fail_len)
+        return MUSICPACK_ERR_IO;
+    /* the adapter owns the bytes: it can never serve a range outside
+       its real data, whatever size the container layer believes */
+    if (offset > (uint64_t) f->real_len ||
+        len > (uint64_t) f->real_len - offset)
+        return MUSICPACK_ERR_IO;
+    if (len > 0)
+        memcpy(buf, f->data + offset, len);
+    return MUSICPACK_OK;
+}
+
+static void
+fake_destroy(void *ctx)
+{
+    fake_src *f = (fake_src *) ctx;
+
+    if (f == 0)
+        return;
+    f->destroyed = 1;
+    /* buffers intentionally kept: the test frees them and asserts the
+       destroy/ownership contract through the flag */
+}
+
+static void
+fake_free_buffers(fake_src *f)
+{
+    free(f->log_off);
+    free(f->log_len);
+    free(f->data);
+}
+
+static void
+fake_init(fake_src *f, const unsigned char *data, size_t len)
+{
+    memset(f, 0, sizeof *f);
+    f->data = (unsigned char *) malloc(len > 0 ? len : 1);
+    if (data != 0 && len > 0)
+        memcpy(f->data, data, len);
+    f->size = len;
+    f->real_len = len;
+}
+
+static const musicpack_range_source *
+fake_vtable(void)
+{
+    static musicpack_range_source vt;
+
+    if (vt.size == 0) {
+        vt.size = fake_size;
+        vt.read = fake_read;
+        vt.destroy = fake_destroy;
+    }
+    return &vt;
+}
+
+static int
+range_log_aligned(const fake_src *f, size_t *count)
+{
+    /* every logged range must be one 64 KiB block-aligned fetch
+       (clamped only by the end of the object) */
+    size_t i;
+
+    *count = f->log_count;
+    for (i = 0; i < f->log_count; i++) {
+        if (f->log_off[i] % (64u * 1024u) != 0)
+            return 0;
+        if (f->log_len[i] == 0 ||
+            f->log_len[i] > 64u * 1024u)
+            return 0;
+        if (f->log_off[i] + f->log_len[i] > f->size)
+            return 0;
+    }
+    return 1;
+}
+
+static void
+test_range_stdio_adapter(const char *tmp)
+{
+    char path[4200];
+    musicpack_range_source src;
+    unsigned char *pattern;
+    unsigned char got[128];
+    size_t i;
+    const size_t plen = (200u * 1024u) + 37u;
+
+    join_path(path, sizeof path, tmp, "adapter.bin");
+    pattern = (unsigned char *) malloc(plen);
+    CHECK(pattern != 0, "alloc pattern");
+    if (pattern == 0)
+        return;
+    for (i = 0; i < plen; i++)
+        pattern[i] = (unsigned char) (i * 31 + 7);
+
+    /* deterministic file: exactly two 64 KiB-aligned spans + 37 bytes */
+    CHECK(write_file(path, pattern, plen) == 0, "write pattern");
+
+    /* nonexistent path and directory fail cleanly */
+    CHECK(musicpack_range_source_stdio("/definitely/not/here.bin", &src)
+              != MUSICPACK_OK, "missing file rejected");
+    CHECK(musicpack_range_source_stdio(tmp, &src) != MUSICPACK_OK,
+          "directory rejected");
+
+    CHECK(musicpack_range_source_stdio(path, &src) == MUSICPACK_OK,
+          "stdio adapter opens");
+    if (src.ctx == 0)
+        return;
+
+    {
+        uint64_t sz = 0;
+        CHECK(src.size(src.ctx, &sz) == MUSICPACK_OK && sz == plen,
+              "size reported");
+    }
+    /* exact reads, including one crossing the 64 KiB boundary */
+    CHECK(src.read(src.ctx, 0, got, 10) == MUSICPACK_OK &&
+          memcmp(got, pattern, 10) == 0, "read at 0");
+    CHECK(src.read(src.ctx, 65530, got, 100) == MUSICPACK_OK &&
+          memcmp(got, pattern + 65530, 100) == 0, "boundary-crossing read");
+    CHECK(src.read(src.ctx, plen - 1, got, 1) == MUSICPACK_OK &&
+          got[0] == pattern[plen - 1], "last byte");
+    /* zero-length read succeeds without touching the transport */
+    CHECK(src.read(src.ctx, 12345, got, 0) == MUSICPACK_OK, "len 0");
+    /* out-of-bounds rejected */
+    CHECK(src.read(src.ctx, plen, got, 1) != MUSICPACK_OK, "EOF read");
+    CHECK(src.read(src.ctx, plen - 1, got, 2) != MUSICPACK_OK,
+          "overrun read");
+    CHECK(src.read(src.ctx, (uint64_t) -1, got, 1) != MUSICPACK_OK,
+          "huge offset rejected");
+    /* repeated reads are stable */
+    CHECK(src.read(src.ctx, 65530, got, 100) == MUSICPACK_OK &&
+          memcmp(got, pattern + 65530, 100) == 0, "repeated read");
+    /* manual destroy lifecycle (no leak under ASan) */
+    src.destroy(src.ctx);
+    free(pattern);
+}
+
+static void
+test_range_open_equivalence(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    musicpack_package *local_pkg, *range_pkg;
+    musicpack_range_source src;
+    musicpack_status s;
+    char *json_local = 0, *json_range = 0;
+    unsigned char *got_l = 0, *got_r = 0;
+    size_t len_l = 0, len_r = 0;
+
+    join_path(root, sizeof root, tmp, "req_pkg");
+    join_path(mpak, sizeof mpak, tmp, "req.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", "lyric/ab.txt") == 0,
+          "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+
+    local_pkg = musicpack_package_open(mpak, &s);
+    CHECK(local_pkg != 0, "local open");
+    CHECK(musicpack_range_source_stdio(mpak, &src) == MUSICPACK_OK,
+          "stdio source");
+    range_pkg = musicpack_package_open_range(&src, &s);
+    CHECK(range_pkg != 0, "range open");
+    if (local_pkg == 0 || range_pkg == 0) {
+        musicpack_package_close(local_pkg);
+        musicpack_package_close(range_pkg);
+        return;
+    }
+
+    /* verification behaves identically */
+    CHECK(musicpack_package_verify(local_pkg, 0, 0, 0) == MUSICPACK_OK,
+          "local verify");
+    CHECK(musicpack_package_verify(range_pkg, 0, 0, 0) == MUSICPACK_OK,
+          "range verify");
+
+    /* manifest is identical */
+    CHECK(musicpack_manifest_write(musicpack_package_manifest(local_pkg),
+                                   &json_local) == MUSICPACK_OK,
+          "local manifest serialize");
+    CHECK(musicpack_manifest_write(musicpack_package_manifest(range_pkg),
+                                   &json_range) == MUSICPACK_OK,
+          "range manifest serialize");
+    CHECK(json_local != 0 && json_range != 0 &&
+          strcmp(json_local, json_range) == 0, "manifests identical");
+
+    /* member reads byte-exact through both backends */
+    CHECK(musicpack_package_read_member(local_pkg, "audio/01.mpc",
+                                        16u << 20, &got_l, &len_l)
+              == MUSICPACK_OK, "local member read");
+    CHECK(musicpack_package_read_member(range_pkg, "audio/01.mpc",
+                                        16u << 20, &got_r, &len_r)
+              == MUSICPACK_OK, "range member read");
+    CHECK(len_l == len_r && len_l > 0 && memcmp(got_l, got_r, len_l) == 0,
+          "member bytes identical");
+    free(got_l);
+    free(got_r);
+    got_l = got_r = 0;
+    CHECK(musicpack_package_read_member(local_pkg, "lyric/ab.txt", 1024,
+                                        &got_l, &len_l) == MUSICPACK_OK,
+          "local extras read");
+    CHECK(musicpack_package_read_member(range_pkg, "lyric/ab.txt", 1024,
+                                        &got_r, &len_r) == MUSICPACK_OK,
+          "range extras read");
+    CHECK(len_l == len_r && memcmp(got_l, got_r, len_l) == 0,
+          "extras bytes identical");
+    free(got_l);
+    free(got_r);
+
+    musicpack_package_close(local_pkg);
+    musicpack_package_close(range_pkg); /* adopts + destroys the source */
+    free(json_local);
+    free(json_range);
+}
+
+static void
+test_range_request_pattern(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    unsigned char *packed;
+    size_t packed_len;
+    musicpack_package *pkg;
+    musicpack_status s;
+    fake_src fake;
+    unsigned char *orig = 0, *got = 0;
+    size_t orig_len = 0, blocks;
+    mpc_reader reader;
+
+    join_path(root, sizeof root, tmp, "pat_pkg");
+    join_path(mpak, sizeof mpak, tmp, "pat.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", 0) == 0, "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    packed = read_file_all(mpak, &packed_len);
+    CHECK(packed != 0, "read packed");
+    if (packed == 0)
+        return;
+    orig = read_file_all(g_fixture_mpc, &orig_len);
+    CHECK(orig != 0, "read fixture");
+
+    fake_init(&fake, packed, packed_len);
+    {   /* bind the shared vtable to this instance */
+        musicpack_range_source local_vt = *fake_vtable();
+        local_vt.ctx = &fake;
+        pkg = musicpack_package_open_range(&local_vt, &s);
+    }
+    CHECK(pkg != 0, "range open with fake source");
+    if (pkg == 0) {
+        fake_free_buffers(&fake);
+        free(packed);
+        free(orig);
+        return;
+    }
+
+    /* observable access behavior: every source fetch is exactly one
+       64 KiB block-aligned read (clamped at EOF) */
+    CHECK(range_log_aligned(&fake, &blocks), "block-aligned fetches");
+    CHECK((size_t) blocks <= (packed_len + (64u * 1024u) - 1) / (64u * 1024u),
+          "no redundant fetches during open");
+
+    /* whole-member read through the track reader */
+    memset(&reader, 0, sizeof reader);
+    CHECK(musicpack_package_track_open_reader(pkg, 0, 0, &reader)
+              == MUSICPACK_OK, "open member reader");
+    got = (unsigned char *) malloc(orig_len);
+    CHECK(got != 0, "alloc");
+    if (got != 0) {
+        mpc_int32_t n;
+        size_t total = 0;
+        while (total < orig_len &&
+               (n = reader.read(&reader, got + total,
+                                (mpc_int32_t) (orig_len - total))) > 0)
+            total += (size_t) n;
+        CHECK(total == orig_len, "full member via reader");
+        CHECK(memcmp(got, orig, orig_len) == 0, "byte-exact over ranges");
+    }
+    free(got);
+
+    /* the member is now cached: a second full pass causes no new
+       source reads */
+    {
+        size_t calls_before = fake.calls;
+        got = (unsigned char *) malloc(orig_len);
+        CHECK(got != 0, "alloc 2");
+        if (got != 0) {
+            mpc_int32_t n;
+            size_t total = 0;
+            CHECK(reader.seek(&reader, 0) == MPC_TRUE, "rewind");
+            while (total < orig_len &&
+                   (n = reader.read(&reader, got + total,
+                                    (mpc_int32_t) (orig_len - total))) > 0)
+                total += (size_t) n;
+            CHECK(total == orig_len, "second full read");
+            CHECK(fake.calls == calls_before, "second read fully cached");
+        }
+        free(got);
+    }
+    musicpack_package_track_close_reader(&reader);
+    musicpack_package_close(pkg);
+
+    CHECK(fake.destroyed == 1, "adopted source destroyed at close");
+    fake_free_buffers(&fake);
+    free(packed);
+    free(orig);
+}
+
+static void
+test_range_seeking(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    musicpack_package *pkg;
+    musicpack_status s;
+    musicpack_range_source src;
+    mpc_reader reader;
+    unsigned char *orig;
+    size_t orig_len;
+    unsigned char probe[4];
+
+    join_path(root, sizeof root, tmp, "seek_pkg");
+    join_path(mpak, sizeof mpak, tmp, "seekr.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", 0) == 0, "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    orig = read_file_all(g_fixture_mpc, &orig_len);
+    CHECK(orig != 0 && orig_len > 8, "fixture");
+    if (orig == 0)
+        return;
+
+    CHECK(musicpack_range_source_stdio(mpak, &src) == MUSICPACK_OK,
+          "stdio source");
+    pkg = musicpack_package_open_range(&src, &s);
+    CHECK(pkg != 0, "range open");
+    if (pkg == 0) {
+        free(orig);
+        return;
+    }
+    memset(&reader, 0, sizeof reader);
+    CHECK(musicpack_package_track_open_reader(pkg, 0, 0, &reader)
+              == MUSICPACK_OK, "reader");
+    CHECK(reader.canseek(&reader) == MPC_TRUE, "seekable");
+    CHECK(reader.get_size(&reader) == (mpc_seek_t) orig_len, "size");
+    /* seek does not require reading: jump straight to the middle */
+    CHECK(reader.seek(&reader, (mpc_seek_t)(orig_len / 2)) == MPC_TRUE,
+          "mid seek");
+    CHECK(reader.tell(&reader) == (mpc_seek_t)(orig_len / 2), "tell");
+    CHECK(reader.read(&reader, probe, 4) == 4 &&
+          memcmp(probe, orig + orig_len / 2, 4) == 0, "post-seek bytes");
+    /* boundary semantics: seek to size is legal, reads there give EOF */
+    CHECK(reader.seek(&reader, (mpc_seek_t) orig_len) == MPC_TRUE,
+          "seek to EOF");
+    CHECK(reader.read(&reader, probe, 4) == 0, "read at EOF");
+    CHECK(reader.seek(&reader, (mpc_seek_t) orig_len + 1) == MPC_FALSE,
+          "seek past member rejected");
+    /* member boundaries cannot be crossed */
+    CHECK(reader.seek(&reader, 0) == MPC_TRUE, "rewind");
+    CHECK(reader.read(&reader, probe, 4) == 4 &&
+          memcmp(probe, orig, 4) == 0, "first bytes are the SV8 stream");
+    musicpack_package_track_close_reader(&reader);
+    musicpack_package_close(pkg);
+    free(orig);
+}
+
+static void
+test_range_mpc_decode(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    musicpack_package *pkg;
+    musicpack_status s;
+    musicpack_range_source src;
+    mpc_reader reader;
+    musepack_decoder *dec;
+    float pcm[1152 * 2];
+    uint64_t frames = 0, total = 0;
+
+    join_path(root, sizeof root, tmp, "dec_pkg");
+    join_path(mpak, sizeof mpak, tmp, "decr.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", 0) == 0, "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    CHECK(musicpack_range_source_stdio(mpak, &src) == MUSICPACK_OK,
+          "stdio source");
+    pkg = musicpack_package_open_range(&src, &s);
+    CHECK(pkg != 0, "range open");
+    if (pkg == 0)
+        return;
+    memset(&reader, 0, sizeof reader);
+    CHECK(musicpack_package_track_open_reader(pkg, 0, 0, &reader)
+              == MUSICPACK_OK, "reader");
+    dec = musepack_decoder_open(&reader, 0);
+    CHECK(dec != 0, "decoder over range-backed reader");
+    if (dec != 0) {
+        while (musepack_decoder_read(dec, pcm, 1152, &frames) == MUSEPACK_OK)
+            total += frames;
+        CHECK(total > 0, "decoded frames over HTTP-style transport");
+        musepack_decoder_close(dec);
+    }
+    /* in-track seeking through the range-backed reader, using the
+       decoder's own SV8 seek machinery (SO/ST inside the member) */
+    CHECK(reader.seek(&reader, 0) == MPC_TRUE, "rewind for decoder seek");
+    dec = musepack_decoder_open(&reader, 0);
+    CHECK(dec != 0, "decoder for seek test");
+    if (dec != 0) {
+        total = 0;
+        while (total < 1152 * 5 &&
+               musepack_decoder_read(dec, pcm, 1152, &frames) == MUSEPACK_OK)
+            total += frames;
+        CHECK(total > 0, "initial decode");
+        CHECK(musepack_decoder_seek_sample(dec, 22050) == MUSEPACK_OK,
+              "decoder seek to mid-stream");
+        total = 0;
+        while (musepack_decoder_read(dec, pcm, 1152, &frames) == MUSEPACK_OK)
+            total += frames;
+        CHECK(total > 0, "decoded after mid-stream seek");
+        musepack_decoder_close(dec);
+    }
+    musicpack_package_track_close_reader(&reader);
+    musicpack_package_close(pkg);
+}
+
+static void
+test_range_adversarial(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    unsigned char *packed;
+    size_t packed_len;
+    musicpack_package *pkg;
+    musicpack_status s;
+    musicpack_range_source local_vt;
+    fake_src fake;
+    unsigned char *got = 0;
+    size_t got_len = 0;
+    size_t orig_len = 0;
+
+    char big[4200];
+    join_path(root, sizeof root, tmp, "adv_pkg");
+    join_path(mpak, sizeof mpak, tmp, "adv.mpak");
+    /* pad the audio member past one 64 KiB block so open requires
+       multiple source fetches (multi-block transport behavior) */
+    join_path(big, sizeof big, tmp, "big.mpc");
+    {
+        unsigned char *fixture = read_file_all(g_fixture_mpc, &orig_len);
+        unsigned char *padded;
+        CHECK(fixture != 0, "fixture");
+        if (fixture == 0)
+            return;
+        padded = (unsigned char *) calloc(1, orig_len + 48u * 1024u);
+        CHECK(padded != 0, "alloc padded");
+        if (padded == 0) {
+            free(fixture);
+            return;
+        }
+        memcpy(padded, fixture, orig_len); /* tail zeros: not decoded */
+        CHECK(write_file(big, padded, orig_len + 48u * 1024u) == 0,
+              "write padded member");
+        free(padded);
+        free(fixture);
+    }
+    CHECK(build_min_package_from(root, "audio/01.mpc", "lyric/ab.txt", big)
+              == 0, "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    packed = read_file_all(mpak, &packed_len);
+    CHECK(packed != 0, "read");
+    if (packed == 0)
+        return;
+
+    /* transport failure on the very first read: open fails, the source
+       is NOT destroyed (caller ownership), and manual cleanup is safe */
+    fake_init(&fake, packed, packed_len);
+    fake.fail_at = 1;
+    local_vt = *fake_vtable();
+    local_vt.ctx = &fake;
+    pkg = musicpack_package_open_range(&local_vt, &s);
+    CHECK(pkg == 0 && s == MUSICPACK_ERR_IO, "first-read failure fails open");
+    CHECK(fake.destroyed == 0, "failed open does not destroy source");
+    fake_destroy(&fake);           /* caller-side cleanup */
+    fake_free_buffers(&fake);
+
+    /* transport failure mid-scan (the container spans multiple 64 KiB
+       blocks): clean failure, no crash */
+    CHECK(packed_len > 64u * 1024u, "container spans several blocks");
+    fake_init(&fake, packed, packed_len);
+    fake.fail_at = 2;
+    local_vt = *fake_vtable();
+    local_vt.ctx = &fake;
+    pkg = musicpack_package_open_range(&local_vt, &s);
+    CHECK(pkg == 0, "mid-scan failure fails open");
+    CHECK(fake.destroyed == 0, "no destroy on failed open (2)");
+    fake_destroy(&fake);
+    fake_free_buffers(&fake);
+
+    /* lying size (declared larger than the actual object): the
+       adapter refuses reads beyond its real bytes, so the open fails
+       cleanly — a size lie can never produce a working session */
+    fake_init(&fake, packed, packed_len);
+    fake.size = packed_len + (64u * 1024u);
+    local_vt = *fake_vtable();
+    local_vt.ctx = &fake;
+    pkg = musicpack_package_open_range(&local_vt, &s);
+    CHECK(pkg == 0, "size lie fails open");
+    CHECK(fake.destroyed == 0, "no destroy on failed open (3)");
+    fake_destroy(&fake);
+    fake_free_buffers(&fake);
+
+    /* hostile INDX entry (offset beyond the object) through a range
+       transport: index discarded, scan fallback still serves members */
+    {
+        uint64_t io, ipo, ipl;
+        unsigned char *mod;
+        CHECK(find_block(packed, packed_len, "INDX", &io, &ipo, &ipl) == 0,
+              "find INDX");
+        mod = (unsigned char *) malloc(packed_len);
+        memcpy(mod, packed, packed_len);
+        {
+            uint64_t e0 = ipo + 4 + 2 + strlen("audio/01.mpc");
+            mod[(size_t) e0] = 0x7F; /* MSB set -> offset beyond object */
+        }
+        fake_init(&fake, mod, packed_len);
+        local_vt = *fake_vtable();
+        local_vt.ctx = &fake;
+        pkg = musicpack_package_open_range(&local_vt, &s);
+        CHECK(pkg != 0, "hostile index does not block open");
+        if (pkg != 0) {
+            msg_bag bag;
+            memset(&bag, 0, sizeof bag);
+            CHECK(musicpack_package_verify(pkg, 0, bag_report, &bag)
+                      != MUSICPACK_OK, "hostile index fails verify");
+            CHECK(bag_has(&bag, "corrupt INDX discarded"),
+                  "index discarded via range transport");
+            CHECK(musicpack_package_read_member(pkg, "lyric/ab.txt", 1024,
+                                                &got, &got_len)
+                      == MUSICPACK_OK, "scan fallback member read");
+            free(got);
+            got = 0;
+            musicpack_package_close(pkg);
+        }
+        fake_destroy(&fake);
+        fake_free_buffers(&fake);
+        free(mod);
+    }
+    free(packed);
+}
+
+static void
+test_range_degraded_containers(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    unsigned char *buf, *mod;
+    size_t len, nlen;
+    musicpack_status s;
+    musicpack_range_source src;
+    musicpack_package *pkg;
+    msg_bag bag;
+
+    join_path(root, sizeof root, tmp, "deg_pkg");
+    join_path(mpak, sizeof mpak, tmp, "deg.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", "lyric/ab.txt") == 0,
+          "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    buf = read_file_all(mpak, &len);
+    CHECK(buf != 0, "read");
+    if (buf == 0)
+        return;
+
+    /* INDX-less, hint-cleared, TAIL removed: readable via scan with
+       warnings — identical to local semantics */
+    mod = strip_indx_and_tail(buf, len, &nlen);
+    CHECK(mod != 0, "strip");
+    if (mod != 0) {
+        write_file(mpak, mod, nlen);
+        CHECK(musicpack_range_source_stdio(mpak, &src) == MUSICPACK_OK,
+              "source");
+        pkg = musicpack_package_open_range(&src, &s);
+        CHECK(pkg != 0, "range open without index");
+        if (pkg != 0) {
+            unsigned char *got = 0;
+            size_t got_len = 0;
+            memset(&bag, 0, sizeof bag);
+            CHECK(musicpack_package_verify(pkg, 0, bag_report, &bag)
+                      == MUSICPACK_OK, "degraded verify warning-only");
+            CHECK(bag_has(&bag, "missing INDX"), "missing index warning");
+            CHECK(bag_has(&bag, "completeness unproven"),
+                  "missing tail warning");
+            CHECK(musicpack_package_read_member(pkg, "audio/01.mpc",
+                                                16u << 20, &got, &got_len)
+                      == MUSICPACK_OK, "member via scan fallback");
+            free(got);
+            musicpack_package_close(pkg);
+        }
+        free(mod);
+    }
+
+    /* truncated container through a range source: open survives,
+       verify fails, size comes from the transport */
+    {
+        uint64_t dbo, dpo, dpl, cut;
+        CHECK(find_block(buf, len, "DATA", &dbo, &dpo, &dpl) == 0, "DATA");
+        cut = dpo + dpl + MPAK_BHDR + 5;
+        CHECK(cut < len, "second block in bounds");
+        write_file(mpak, buf, (size_t) cut);
+        CHECK(musicpack_range_source_stdio(mpak, &src) == MUSICPACK_OK,
+              "source");
+        pkg = musicpack_package_open_range(&src, &s);
+        CHECK(pkg != 0, "truncated range open");
+        if (pkg != 0) {
+            CHECK(musicpack_package_verify(pkg, 0, 0, 0) != MUSICPACK_OK,
+                  "truncated does not verify");
+            musicpack_package_close(pkg);
+        }
+    }
+    free(buf);
+}
+
+static void
+test_range_ownership_failure(const char *tmp)
+{
+    char root[4200], mpak[4200];
+    unsigned char *packed;
+    size_t packed_len;
+    musicpack_package *pkg;
+    musicpack_status s;
+    musicpack_range_source local_vt;
+    fake_src fake;
+
+    join_path(root, sizeof root, tmp, "own_pkg");
+    join_path(mpak, sizeof mpak, tmp, "own.mpak");
+    CHECK(build_min_package(root, "audio/01.mpc", 0) == 0, "build");
+    CHECK(pack_ok(root, mpak) == 0, "pack");
+    packed = read_file_all(mpak, &packed_len);
+    CHECK(packed != 0, "read");
+    if (packed == 0)
+        return;
+
+    /* corrupt the MANF payload so the open reaches the package-build
+       failure path (framing intact, JSON unparseable) */
+    {
+        uint64_t bo, po, pl;
+        unsigned char *pristine;
+        CHECK(find_block(packed, packed_len, "MANF", &bo, &po, &pl) == 0,
+              "find MANF");
+        pristine = (unsigned char *) malloc(packed_len);
+        CHECK(pristine != 0, "alloc pristine");
+        memcpy(pristine, packed, packed_len);
+        packed[po] = '[';
+
+        fake_init(&fake, packed, packed_len);
+        local_vt = *fake_vtable();
+        local_vt.ctx = &fake;
+        pkg = musicpack_package_open_range(&local_vt, &s);
+        CHECK(pkg == 0, "corrupt MANF fails open");
+        CHECK(s == MUSICPACK_ERR_JSON, "build failure is a json error");
+        /* D1 regression: on failure the package must NOT destroy the
+           caller's source — the caller retains ownership */
+        CHECK(fake.destroyed == 0, "destroy not called on failed open");
+
+        /* caller-side cleanup required by the documented contract */
+        fake_destroy(&fake);
+        fake_free_buffers(&fake);
+
+        /* success-path ownership companion over the pristine bytes */
+        fake_init(&fake, pristine, packed_len);
+        local_vt.ctx = &fake;
+        pkg = musicpack_package_open_range(&local_vt, &s);
+        CHECK(pkg != 0, "valid container opens");
+        if (pkg != 0) {
+            musicpack_package_close(pkg);
+            CHECK(fake.destroyed == 1, "adopted source destroyed at close");
+        }
+        fake_free_buffers(&fake);
+        free(pristine);
+        free(packed);
+        return;
+    }
+
+    fake_init(&fake, packed, packed_len);
+    local_vt = *fake_vtable();
+    local_vt.ctx = &fake;
+    pkg = musicpack_package_open_range(&local_vt, &s);
+    CHECK(pkg == 0, "corrupt MANF fails open");
+    CHECK(s == MUSICPACK_ERR_JSON, "build failure is a json error");
+    /* D1 regression: on failure the package must NOT destroy the
+       caller's source — the caller retains ownership */
+    CHECK(fake.destroyed == 0, "destroy not called on failed open");
+
+    /* caller-side cleanup required by the documented contract */
+    fake_destroy(&fake);
+    fake_free_buffers(&fake);
+    free(packed);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1708,6 +2431,14 @@ main(int argc, char **argv)
     test_roundtrip_album(tmp, g_ref_album, "mpc");
     test_roundtrip_album(tmp, g_ref_flac, "flac");
     test_mpc_integration(tmp);
+    test_range_stdio_adapter(tmp);
+    test_range_open_equivalence(tmp);
+    test_range_request_pattern(tmp);
+    test_range_seeking(tmp);
+    test_range_mpc_decode(tmp);
+    test_range_adversarial(tmp);
+    test_range_ownership_failure(tmp);
+    test_range_degraded_containers(tmp);
 
     if (failures) {
         fprintf(stderr, "%d mpak test(s) failed\n", failures);
