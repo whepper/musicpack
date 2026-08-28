@@ -44,7 +44,7 @@ export function artistLine(artists: { name: string; role?: string }[]): string {
 
 export function codecLabel(codec?: string, version?: number): string {
   if (!codec) return '?';
-  if (codec.startsWith('musepack')) return version === 8 ? 'MPC' : 'MPC';
+  if (codec.startsWith('musepack')) return 'MPC';
   if (codec === 'flac') return 'FLAC';
   if (codec === 'wav') return 'WAV';
   if (codec === 'ogg') return 'OGG';

@@ -54,21 +54,21 @@ SPDX-License-Identifier: BSD-3-Clause
   .banner {
     font-size: 12px;
     line-height: 1.4;
-    padding: 6px 16px;
-    border-bottom: 1px solid var(--hairline, rgba(0, 0, 0, 0.12));
+    padding: 6px var(--space-5);
+    border-bottom: 1px solid var(--hairline);
     display: flex;
     align-items: center;
     gap: 8px;
   }
   .banner.checking {
-    color: var(--muted, #6b6b6b);
+    color: var(--text-soft);
   }
   .banner.error {
-    background: #fbeae8;
-    color: #8c2f24;
+    background: rgba(224, 122, 106, 0.08);
+    color: var(--danger);
   }
   .banner.ok {
-    color: var(--muted, #6b6b6b);
+    color: var(--text-soft);
   }
   .banner.error .btn {
     margin-left: auto;
@@ -77,7 +77,7 @@ SPDX-License-Identifier: BSD-3-Clause
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #3f8c5a;
+    background: var(--ok);
     display: inline-block;
   }
 </style>

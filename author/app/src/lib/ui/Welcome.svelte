@@ -153,9 +153,9 @@ SPDX-License-Identifier: BSD-3-Clause
     width: min(480px, 100%);
     margin: 0 auto 1rem;
     padding: 0.85rem 1.1rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--hairline, rgba(0, 0, 0, 0.12));
-    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-card);
   }
   .resume-title {
     margin: 0.15rem 0 0;

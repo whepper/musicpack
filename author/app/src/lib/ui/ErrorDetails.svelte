@@ -43,9 +43,10 @@ SPDX-License-Identifier: BSD-3-Clause
   .error-details pre {
     margin: 0.4rem 0 0;
     padding: 0.6rem 0.75rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--hairline, rgba(0, 0, 0, 0.12));
-    border-radius: 4px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    font-family: var(--mono);
     font-size: 12px;
     line-height: 1.45;
     max-height: 180px;

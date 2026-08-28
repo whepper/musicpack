@@ -153,7 +153,7 @@ SPDX-License-Identifier: BSD-3-Clause
       <div class="artist">{artistLine($draft.album.artists)}</div>
       <div class="edition">
         {#if $draft.release?.edition}{$draft.release.edition}{/if}
-        {#if $draft.album.originalReleaseDate}{#if $draft.release?.edition} · {/if}original {formatDate($draft.album.originalReleaseDate)}{/if}
+        {#if $draft.album.originalReleaseDate}{#if $draft.release?.edition}{' · '}{/if}original {formatDate($draft.album.originalReleaseDate)}{/if}
         {#if $draft.release?.releaseDate} · released {formatDate($draft.release.releaseDate)}{/if}
         {#if $draft.release?.country} · {$draft.release.country}{/if}
         {#if $draft.album.releaseType} · {$draft.album.releaseType}{/if}

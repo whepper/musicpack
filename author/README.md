@@ -19,15 +19,18 @@ tag-rich Musepack album                      ← or an existing MPC album
 .mpack (validated MusicPack v1 directory bundle)
 ```
 
-The application is part of the MusicPack product family: same visual language
-as the `web/` record-shelf client (warm paper/ink editorial palette, hairline
-rules, serif headings), Svelte 5 + TypeScript, running as a Tauri 2 desktop
-app on macOS (Linux/Windows are not yet a focus).
+The application is part of the MusicPack product family: the same visual
+language as the `web/` record-shelf client — the premium dark v2 system
+(near-black canvas, warm cream serif type, one gold accent, green reserved
+for verified states; see `docs/ui-v2-design.md`) — expressed in a
+tool-oriented, workflow-first information architecture, Svelte 5 +
+TypeScript, running as a Tauri 2 desktop app on macOS (Linux/Windows are
+not yet a focus).
 
 ## Architecture
 
 ```text
-Svelte 5 app (app/)                     ← in-memory AuthoringDraft, record-shelf UI
+Svelte 5 app (app/)                     ← in-memory AuthoringDraft, dark v2 authoring UI
    │  invoke() via @tauri-apps/api
    ▼
 Tauri commands (src-tauri/src/lib.rs)   ← thin JSON surface
@@ -253,6 +256,13 @@ native Rust backend (via `ureq`), so the webview is never granted internet
   `AuthorService`.
 
 ## Current workflow
+
+The UI organises authoring as a sticky **8-stage stepper** — Identity ·
+Release · Tracks · Artwork · Encode · Sonic · Waveform · Validate
+(`app/src/lib/authoring-state.ts`). The numbered journey below describes the
+user-visible flow including the two steps that live outside the stepper
+(adding an album on Welcome and the Create/Save dialog), so its ordering is
+intentionally not identical to the stage order.
 
 1. **Add album** — choose or drag/drop an album directory; `inspect` scans it
    into a draft (tags, disc grouping, track durations/codec via cheap header

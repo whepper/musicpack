@@ -122,7 +122,7 @@ SPDX-License-Identifier: BSD-3-Clause
     position: sticky;
     top: 0;
     z-index: 10;
-    background: var(--paper);
+    background: var(--bg-rail);
     border-top: 1px solid var(--hairline);
     border-bottom: 1px solid var(--hairline);
     margin-bottom: var(--space-5);
@@ -143,33 +143,33 @@ SPDX-License-Identifier: BSD-3-Clause
     padding: 9px 14px 7px;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
-    color: var(--ink-faint);
+    color: var(--text-soft);
     font-size: var(--fs-sm);
     white-space: nowrap;
     flex-shrink: 0;
   }
   .stage:hover {
-    color: var(--ink);
-    background: var(--paper-raised);
+    color: var(--text);
+    background: var(--surface);
   }
   .stage.active {
-    color: var(--ink);
+    color: var(--text);
     font-weight: 600;
     border-bottom-color: var(--accent);
   }
   .mark {
     width: 1em;
     text-align: center;
-    color: var(--ink-faint);
+    color: var(--text-faint);
     opacity: 0.55;
     font-size: var(--fs-xs);
   }
   .mark.ok {
-    color: #3f8c5a;
+    color: var(--ok);
     opacity: 1;
   }
   .mark.warn {
-    color: #c07a3a;
+    color: var(--accent-strong);
     opacity: 1;
   }
   @media (max-width: 720px) {

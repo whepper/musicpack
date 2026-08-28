@@ -170,8 +170,8 @@ SPDX-License-Identifier: BSD-3-Clause
   .wf-panel { padding: var(--space-3) var(--space-4); }
   header { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-2); }
   h2 { margin: 0; font-size: 1.05rem; }
-  .meta { font-size: 0.8rem; color: var(--ink-muted); }
+  .meta { font-size: 0.8rem; color: var(--text-soft); }
   .row { display: flex; gap: var(--space-2); align-items: center; }
   .row progress { flex: 1; }
-  .hint { color: var(--ink-muted); font-size: 0.8rem; }
+  .hint { color: var(--text-soft); font-size: 0.8rem; }
 </style>
