@@ -1,6 +1,6 @@
 # MusicPack — Project Roadmap
 
-Last updated: 2026-08-27.
+Last updated: 2026-08-28.
 
 The Musepack codec foundation is no longer the primary active engineering area.
 **Musepack encoder optimization is complete** (see below), and the project has
@@ -83,7 +83,10 @@ documented, to be reconsidered only after dogfooding produces evidence:
 - scrobbling
 - OpenSubsonic
 - speculative `.mpack` redesigns
-- unrelated UX features
+- unrelated UX features — with one recorded exception: the **UI v2
+  redesign** (consumer client + Author adoption) was explicitly
+  user-approved scope and shipped as phases P0–P7 on 2026-08-28 (see
+  `ui-v2-design.md`). The freeze applies again to future UX work.
 
 ## Completed work (engineering history, preserved)
 
@@ -94,3 +97,4 @@ documented, to be reconsidered only after dogfooding produces evidence:
 | Psychoacoustic SIMD (Phase 3) | ✅ | `psy-optimization-milestone-3.md` |
 | Final psychoacoustic investigation (ARM64 + x86-64) | ✅ | `psy-optimization-final.md`, `measurements/psy-model-profile/` |
 | CVD/CEP analysis | ✅ | `measurements/cvd-analysis-profile/arm64-apple-m5.md` |
+| MusicPack UI v2 (consumer P0–P5 + Author P6, docs P7) | ✅ | `ui-v2-design.md` |
