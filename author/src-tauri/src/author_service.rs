@@ -182,7 +182,8 @@ impl AuthorService {
             return Ok(BackendLocation::Development(PathBuf::from(p)));
         }
         for rel in [
-            "build/musicpack/musicpack",
+            "build/core/musicpack/musicpack", // current layout (core/ reorg)
+            "build/musicpack/musicpack",      // pre-reorg layout
             "build-static/musicpack/musicpack",
         ] {
             let candidate = repo_base.join(rel);
@@ -631,7 +632,14 @@ impl AuthorService {
                     }
                 }
                 let base = cli.parent().unwrap_or_else(|| Path::new("."));
-                for cand in [base.join("../mpcenc/mpcenc"), base.join("mpcenc/mpcenc")] {
+                // Current layout: CLI at build/core/musicpack → encoder at
+                // build/codec/mpcenc. Legacy: build/musicpack → build/mpcenc.
+                // Final fallback: an mpcenc directory beside the CLI.
+                for cand in [
+                    base.join("../../codec/mpcenc/mpcenc"),
+                    base.join("../mpcenc/mpcenc"),
+                    base.join("mpcenc/mpcenc"),
+                ] {
                     if cand.is_file() {
                         return Ok(cand);
                     }
@@ -812,8 +820,20 @@ mod tests {
     #[test]
     fn dev_prefers_build_tree_over_path() {
         let tmp = TempDir::new().unwrap();
-        make_cli(tmp.path(), "build/musicpack", "#!/bin/sh\n");
+        make_cli(tmp.path(), "build/core/musicpack", "#!/bin/sh\n");
         let loc = AuthorService::resolve_development(None, tmp.path(), on_path).unwrap();
+        assert!(matches!(
+            &loc,
+            BackendLocation::Development(p) if p.ends_with("build/core/musicpack/musicpack")
+        ));
+    }
+
+    #[test]
+    fn dev_falls_back_to_legacy_build_tree() {
+        // Pre-reorg trees put the CLI directly under build/musicpack.
+        let tmp = TempDir::new().unwrap();
+        make_cli(tmp.path(), "build/musicpack", "#!/bin/sh\n");
+        let loc = AuthorService::resolve_development(None, tmp.path(), no_path).unwrap();
         assert!(matches!(
             &loc,
             BackendLocation::Development(p) if p.ends_with("build/musicpack/musicpack")
@@ -1128,6 +1148,23 @@ mod tests {
 
     #[test]
     fn mpcenc_dev_prefers_build_tree() {
+        let tmp = TempDir::new().unwrap();
+        let mpcenc = make_mpcenc(tmp.path(), "build/codec/mpcenc");
+        let cli = make_cli(tmp.path(), "build/core/musicpack", "#!/bin/sh\n");
+        let loc = AuthorService::resolve_development(None, tmp.path(), on_path).unwrap();
+        assert_eq!(loc.path(), &cli);
+        let svc = AuthorService::new(Ok(loc));
+        let p = svc.encode_resolve_mpcenc().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&p).unwrap(),
+            std::fs::canonicalize(&mpcenc).unwrap()
+        );
+    }
+
+    #[test]
+    fn mpcenc_dev_falls_back_to_legacy_build_tree() {
+        // Pre-reorg trees: CLI under build/musicpack, encoder under
+        // build/mpcenc.
         let tmp = TempDir::new().unwrap();
         let mpcenc = make_mpcenc(tmp.path(), "build/mpcenc");
         let cli = make_cli(tmp.path(), "build/musicpack", "#!/bin/sh\n");

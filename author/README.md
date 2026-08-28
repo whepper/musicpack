@@ -75,9 +75,11 @@ and a `--json` mode on `verify`. `import`/`create`/`info` behaviour is
 unchanged (the scan logic was extracted into a shared helper).
 `author-api-version` is the machine-readable capability handshake the GUI
 uses to verify backend compatibility (see [Backend compatibility](#backend-compatibility));
-it is at version **6**, which adds opening existing `.mpack` packages
-(`inspect` on a package builds the draft from its manifest) and in-place
-saves (`build-draft --replace --sync-tags`).
+it is at version **7**, which keeps per-track `representations[]` in the
+draft so Author saves preserve the Phase 3 alternates; version 6 added
+opening existing `.mpack` packages (`inspect` on a package builds the draft
+from its manifest) and in-place saves
+(`build-draft --replace --sync-tags`).
 
 ## The authoring draft
 
@@ -117,7 +119,8 @@ npm run tauri dev
 
 `npm run tauri dev` starts Vite on `http://localhost:5174` and opens the
 native window. In development the Rust service resolves the `musicpack`
-binary as `MUSICPACK_CLI` → `../build/musicpack/musicpack` →
+binary as `MUSICPACK_CLI` → `../build/core/musicpack/musicpack` →
+`../build/musicpack/musicpack` (pre-reorg trees) →
 `../build-static/musicpack/musicpack` → `PATH`; override with the
 `MUSICPACK_CLI` environment variable. See
 [Backend resolution](#backend-resolution) for the full policy.
@@ -202,11 +205,12 @@ a packaged app can never silently run an unrelated `musicpack`:
 | Context                        | Order                                             |
 |--------------------------------|---------------------------------------------------|
 | Packaged app (release build)   | **bundled sidecar only** (`Contents/MacOS/musicpack`) |
-| Development (`tauri dev`)      | `MUSICPACK_CLI` → `build/musicpack/musicpack` → `build-static/musicpack/musicpack` → `PATH` |
+| Development (`tauri dev`)      | `MUSICPACK_CLI` → `build/core/musicpack/musicpack` → `build/musicpack/musicpack` (pre-reorg) → `build-static/musicpack/musicpack` → `PATH` |
 
 The encoder resolves the same way but separately: a packaged app uses the
 `mpcenc` sidecar next to the bundled CLI; development uses `MUSICPACK_MPCENC`
-→ the CMake build tree (`build/mpcenc/mpcenc`) → PATH. No decoder binary is
+→ the CMake build tree (`build/codec/mpcenc/mpcenc`, falling back to the
+pre-reorg `build/mpcenc/mpcenc`) → PATH. No decoder binary is
 resolved at all: FLAC/WAV sources are decoded in-process by the bundled
 backend, so there is no FFmpeg dependency in either regime.
 
