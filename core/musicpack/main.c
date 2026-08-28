@@ -323,7 +323,6 @@ load_sonic_summary(const musicpack_package *pkg, const musicpack_manifest *m,
                    sonic_summary *ss)
 {
     size_t i;
-    char abs[MUSICPACK_PATH_MAX + 2];
     char *json;
     musicpack_status s;
 
@@ -332,16 +331,23 @@ load_sonic_summary(const musicpack_package *pkg, const musicpack_manifest *m,
     for (i = 0; i < m->analysis_count; i++) {
         musicpack_sonic *sonic;
         size_t t;
+        unsigned char *bytes = 0;
+        size_t bytes_len = 0;
         if (strcmp(m->analysis[i].type, "sonic") != 0)
             continue;
-        if (musicpack_package_resolve_path(pkg, m->analysis[i].asset.path,
-                                           abs, sizeof abs) != MUSICPACK_OK)
-            break;
-        json = read_file_bounded(abs, MUSICPACK_SONIC_DOC_MAX, &s);
-        if (json == 0) {
+        if (musicpack_package_read_member(pkg, m->analysis[i].asset.path,
+                                          MUSICPACK_SONIC_DOC_MAX,
+                                          &bytes, &bytes_len) != MUSICPACK_OK) {
             ss->failed = 1;
             break;
         }
+        json = (char *) realloc(bytes, bytes_len + 1);
+        if (json == 0) {
+            free(bytes);
+            ss->failed = 1;
+            break;
+        }
+        json[bytes_len] = '\0';
         sonic = musicpack_sonic_parse(json, strlen(json), &s);
         free(json);
         if (sonic == 0) {
@@ -448,7 +454,7 @@ cmd_info(const char *dir, int json)
     musicpack_status s;
     size_t d, t, i, track_total = 0;
 
-    pkg = musicpack_package_open_dir(dir, &s);
+    pkg = musicpack_package_open(dir, &s);
     if (pkg == 0) {
         if (json)
             json_error_out("not_found", "cannot open package");
@@ -814,7 +820,7 @@ cmd_verify(const char *dir, int quiet, int json)
     report_bag bag;
 
     memset(&bag, 0, sizeof bag);
-    pkg = musicpack_package_open_dir(dir, 0);
+    pkg = musicpack_package_open(dir, 0);
     if (pkg == 0) {
         if (json)
             json_error_out("not_found", "cannot open package");
@@ -6267,6 +6273,89 @@ finish:
     return g_waveform_cancelled ? 130 : bad ? 1 : 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* commands: pack / unpack (MPAK single-file container)                */
+/* ------------------------------------------------------------------ */
+
+static int
+verify_staged_mpak(const char *file)
+{
+    musicpack_package *pkg;
+    musicpack_report rep = { 0, 0 };
+    int ok;
+
+    pkg = musicpack_package_open(file, 0);
+    if (pkg == 0)
+        return 0;
+    ok = musicpack_package_verify(pkg, &rep, 0, 0) == MUSICPACK_OK;
+    musicpack_package_close(pkg);
+    return ok;
+}
+
+/* musicpack pack <package-dir> <out.mpak>: pack a verified directory
+   bundle into a deterministic single-file container. */
+static int
+cmd_pack(const char *dir, const char *out_file)
+{
+    char stage[MUSICPACK_PATH_MAX * 2 + 4];
+    musicpack_status s = MUSICPACK_OK;
+
+    if (!prepare_stage(out_file, "pack", stage, sizeof stage)) {
+        fprintf(stderr, "pack: output or staging destination already exists\n");
+        return 1;
+    }
+    if (musicpack_mpak_pack_dir(dir, stage, &s) != MUSICPACK_OK) {
+        remove(stage);
+        fprintf(stderr, "pack: cannot pack '%s' (error %d)\n", dir, (int) s);
+        return 1;
+    }
+    if (!verify_staged_mpak(stage) || rename(stage, out_file) != 0) {
+        remove(stage);
+        fprintf(stderr, "pack failed\n");
+        return 1;
+    }
+    printf("packed '%s'\n", out_file);
+    return 0;
+}
+
+/* musicpack unpack <file.mpak> [out-dir]: physical extraction with
+   recovery semantics. The extraction is published even when it carries
+   findings (recovery is the point); the exit code reflects both the
+   container findings and verification of the published directory. */
+static int
+cmd_unpack(const char *file, const char *out_dir)
+{
+    char stage[MUSICPACK_PATH_MAX * 2 + 4];
+    musicpack_report rep = { 0, 0 };
+    musicpack_package *pkg;
+    musicpack_status s;
+    int bad;
+
+    if (!prepare_stage(out_dir, "unpack", stage, sizeof stage)) {
+        fprintf(stderr, "unpack: output or staging destination already exists\n");
+        return 1;
+    }
+    s = musicpack_mpak_unpack(file, stage, &rep, verify_report, 0);
+    if (rename(stage, out_dir) != 0) {
+        rm_rf(stage);
+        fprintf(stderr, "unpack failed\n");
+        return 1;
+    }
+    pkg = musicpack_package_open_dir(out_dir, 0);
+    if (pkg == 0) {
+        fprintf(stderr, "unpack: extracted package cannot be opened\n");
+        return 1;
+    }
+    bad = musicpack_package_verify(pkg, &rep, verify_report, 0) != MUSICPACK_OK;
+    musicpack_package_close(pkg);
+    if (s != MUSICPACK_OK || bad) {
+        printf("unpack: extracted with errors: '%s'\n", out_dir);
+        return 1;
+    }
+    printf("unpacked '%s'\n", out_dir);
+    return 0;
+}
+
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -6277,10 +6366,50 @@ main(int argc, char **argv)
 
     fprintf(stderr, "%s", ABOUT);
     if (argc < 2) {
-        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|inspect|validate-draft|build-draft|identify-draft|encode-draft|waveform-draft|author-api-version> ...\n");
+        fprintf(stderr, "usage: musicpack <info|verify|identify|create|import|update-metadata|inspect|validate-draft|build-draft|identify-draft|encode-draft|waveform-draft|pack|unpack|author-api-version> ...\n");
         return 2;
     }
     cmd = argv[1];
+    if (strcmp(cmd, "pack") == 0) {
+        const char *dir = 0, *out = 0;
+        int i;
+        for (i = 2; i < argc; i++) {
+            if (dir == 0)
+                dir = argv[i];
+            else if (out == 0)
+                out = argv[i];
+            else
+                return usage_error("too many arguments");
+        }
+        if (dir == 0 || out == 0)
+            return usage_error("pack requires <package-dir> <out.mpak>");
+        return cmd_pack(dir, out);
+    }
+    if (strcmp(cmd, "unpack") == 0) {
+        const char *file = 0, *out = 0;
+        int i;
+        for (i = 2; i < argc; i++) {
+            if (file == 0)
+                file = argv[i];
+            else if (out == 0)
+                out = argv[i];
+            else
+                return usage_error("too many arguments");
+        }
+        if (file == 0)
+            return usage_error("unpack requires <file.mpak> [out-dir]");
+        if (out == 0) {
+            static char derived[MUSICPACK_PATH_MAX * 2 + 4];
+            size_t n = strlen(file);
+            if (n > 5 && strcmp(file + n - 5, ".mpak") == 0)
+                snprintf(derived, sizeof derived, "%.*s.mpack",
+                         (int) (n - 5), file);
+            else
+                snprintf(derived, sizeof derived, "%s.mpack", file);
+            out = derived;
+        }
+        return cmd_unpack(file, out);
+    }
     if (strcmp(cmd, "info") == 0) {
         const char *dir = 0;
         int json = 0, i;

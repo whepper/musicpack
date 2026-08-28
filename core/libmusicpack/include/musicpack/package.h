@@ -79,6 +79,39 @@ typedef void (*musicpack_report_fn)(void *ctx, const char *message, int is_error
 MUSICPACK_API musicpack_package *musicpack_package_open_dir(const char *dir,
                                                             musicpack_status *status);
 
+/// Opens a package from either storage backend.
+///
+/// If \p path is a directory, this is equivalent to
+/// musicpack_package_open_dir(). If it is a regular file, it is opened as
+/// an MPAK single-file container (specs/mpak-v1.md); a file that is not a
+/// valid MPAK container fails to open. The returned handle behaves like a
+/// directory handle for reading, verification and track access; manifest
+/// saving is not supported for packed packages.
+///
+/// \param path   package directory or `.mpak` file
+/// \param status optional error out
+/// \return an owned handle, or NULL on failure
+MUSICPACK_API musicpack_package *musicpack_package_open(const char *path,
+                                                        musicpack_status *status);
+
+/// Reads a member object's raw bytes (backend-independent).
+///
+/// Works for both directory packages (reads the referenced file with the
+/// hardened regular-file checks) and MPAK packages (reads the DATA member
+/// range). \p max bounds the read; larger members fail with
+/// MUSICPACK_ERR_IO.
+///
+/// \param pkg  package
+/// \param rel  canonical member path
+/// \param max  maximum accepted size in bytes
+/// \param out  receives a malloc'd buffer (caller frees)
+/// \param len  receives the byte count
+/// \return MUSICPACK_OK or an error
+MUSICPACK_API musicpack_status musicpack_package_read_member(const musicpack_package *pkg,
+                                                             const char *rel, size_t max,
+                                                             unsigned char **out,
+                                                             size_t *len);
+
 /// Closes a package and releases all state.
 MUSICPACK_API void musicpack_package_close(musicpack_package *pkg);
 
@@ -106,6 +139,9 @@ MUSICPACK_API musicpack_status musicpack_package_verify(const musicpack_package 
 /// Rewrites the package's manifest.json, preserving unknown package-level
 /// fields present when opened. Nested extensions are not retained because the
 /// public model cannot safely associate them after arrays are changed.
+///
+/// Not supported for MPAK packed packages (returns MUSICPACK_ERR_INVALID):
+/// editing a packed package requires unpacking first.
 ///
 /// \param pkg package to save
 /// \return MUSICPACK_OK or an error

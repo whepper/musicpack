@@ -100,6 +100,16 @@ MUSICPACK_API musicpack_status musicpack_package_track_open_reader(const musicpa
                                                                    size_t disc, size_t track,
                                                                    mpc_reader *reader);
 
+/// Releases a reader opened by musicpack_package_track_open_reader().
+///
+/// Dispatches on the storage backend: directory-backed stdio readers are
+/// closed exactly like mpc_reader_exit_stdio(); MPAK container-backed
+/// readers release their own state. Callers that know they hold a
+/// directory-backed reader may keep calling mpc_reader_exit_stdio().
+///
+/// \param reader reader to close (zeroed after release)
+MUSICPACK_API void musicpack_package_track_close_reader(mpc_reader *reader);
+
 #ifdef __cplusplus
 }
 #endif

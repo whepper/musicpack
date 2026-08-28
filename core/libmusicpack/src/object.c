@@ -70,6 +70,13 @@ musicpack_package_track_open_reader(const musicpack_package *pkg, size_t disc,
 
     if (tr == 0 || reader == 0)
         return MUSICPACK_ERR_INVALID;
+    if (pkg->io != 0) {
+        /* MPAK backend: an mpc_reader over the DATA member byte range.
+           The member bytes reaching libmusepack are exactly the stored
+           codec stream; in-track seeking stays the embedded SV8 stream's
+           responsibility through this seekable reader. */
+        return musicpack_mpak_member_reader(pkg, tr->audio.path, reader);
+    }
     s = musicpack_package_resolve_path(pkg, tr->audio.path, abs, sizeof abs);
     if (s != MUSICPACK_OK)
         return s;

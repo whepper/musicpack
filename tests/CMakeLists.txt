@@ -128,6 +128,23 @@ add_test(NAME mpack COMMAND mpc_mpack_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-flac-album.mpack
     ${CMAKE_CURRENT_SOURCE_DIR}/reference/meta)
 
+# ---- MPAK v1 single-file container tests -----------------------------------
+add_executable(mpc_mpak_tests mpak_tests.c)
+target_link_libraries(mpc_mpak_tests PRIVATE musicpack musepack)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mpc_mpak_tests PRIVATE m)
+endif()
+target_include_directories(mpc_mpak_tests PRIVATE ${PROJECT_SOURCE_DIR}/core/libmusicpack)
+
+add_test(NAME mpak COMMAND mpc_mpak_tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-musicpack-album.mpack
+    ${CMAKE_CURRENT_SOURCE_DIR}/reference/test-flac-album.mpack
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc)
+if(WIN32)
+  set_tests_properties(mpak PROPERTIES
+      ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+endif()
+
 # ---- native source decoding (FLAC/WAV/MPC) via the audio abstraction ------
 add_executable(mpc_audio_tests audio_tests.c)
 target_link_libraries(mpc_audio_tests PRIVATE musicpack musepack)

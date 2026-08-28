@@ -39,6 +39,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <musicpack/error.h>
 #include <musicpack/export.h>
@@ -62,6 +63,21 @@ MUSICPACK_API musicpack_status musicpack_sha256(const void *data, size_t len,
 /// Computes the lowercase-hex SHA-256 of a file's contents.
 MUSICPACK_API musicpack_status musicpack_sha256_file(const char *path,
                                                      char *hex, size_t cap);
+
+/// Computes the lowercase-hex SHA-256 of a byte range of a file.
+///
+/// Used by the MPAK backend to hash container members (offset + length
+/// within the `.mpak` file) and whole-package digests.
+///
+/// \param path   file to read
+/// \param offset absolute byte offset of the range start
+/// \param length number of bytes to hash
+/// \param hex    caller buffer of at least MUSICPACK_SHA256_HEX_SIZE
+/// \param cap    capacity of \p hex
+MUSICPACK_API musicpack_status musicpack_sha256_file_range(const char *path,
+                                                           uint64_t offset,
+                                                           uint64_t length,
+                                                           char *hex, size_t cap);
 
 /// Constant-time-equivalent comparison of two lowercase-hex digests.
 /// Returns 1 if equal, 0 otherwise.

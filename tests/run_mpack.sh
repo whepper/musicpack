@@ -635,6 +635,68 @@ else
     fail "package without sonic verifies after drop"
 fi
 
+# 8. MPAK container: pack / verify / unpack round-trip and determinism
+MPAK_A="$TMP/mpcak-a.mpak"
+MPAK_B="$TMP/mpcak-b.mpak"
+MPAK_OUT="$TMP/mpcak-out.mpack"
+MPAK_DMG="$TMP/mpcak-damaged.mpak"
+MPAK_DMG_OUT="$TMP/mpcak-damaged-out.mpack"
+if "$MUSICPACK" pack "$MPC_REF" "$MPAK_A" >/dev/null 2>&1 &&
+   "$MUSICPACK" verify "$MPAK_A" >/dev/null 2>&1; then
+    pass "pack + verify container"
+else
+    fail "pack + verify container"
+fi
+if "$MUSICPACK" info "$MPAK_A" >/dev/null 2>&1; then
+    pass "info on container"
+else
+    fail "info on container"
+fi
+if "$MUSICPACK" pack "$MPC_REF" "$MPAK_B" >/dev/null 2>&1 &&
+   cmp -s "$MPAK_A" "$MPAK_B"; then
+    pass "container builds are byte-identical"
+else
+    fail "container builds are byte-identical"
+fi
+if "$MUSICPACK" unpack "$MPAK_A" "$MPAK_OUT" >/dev/null 2>&1 &&
+   diff -r "$MPC_REF" "$MPAK_OUT" >/dev/null 2>&1 &&
+   "$MUSICPACK" verify "$MPAK_OUT" >/dev/null 2>&1; then
+    pass "unpack round-trip is a pure repack"
+else
+    fail "unpack round-trip is a pure repack"
+fi
+# a corrupted member is localized: verify fails, other members still extract
+cp "$MPAK_A" "$MPAK_DMG"
+python3 - "$MPAK_DMG" <<'PYEOF'
+import sys
+p = sys.argv[1]
+data = bytearray(open(p, 'rb').read())
+i = data.find(b'DATA')          # first DATA block
+plen_off = i + 4
+length = int.from_bytes(data[plen_off:plen_off+8], 'big')
+preamble = int.from_bytes(data[i+14:i+16], 'big')
+data[i + 14 + 2 + preamble + 8] ^= 0xFF   # flip a member byte
+open(p, 'wb').write(bytes(data))
+PYEOF
+if "$MUSICPACK" verify "$MPAK_DMG" 2>&1 | grep -q "checksum mismatch" &&
+   ! "$MUSICPACK" verify "$MPAK_DMG" >/dev/null 2>&1; then
+    pass "corrupted member localized in container"
+else
+    fail "corrupted member localized in container"
+fi
+rm -rf "$MPAK_DMG_OUT"
+# unpack publishes the extraction even when findings exist (recovery
+# semantics); the non-zero exit reports the corrupted member.
+"$MUSICPACK" unpack "$MPAK_DMG" "$MPAK_DMG_OUT" >/dev/null 2>&1
+if [ -f "$MPAK_DMG_OUT/manifest.json" ] &&
+   cmp -s "$MPAK_DMG_OUT/manifest.json" "$MPC_REF/manifest.json" &&
+   cmp -s "$MPAK_DMG_OUT/artwork/front.jpg" "$MPC_REF/artwork/front.jpg" &&
+   cmp -s "$MPAK_DMG_OUT/booklet/booklet.pdf" "$MPC_REF/booklet/booklet.pdf"; then
+    pass "recovery extracts intact members from damaged container"
+else
+    fail "recovery extracts intact members from damaged container"
+fi
+
 echo
 echo "== $PASSED passed, $FAILED failed =="
 [ "$FAILED" -eq 0 ]

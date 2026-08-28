@@ -49,6 +49,7 @@
 #include <musicpack/manifest.h>
 #include <musicpack/package.h>
 #include <musicpack/object.h>
+#include <musicpack/mpak.h>
 #include <musicpack/checksum.h>
 #include <musicpack/loudness.h>
 #include <musicpack/path.h>

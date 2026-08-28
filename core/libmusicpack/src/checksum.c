@@ -272,6 +272,95 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
     return MUSICPACK_OK;
 }
 
+musicpack_status
+musicpack_sha256_file_range(const char *path, uint64_t offset, uint64_t length,
+                            char *hex, size_t cap)
+{
+    mpc_sha256_ctx c;
+    unsigned char digest[32];
+    unsigned char buf[65536];
+    static const char hexc[] = "0123456789abcdef";
+    uint64_t remaining;
+    size_t i;
+
+    if (path == 0 || hex == 0 || cap < MUSICPACK_SHA256_HEX_SIZE)
+        return MUSICPACK_ERR_INVALID;
+    {
+#ifdef _WIN32
+        int fd = _open(path, _O_RDONLY | _O_BINARY);
+        struct _stat st;
+        if (fd < 0)
+            return MUSICPACK_ERR_IO;
+        if (_fstat(fd, &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
+            _close(fd);
+            return MUSICPACK_ERR_IO;
+        }
+        {
+            FILE *f = _fdopen(fd, "rb");
+#else
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+        struct stat st;
+        if (fd < 0)
+            return MUSICPACK_ERR_IO;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink > 1) {
+            close(fd);
+            return MUSICPACK_ERR_IO;
+        }
+        {
+            int flags = fcntl(fd, F_GETFL);
+            if (flags >= 0)
+                fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+        {
+            FILE *f = fdopen(fd, "rb");
+#endif
+            if (f == 0) {
+#ifdef _WIN32
+                _close(fd);
+#else
+                close(fd);
+#endif
+                return MUSICPACK_ERR_IO;
+            }
+            /* Range must lie inside the file (checked, no wrap). */
+            if ((uint64_t) st.st_size < offset ||
+                (uint64_t) st.st_size - offset < length) {
+                fclose(f);
+                return MUSICPACK_ERR_IO;
+            }
+#ifdef _WIN32
+            if (length > 0 && _fseeki64(f, (__int64) offset, SEEK_SET) != 0) {
+#else
+            if (length > 0 && fseeko(f, (off_t) offset, SEEK_SET) != 0) {
+#endif
+                fclose(f);
+                return MUSICPACK_ERR_IO;
+            }
+            sha256_init(&c);
+            remaining = length;
+            while (remaining > 0) {
+                size_t want = remaining > sizeof buf ? sizeof buf
+                                                      : (size_t) remaining;
+                size_t n = fread(buf, 1, want, f);
+                if (n == 0) {
+                    fclose(f);
+                    return MUSICPACK_ERR_IO;
+                }
+                sha256_update(&c, buf, n);
+                remaining -= n;
+            }
+            fclose(f);
+        }
+    }
+    sha256_final(&c, digest);
+    for (i = 0; i < 32; i++) {
+        hex[i * 2] = hexc[digest[i] >> 4];
+        hex[i * 2 + 1] = hexc[digest[i] & 0xF];
+    }
+    hex[64] = '\0';
+    return MUSICPACK_OK;
+}
+
 int
 musicpack_sha256_eq(const char *a, const char *b)
 {

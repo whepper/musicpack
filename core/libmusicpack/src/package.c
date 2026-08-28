@@ -58,11 +58,8 @@
 #define MANIFEST_NAME "manifest.json"
 #define MANIFEST_MAX  (16u * 1024u * 1024u)
 
-struct musicpack_package {
-    char *root;             /* absolute package root */
-    musicpack_manifest *manifest;
-    cJSON *original;        /* original manifest tree (unknown-field save) */
-};
+/* struct musicpack_package is defined in internal.h so the MPAK backend
+   can attach its member-I/O vtable to the same handle. */
 
 /* ------------------------------------------------------------------ */
 /* manifest file I/O                                                   */
@@ -79,8 +76,8 @@ is_regular_file(const char *path)
 }
 #endif
 
-static FILE *
-open_regular_read(const char *path)
+FILE *
+musicpack_open_regular_read(const char *path)
 {
 #ifdef _WIN32
     if (!is_regular_file(path))
@@ -116,7 +113,7 @@ read_file(const char *path, size_t max, size_t *len_out, musicpack_status *statu
     long len;
     char *buf;
 
-    f = open_regular_read(path);
+    f = musicpack_open_regular_read(path);
     if (f == 0) {
         *status = MUSICPACK_ERR_IO;
         return 0;
@@ -232,6 +229,35 @@ musicpack_package_open_dir(const char *dir, musicpack_status *status)
     return pkg;
 }
 
+musicpack_package *
+musicpack_package_open(const char *path, musicpack_status *status)
+{
+    musicpack_status local = MUSICPACK_OK;
+    struct stat st;
+
+    if (status == 0)
+        status = &local;
+    *status = MUSICPACK_OK;
+    if (path == 0) {
+        *status = MUSICPACK_ERR_INVALID;
+        return 0;
+    }
+#ifdef _WIN32
+    if (stat(path, &st) != 0) {
+#else
+    if (lstat(path, &st) != 0) {
+#endif
+        *status = MUSICPACK_ERR_IO;
+        return 0;
+    }
+    if (S_ISDIR(st.st_mode))
+        return musicpack_package_open_dir(path, status);
+    if (S_ISREG(st.st_mode))
+        return musicpack_mpak_open_package(path, status);
+    *status = MUSICPACK_ERR_IO;
+    return 0;
+}
+
 void
 musicpack_package_close(musicpack_package *pkg)
 {
@@ -240,6 +266,8 @@ musicpack_package_close(musicpack_package *pkg)
     musicpack_manifest_free(pkg->manifest);
     cJSON_Delete(pkg->original);
     free(pkg->root);
+    if (pkg->io != 0)
+        musicpack_mpak_io_free(pkg->io_ctx);
     free(pkg);
 }
 
@@ -261,7 +289,101 @@ musicpack_package_resolve_path(const musicpack_package *pkg, const char *rel,
 {
     if (pkg == 0)
         return MUSICPACK_ERR_INVALID;
+    if (pkg->io != 0)
+        return MUSICPACK_ERR_INVALID; /* packed package: no filesystem path */
     return musicpack_path_resolve(pkg->root, rel, out, cap);
+}
+
+/* ------------------------------------------------------------------ */
+/* storage backend dispatch                                            */
+/* ------------------------------------------------------------------ */
+
+/* Directory backend: containment + hardened regular-file size. */
+static musicpack_status
+dir_member_size(const musicpack_package *pkg, const char *rel, long long *out)
+{
+    char abs[MUSICPACK_PATH_MAX + 2];
+    long long size;
+
+    if (musicpack_path_resolve(pkg->root, rel, abs, sizeof abs) != MUSICPACK_OK)
+        return MUSICPACK_ERR_PATH;
+    size = musicpack_checked_file_size(abs);
+    if (size < 0)
+        return MUSICPACK_ERR_MISSING;
+    *out = size;
+    return MUSICPACK_OK;
+}
+
+static musicpack_status
+pkg_member_size(const musicpack_package *pkg, const char *rel, long long *out)
+{
+    if (pkg->io != 0)
+        return pkg->io->size(pkg->io_ctx, rel, out);
+    return dir_member_size(pkg, rel, out);
+}
+
+static musicpack_status
+pkg_member_sha256(const musicpack_package *pkg, const char *rel,
+                  char *hex, size_t cap)
+{
+    if (pkg->io != 0)
+        return pkg->io->sha256(pkg->io_ctx, rel, hex, cap);
+    {
+        char abs[MUSICPACK_PATH_MAX + 2];
+        if (musicpack_path_resolve(pkg->root, rel, abs, sizeof abs) != MUSICPACK_OK)
+            return MUSICPACK_ERR_PATH;
+        return musicpack_sha256_file(abs, hex, cap);
+    }
+}
+
+/* Bounded full read of a member. Directory backend uses the hardened
+   regular-file reader; MPAK reads the DATA member range. */
+static musicpack_status
+pkg_member_read(const musicpack_package *pkg, const char *rel, size_t max,
+                unsigned char **out, size_t *len)
+{
+    char abs[MUSICPACK_PATH_MAX + 2];
+    long long size;
+    FILE *f;
+    unsigned char *buf;
+
+    if (pkg->io != 0)
+        return pkg->io->read(pkg->io_ctx, rel, max, out, len);
+    if (musicpack_path_resolve(pkg->root, rel, abs, sizeof abs) != MUSICPACK_OK)
+        return MUSICPACK_ERR_PATH;
+    size = musicpack_checked_file_size(abs);
+    if (size < 0)
+        return MUSICPACK_ERR_MISSING;
+    if ((unsigned long long) size > (unsigned long long) max)
+        return MUSICPACK_ERR_IO;
+    f = musicpack_open_regular_read(abs);
+    if (f == 0)
+        return MUSICPACK_ERR_MISSING;
+    buf = (unsigned char *) malloc(size > 0 ? (size_t) size : 1);
+    if (buf == 0) {
+        fclose(f);
+        return MUSICPACK_ERR_NOMEM;
+    }
+    if (size > 0 && fread(buf, 1, (size_t) size, f) != (size_t) size) {
+        free(buf);
+        fclose(f);
+        return MUSICPACK_ERR_IO;
+    }
+    fclose(f);
+    *out = buf;
+    *len = (size_t) size;
+    return MUSICPACK_OK;
+}
+
+musicpack_status
+musicpack_package_read_member(const musicpack_package *pkg, const char *rel,
+                              size_t max, unsigned char **out, size_t *len)
+{
+    if (pkg == 0 || rel == 0 || out == 0 || len == 0)
+        return MUSICPACK_ERR_INVALID;
+    *out = 0;
+    *len = 0;
+    return pkg_member_read(pkg, rel, max, out, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,8 +470,8 @@ typedef struct verify_budget {
 #endif
 } verify_budget;
 
-static long long
-checked_file_size(const char *path)
+long long
+musicpack_checked_file_size(const char *path)
 {
 #ifdef _WIN32
     struct _stat st;
@@ -432,18 +554,18 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
 
     for (i = 0; i < count; i++) {
         const musicpack_asset *a = &assets[i];
-        char abs[MUSICPACK_PATH_MAX + 2];
         char buf[512];
         long long size;
+        musicpack_status ms;
 
-        if (musicpack_package_resolve_path(pkg, a->path, abs, sizeof abs) != MUSICPACK_OK) {
+        ms = pkg_member_size(pkg, a->path, &size);
+        if (ms == MUSICPACK_ERR_PATH) {
             snprintf(buf, sizeof buf, "%s: unsafe path '%s'", kind, a->path);
             report(rep, fn, ctx, buf, 1);
             *failed = 1;
             continue;
         }
-        size = checked_file_size(abs);
-        if (size < 0) {
+        if (ms != MUSICPACK_OK) {
             snprintf(buf, sizeof buf, "%s: missing file '%s'", kind, a->path);
             report(rep, fn, ctx, buf, 1);
             *failed = 1;
@@ -458,18 +580,23 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
             continue;
         }
         if (budget != 0) {
+            if (pkg->io == 0) {
 #ifndef _WIN32
-            unsigned long long dev = 0, ino = 0;
-            inode_of(abs, &dev, &ino);
-            if (inode_seen(budget, dev, ino)) {
-                /* same underlying object already hashed this pass */
-                continue;
-            }
+                unsigned long long dev = 0, ino = 0;
+                char abs[MUSICPACK_PATH_MAX + 2];
+                if (musicpack_path_resolve(pkg->root, a->path, abs, sizeof abs)
+                        == MUSICPACK_OK)
+                    inode_of(abs, &dev, &ino);
+                if (inode_seen(budget, dev, ino)) {
+                    /* same underlying object already hashed this pass */
+                    continue;
+                }
 #else
-            /* Windows st_ino is not a reliable object identity (often 0 or
-               identical across files), so inode-based dedup is disabled there
-               and every referenced asset is hashed. */
+                /* Windows st_ino is not a reliable object identity (often 0 or
+                   identical across files), so inode-based dedup is disabled there
+                   and every referenced asset is hashed. */
 #endif
+            }
             budget->total_bytes += (unsigned long long) size;
             if (budget->total_bytes > MUSICPACK_MANIFEST_MAX_TOTAL_BYTES) {
                 snprintf(buf, sizeof buf,
@@ -483,7 +610,7 @@ verify_assets(const musicpack_package *pkg, const musicpack_asset *assets,
         }
         if (a->sha256 != 0) {
             char hex[MUSICPACK_SHA256_HEX_SIZE];
-            if (musicpack_sha256_file(abs, hex, sizeof hex) != MUSICPACK_OK) {
+            if (pkg_member_sha256(pkg, a->path, hex, sizeof hex) != MUSICPACK_OK) {
                 snprintf(buf, sizeof buf, "%s: cannot hash '%s'", kind, a->path);
                 report(rep, fn, ctx, buf, 1);
                 *failed = 1;
@@ -550,62 +677,70 @@ walk_dir(const char *abs_base, const char *rel_base, char ***files, size_t *coun
 }
 #endif
 
+static int
+manifest_references_path(const musicpack_manifest *m, const char *path)
+{
+    size_t d, t, a;
+
+    for (d = 0; d < m->disc_count; d++)
+        for (t = 0; t < m->discs[d].track_count; t++)
+            if (strcmp(m->discs[d].tracks[t].audio.path, path) == 0)
+                return 1;
+    for (d = 0; d < m->disc_count; d++)
+        for (t = 0; t < m->discs[d].track_count; t++) {
+            size_t r;
+            for (r = 0; r < m->discs[d].tracks[t].representation_count; r++)
+                if (strcmp(m->discs[d].tracks[t].representations[r].path, path)
+                        == 0)
+                    return 1;
+        }
+    for (a = 0; a < m->artwork_count; a++)
+        if (strcmp(m->artwork[a].asset.path, path) == 0)
+            return 1;
+    for (a = 0; a < m->booklet_count; a++)
+        if (strcmp(m->booklet[a].path, path) == 0)
+            return 1;
+    for (a = 0; a < m->lyrics_count; a++)
+        if (strcmp(m->lyrics[a].path, path) == 0)
+            return 1;
+    for (a = 0; a < m->extras_count; a++)
+        if (strcmp(m->extras[a].path, path) == 0)
+            return 1;
+    for (a = 0; a < m->analysis_count; a++)
+        if (strcmp(m->analysis[a].asset.path, path) == 0)
+            return 1;
+    for (d = 0; d < m->disc_count; d++)
+        for (t = 0; t < m->discs[d].track_count; t++)
+            if (m->discs[d].tracks[t].waveform.present &&
+                strcmp(m->discs[d].tracks[t].waveform.path, path) == 0)
+                return 1;
+    return 0;
+}
+
 static void
 verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
                    musicpack_report_fn fn, void *ctx)
 {
-#if !defined(_WIN32)
     char **files = 0;
     size_t count = 0, cap = 0, i;
     const musicpack_manifest *m = pkg->manifest;
 
-    walk_dir(pkg->root, "", &files, &count, &cap);
+    if (pkg->io != 0) {
+        /* MPAK backend: member list comes from the container scan; the
+           manifest.json whitelist does not apply (MANF is not a member). */
+        if (pkg->io->list(pkg->io_ctx, &files, &count) != MUSICPACK_OK)
+            return;
+    } else {
+#if !defined(_WIN32)
+        walk_dir(pkg->root, "", &files, &count, &cap);
+#else
+        return;
+#endif
+    }
     for (i = 0; i < count; i++) {
-        int referenced = strcmp(files[i], MANIFEST_NAME) == 0;
-        size_t d, t, a;
+        int referenced = (pkg->io == 0 && strcmp(files[i], MANIFEST_NAME) == 0);
         if (!referenced)
-            for (d = 0; d < m->disc_count && !referenced; d++)
-                for (t = 0; t < m->discs[d].track_count && !referenced; t++)
-                    if (strcmp(m->discs[d].tracks[t].audio.path, files[i]) == 0)
-                        referenced = 1;
-        if (!referenced)
-            for (d = 0; d < m->disc_count && !referenced; d++)
-                for (t = 0; t < m->discs[d].track_count && !referenced; t++) {
-                    size_t r;
-                    for (r = 0; r < m->discs[d].tracks[t].representation_count;
-                         r++)
-                        if (strcmp(m->discs[d].tracks[t].representations[r].path,
-                                   files[i]) == 0) {
-                            referenced = 1;
-                            break;
-                        }
-                }
-        if (!referenced)
-            for (a = 0; a < m->artwork_count && !referenced; a++)
-                if (strcmp(m->artwork[a].asset.path, files[i]) == 0)
-                    referenced = 1;
-        if (!referenced)
-            for (a = 0; a < m->booklet_count && !referenced; a++)
-                if (strcmp(m->booklet[a].path, files[i]) == 0)
-                    referenced = 1;
-        if (!referenced)
-            for (a = 0; a < m->lyrics_count && !referenced; a++)
-                if (strcmp(m->lyrics[a].path, files[i]) == 0)
-                    referenced = 1;
-        if (!referenced)
-            for (a = 0; a < m->extras_count && !referenced; a++)
-                if (strcmp(m->extras[a].path, files[i]) == 0)
-                    referenced = 1;
-        if (!referenced)
-            for (a = 0; a < m->analysis_count && !referenced; a++)
-                if (strcmp(m->analysis[a].asset.path, files[i]) == 0)
-                    referenced = 1;
-        if (!referenced)
-            for (d = 0; d < m->disc_count && !referenced; d++)
-                for (t = 0; t < m->discs[d].track_count && !referenced; t++)
-                    if (m->discs[d].tracks[t].waveform.present &&
-                        strcmp(m->discs[d].tracks[t].waveform.path, files[i]) == 0)
-                        referenced = 1;
+            referenced = manifest_references_path(m, files[i]);
 
         if (!referenced) {
             char buf[512];
@@ -615,7 +750,6 @@ verify_extra_files(const musicpack_package *pkg, musicpack_report *rep,
         free(files[i]);
     }
     free(files);
-#endif
 }
 
 /* Validates every referenced `sonic` analysis document: parses it, checks
@@ -630,7 +764,6 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
 
     for (i = 0; i < m->analysis_count; i++) {
         const musicpack_analysis *a = &m->analysis[i];
-        char abs[MUSICPACK_PATH_MAX + 2];
         char buf[512];
         char *json;
         musicpack_status s;
@@ -641,10 +774,9 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
 
         if (strcmp(a->type, "sonic") != 0)
             continue;
-        if (musicpack_package_resolve_path(pkg, a->asset.path, abs, sizeof abs) != MUSICPACK_OK)
+        if (pkg_member_size(pkg, a->asset.path, &size) != MUSICPACK_OK)
             continue; /* already reported by verify_assets */
 
-        size = checked_file_size(abs);
         if (size > (long long) MUSICPACK_SONIC_DOC_MAX) {
             snprintf(buf, sizeof buf,
                      "analysis: sonic document '%s' exceeds %u-byte limit",
@@ -653,13 +785,29 @@ verify_sonic_documents(const musicpack_package *pkg, musicpack_report *rep,
             *failed = 1;
             continue;
         }
-        json = read_file(abs, MUSICPACK_SONIC_DOC_MAX, &json_len, &s);
-        if (json == 0) {
-            snprintf(buf, sizeof buf, "analysis: cannot read sonic document '%s'",
-                     a->asset.path);
-            report(rep, fn, ctx, buf, 1);
-            *failed = 1;
-            continue;
+        {
+            unsigned char *bytes = 0;
+            size_t bytes_len = 0;
+            s = pkg_member_read(pkg, a->asset.path, MUSICPACK_SONIC_DOC_MAX,
+                                &bytes, &bytes_len);
+            if (s != MUSICPACK_OK) {
+                snprintf(buf, sizeof buf, "analysis: cannot read sonic document '%s'",
+                         a->asset.path);
+                report(rep, fn, ctx, buf, 1);
+                *failed = 1;
+                continue;
+            }
+            json = (char *) realloc(bytes, bytes_len + 1);
+            if (json == 0) {
+                free(bytes);
+                snprintf(buf, sizeof buf, "analysis: cannot read sonic document '%s'",
+                         a->asset.path);
+                report(rep, fn, ctx, buf, 1);
+                *failed = 1;
+                continue;
+            }
+            json[bytes_len] = '\0';
+            json_len = bytes_len;
         }
 
         if (memchr(json, '\0', json_len) != 0)
@@ -713,34 +861,24 @@ verify_waveform_track(const musicpack_package *pkg, const musicpack_track *tr,
                       musicpack_report *rep, musicpack_report_fn fn, void *ctx,
                       int *failed)
 {
-    char abs[MUSICPACK_PATH_MAX + 2];
     char buf[512];
     long long size;
     unsigned char *bytes = 0;
     size_t bytes_len = 0;
     musicpack_waveform_meta meta;
     musicpack_status s;
-    FILE *f;
 
     if (!tr->waveform.present)
         return;
 
-    /* Containment + file existence + size budget. Reuse the generic asset
+    /* Containment + member existence + size budget. Reuse the generic asset
        verifier (path safety, file size limit, hash). */
     {
         musicpack_asset a = { tr->waveform.path, tr->waveform.sha256 };
         verify_assets(pkg, &a, 1, "waveform", rep, fn, ctx, failed, 0);
     }
-    if (musicpack_package_resolve_path(pkg, tr->waveform.path, abs, sizeof abs) != MUSICPACK_OK)
+    if (pkg_member_size(pkg, tr->waveform.path, &size) != MUSICPACK_OK)
         return; /* already reported */
-
-    size = checked_file_size(abs);
-    if (size < 0) {
-        snprintf(buf, sizeof buf, "waveform: cannot size '%s'", tr->waveform.path);
-        report(rep, fn, ctx, buf, 1);
-        *failed = 1;
-        return;
-    }
     if ((unsigned long long) size != (unsigned long long) tr->waveform.points * 2ULL) {
         snprintf(buf, sizeof buf,
                  "waveform: '%s' payload size inconsistent with points (%lld vs %lu)",
@@ -759,30 +897,18 @@ verify_waveform_track(const musicpack_package *pkg, const musicpack_track *tr,
         *failed = 1;
         return;
     }
-    f = fopen(abs, "rb");
-    if (f == 0) {
-        snprintf(buf, sizeof buf, "waveform: cannot open '%s'", tr->waveform.path);
-        report(rep, fn, ctx, buf, 1);
-        *failed = 1;
-        return;
+    {
+        musicpack_status rs = pkg_member_read(pkg, tr->waveform.path,
+                                              MUSICPACK_WAVEFORM_MAX_BYTES,
+                                              &bytes, &bytes_len);
+        if (rs != MUSICPACK_OK) {
+            snprintf(buf, sizeof buf, "waveform: cannot read '%s'",
+                     tr->waveform.path);
+            report(rep, fn, ctx, buf, 1);
+            *failed = 1;
+            return;
+        }
     }
-    bytes_len = (size_t) size;
-    bytes = (unsigned char *) malloc(bytes_len > 0 ? bytes_len : 1);
-    if (bytes == 0) {
-        fclose(f);
-        report(rep, fn, ctx, "waveform: out of memory", 1);
-        *failed = 1;
-        return;
-    }
-    if (bytes_len > 0 && fread(bytes, 1, bytes_len, f) != bytes_len) {
-        free(bytes);
-        fclose(f);
-        snprintf(buf, sizeof buf, "waveform: cannot read '%s'", tr->waveform.path);
-        report(rep, fn, ctx, buf, 1);
-        *failed = 1;
-        return;
-    }
-    fclose(f);
 
     meta.version = (uint32_t) tr->waveform.version;
     meta.interval_ms = (uint32_t) tr->waveform.interval_ms;
@@ -879,6 +1005,9 @@ musicpack_package_verify(const musicpack_package *pkg, musicpack_report *rep,
 
     verify_extra_files(pkg, rep, fn, ctx);
 
+    if (pkg->io != 0)
+        musicpack_mpak_verify_extra(pkg, rep, fn, ctx, &failed);
+
     verify_budget_free(&budget);
     return failed ? MUSICPACK_ERR_CHECKSUM : MUSICPACK_OK;
 }
@@ -892,6 +1021,8 @@ musicpack_package_save_manifest(const musicpack_package *pkg)
 
     if (pkg == 0)
         return MUSICPACK_ERR_INVALID;
+    if (pkg->io != 0)
+        return MUSICPACK_ERR_INVALID; /* packed package: unpack to edit */
     s = musicpack_manifest_write_with_original(pkg->manifest, pkg->original, &json);
     if (s != MUSICPACK_OK)
         return s;

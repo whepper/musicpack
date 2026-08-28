@@ -10,6 +10,7 @@ set(MUSICPACK_SOURCES
     src/manifest.c
     src/package.c
     src/object.c
+    src/mpak.c
     src/checksum.c
     src/loudness.c
     src/path.c
