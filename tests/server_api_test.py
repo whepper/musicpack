@@ -364,6 +364,13 @@ def run(base, libdir, demo_dir, t):
     adetail = json.loads(body)
     ed_with_art = [r for r in adetail["releases"] if r.get("artwork")]
     t.ok(len(ed_with_art) >= 2, "editions carry their own artwork")
+    st, _, body = get(base, API + f"/artists/{comp_alb['artists'][0]['id']}")
+    art_adtl = json.loads(body)
+    alb_in_artist = next((a for a in art_adtl["albums"] if a["id"] == comp_alb["id"]), None)
+    t.ok(alb_in_artist is not None
+         and alb_in_artist.get("artwork", {}).get("url", "").startswith("/api/v1/assets/")
+         and alb_in_artist["artwork"]["id"] == comp_alb["artwork"]["id"],
+         "artist detail albums expose the same front artwork as the shelf")
 
     # ---- search + recently added
     st, _, body = get(base, API + "/albums?q=Two%20Disc")
