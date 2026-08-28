@@ -768,7 +768,14 @@ handle_artist_detail(mp_library *lib, long long id, unsigned int *st)
         return error_response(404, "not_found", "Artist not found");
     }
     if (sqlite3_prepare_v2(db,
-            "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid"
+            "SELECT g.id, g.title, g.release_type, g.original_release_date, g.mbid,"
+            "  (SELECT aa.id FROM assets aa"
+            "    JOIN releases rr ON rr.id = aa.release_id"
+            "    JOIN packages pp ON pp.id = rr.owner_package_id"
+            "    WHERE rr.group_id = g.id AND aa.kind = 'artwork'"
+            "      AND aa.role = 'front'"
+            "      AND " VISIBLE_ART
+            "    ORDER BY rr.release_date, rr.id, aa.id LIMIT 1) AS art_id"
             " FROM release_groups g"
             " JOIN group_artists ga ON ga.group_id = g.id"
             " JOIN releases r ON r.group_id = g.id"
@@ -789,6 +796,15 @@ handle_artist_detail(mp_library *lib, long long id, unsigned int *st)
             mp_json_str(it, "title", col_text(g, 1));
             mp_json_str_opt(it, "releaseType", col_text(g, 2));
             mp_json_str_opt(it, "originalReleaseDate", col_text(g, 3));
+            if (sqlite3_column_int64(g, 5) > 0) {
+                char url[64];
+                mp_json *art = mp_json_obj();
+                mp_json_int(art, "id", sqlite3_column_int64(g, 5));
+                snprintf(url, sizeof url, "/api/%s/assets/%lld", API_VERSION,
+                         sqlite3_column_int64(g, 5));
+                mp_json_str(art, "url", url);
+                mp_json_add(it, "artwork", art);
+            }
             mp_json_add(alb, 0, it);
         }
         mp_json_add(o, "albums", alb);

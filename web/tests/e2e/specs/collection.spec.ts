@@ -58,3 +58,14 @@ test('artists browse to a release-group view', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Synthetic Chamber Orchestra' })).toBeVisible();
   await expect(page.getByText('Synthetic Classical Compilation')).toBeVisible();
 });
+
+test('artist page renders real album cover art', async ({ page }) => {
+  await page.getByRole('link', { name: 'Artists' }).click();
+  await page.getByText('Synthetic Chamber Orchestra').click();
+  await expect(page.getByRole('heading', { name: 'Synthetic Chamber Orchestra' })).toBeVisible();
+  // The artist detail API carries the shelf's front artwork; cards must
+  // show the real cover image, not the monogram fallback.
+  const cover = page.locator('.shelf-grid img[alt*="Synthetic Classical Compilation"]');
+  await expect(cover).toHaveCount(1);
+  await expect(cover).toHaveAttribute('src', /\/api\/v1\/assets\//);
+});

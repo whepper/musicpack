@@ -223,6 +223,7 @@ export interface ArtistDetail {
     title: string;
     releaseType?: string;
     originalReleaseDate?: string;
+    artwork?: ArtworkRef;
   }>;
 }
 

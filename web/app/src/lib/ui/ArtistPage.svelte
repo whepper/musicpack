@@ -22,8 +22,10 @@ SPDX-License-Identifier: BSD-3-Clause
       .catch((e) => (error = e instanceof Error ? e.message : 'Could not load artist.'));
   });
 
-  // Artist-detail albums carry no artwork reference; AlbumCard's shared
-  // monogram fallback covers presentation, exactly like the shelf.
+  // Artist-detail albums carry the same front-artwork reference the shelf
+  // emits (earliest visible release's front asset), so cards show real
+  // covers; Artwork's monogram tile remains the fallback for artless
+  // albums.
   const cards = $derived.by(() => {
     if (!detail) return [] as Array<AlbumSummary>;
     const d = detail;
@@ -34,6 +36,7 @@ SPDX-License-Identifier: BSD-3-Clause
       originalReleaseDate: album.originalReleaseDate,
       artists: [{ id: d.id, name: d.name }],
       releaseCount: 0,
+      artwork: album.artwork,
     }));
   });
 </script>
