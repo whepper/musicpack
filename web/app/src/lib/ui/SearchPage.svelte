@@ -34,9 +34,12 @@ SPDX-License-Identifier: BSD-3-Clause
   });
 
   // URL → state: a top-bar submit or a shared /search?q= link re-runs here.
-  // `lastUrlQ` is intentionally non-reactive: reading `input` in this
-  // effect would make it depend on its own write (the shelf hit this).
-  let lastUrlQ: string = new URLSearchParams(location.search).get('q') ?? '';
+  // `lastUrlQ` carries only the URL-confirmed term (never the mid-typing
+  // `input`, which is not a dependency of this effect): reading `input`
+  // here would make the effect depend on its own write (the shelf hit
+  // this). It must still be `$state` — `term` derives from it, and
+  // `$derived` over a plain `let` never recomputes.
+  let lastUrlQ = $state<string>(new URLSearchParams(location.search).get('q') ?? '');
   $effect(() => {
     const urlQ = $routeStore.query.get('q') ?? '';
     if (urlQ === lastUrlQ) return;
