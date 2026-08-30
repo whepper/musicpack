@@ -250,10 +250,18 @@ musicpack_package_open(const char *path, musicpack_status *status)
         *status = MUSICPACK_ERR_IO;
         return 0;
     }
+#ifdef _WIN32
+    /* MSVC's <sys/stat.h> has _S_IFMT/_S_IFDIR/_S_IFREG but no S_IS*(). */
+    if ((st.st_mode & _S_IFMT) == _S_IFDIR)
+        return musicpack_package_open_dir(path, status);
+    if ((st.st_mode & _S_IFMT) == _S_IFREG)
+        return musicpack_mpak_open_package(path, status);
+#else
     if (S_ISDIR(st.st_mode))
         return musicpack_package_open_dir(path, status);
     if (S_ISREG(st.st_mode))
         return musicpack_mpak_open_package(path, status);
+#endif
     *status = MUSICPACK_ERR_IO;
     return 0;
 }

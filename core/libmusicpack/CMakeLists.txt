@@ -58,8 +58,9 @@ target_include_directories(musicpack
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cjson
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ebur128)
 
-# libebur128 needs a bundled sys/queue.h on platforms without one (Windows).
-if(WIN32)
+# libebur128 needs a bundled sys/queue.h on platforms without one
+# (Windows, Emscripten).
+if(WIN32 OR EMSCRIPTEN)
   target_include_directories(musicpack PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ebur128/queue)
 endif()

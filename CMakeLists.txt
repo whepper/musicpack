@@ -99,6 +99,10 @@ if(EMSCRIPTEN)
   set(MPC_BUILD_SHARED OFF)
   # Emscripten's musl libc hides fseeko/ftello without a feature macro.
   add_compile_definitions(_POSIX_C_SOURCE=200112L)
+  # musl also keeps realpath (libmusicpack path.c) and M_PI (vendored
+  # ebur128) behind XSI/GNU feature macros; _POSIX_C_SOURCE alone does not
+  # expose them.
+  add_compile_definitions(_GNU_SOURCE=1)
   add_subdirectory(codec/include)
   add_subdirectory(codec/libmpcdec)
   # MPAK containers in the browser: libmusicpack is portable C11 and the
