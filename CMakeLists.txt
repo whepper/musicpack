@@ -101,6 +101,9 @@ if(EMSCRIPTEN)
   add_compile_definitions(_POSIX_C_SOURCE=200112L)
   add_subdirectory(codec/include)
   add_subdirectory(codec/libmpcdec)
+  # MPAK containers in the browser: libmusicpack is portable C11 and the
+  # wasm/ wrappers expose musicpack_package_open_range() over JS imports.
+  add_subdirectory(core/libmusicpack)
   add_subdirectory(wasm)
   if(MPC_BUILD_TESTS)
     enable_testing()

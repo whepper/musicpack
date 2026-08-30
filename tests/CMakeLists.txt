@@ -7,6 +7,12 @@ if(EMSCRIPTEN)
   add_test(NAME wasm_smoke
            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_smoke.sh
                     ${CMAKE_BINARY_DIR})
+  # MPAK containers over HTTP Range in WASM: the JS transport acquires the
+  # container, then musicpack_package_open_range()/verify/decode/seek run
+  # in the module over the JS-import-backed range source.
+  add_test(NAME mpak_wasm_smoke
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_mpak_smoke.sh
+                    ${CMAKE_BINARY_DIR})
   if(MPC_DECODER_SIMD_ENABLED AND MPC_WASM_TEST_HOOKS)
     add_test(NAME wasm_synth_ab
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_synth_ab.sh
@@ -164,6 +170,17 @@ if(TARGET musicpack_mpakhttp)
     set_tests_properties(mpakhttp PROPERTIES
         ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
   endif()
+endif()
+
+# ---- browser/WASM MPAK range transport (Node; no Emscripten needed) --------
+# Exercises demo/mpakrange.js — the fetch()-based transport behind
+# mpak_wasm_open_range() — against a deterministic local HTTP server.
+find_program(NODE_EXE node)
+if(NODE_EXE AND UNIX)
+  add_test(NAME mpakrange_smoke
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_mpakrange_smoke.sh
+                   $<TARGET_FILE:musicpack_cmd>
+                   ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc)
 endif()
 
 # ---- native source decoding (FLAC/WAV/MPC) via the audio abstraction ------

@@ -107,3 +107,16 @@ browser UI  →  Worker (decode)  →  AudioWorklet (playback)  →  speakers
 
 The `AudioWorkletSink` stub in `main.js` and the processor in
 `audio-worklet.js` mark where that lands; the worker stays a pure decoder.
+
+## MPAK containers over HTTP Range (browser/WASM)
+
+`demo/mpakrange.js` acquires a remote `.mpak` container over validated
+HTTP Range requests (256 KiB discovery, 64 KiB blocks, 206/Content-Range
+checks, ETag/If-Range, no content-encoding) and installs the synchronous
+imports behind `wasm/mpak_wasm.c`'s `mpak_wasm_open_range()` — the MPAK
+core then runs unchanged inside the WASM module (open/verify/decode/seek
+over the range source). Acquisition is bounded (`maxBytes`, default
+2 GiB), multipart responses are rejected, and the WASM imports enforce
+one-active-source-per-Module. See specs/mpak-http-range-design.md for the
+transport contract and browser limitations (CORS preflight for If-Range,
+acquire-then-serve execution model).

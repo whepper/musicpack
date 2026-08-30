@@ -3,12 +3,14 @@
 Status: **design document; transport seam and HTTP adapter
 implemented** (not normative). The `musicpack_range_source`
 abstraction, the stdio adapter, and `musicpack_package_open_range()`
-are implemented in libmusicpack; the first HTTP adapter lives in the
+are implemented in libmusicpack; HTTP adapters live outside it — the
 optional embedding-layer component `mpakhttp/` (libcurl, gated like
-musicpack-server's libmicrohttpd) and implements this document's
-discovery and fetch semantics — the core library remains network-free
-(§11/§14). Scope: reading `.mpak` containers over HTTP using Range
-requests. This document inherits all
+musicpack-server's libmicrohttpd) for native hosts, and the
+browser/WASM transport `demo/mpakrange.js` behind `wasm/mpak_wasm.c`
+for `musicpack_package_open_range()` inside the Emscripten module. Both
+implement this document's discovery and fetch semantics — the core
+library remains network-free (§11/§14). Scope: reading `.mpak`
+containers over HTTP using Range requests. This document inherits all
 normative requirements from `specs/mpak-v1.md` and changes nothing about
 the MPAK v1 wire format, the logical MusicPack model
 (`specs/musicpack-v1.md`), or the Musepack integration.
@@ -487,14 +489,44 @@ base for unchanged behavior.
 
 ## 16. Concrete implementation plan (follow-up task)
 
-Implementation status: steps 1–5 are **implemented** — the transport
-seam, scanner generalization through the container-I/O layer, the
-remote/local member backend with the §8 block cache, the stdio adapter,
-and the §12 test layers (unit/adversarial over a scripted fake source,
-plus real loopback-HTTP integration tests against a deterministic mock
-server covering every §9 error row, changed-object detection, and
-MPC decode/seek over HTTP). Still open: CLI URL support, the browser
-adapter, and any C adapter beyond libcurl.
+Implementation status: steps 1–5 and 7 are **implemented** — the
+transport seam, scanner generalization through the container-I/O layer,
+the remote/local member backend with the §8 block cache, the stdio
+adapter, the libcurl adapter, the browser/WASM transport (step 7), and
+the §12 test layers (unit/adversarial over a scripted fake source, real
+loopback-HTTP integration tests for both adapters covering every §9
+error row, changed-object detection, and MPC decode/seek over HTTP).
+Still open: CLI URL support.
+
+**Browser/WASM adapter (implemented).** `demo/mpakrange.js` is the
+fetch()-based transport; `wasm/mpak_wasm.c` (Emscripten builds only)
+exposes `mpak_wasm_open_range()/verify/track_*` over a
+`musicpack_range_source` whose reads bridge to synchronous JS imports
+(`wasm/mpak_range_library.js`). Browser networking is asynchronous while
+`musicpack_range_source.read` is synchronous, so the adapter uses the
+demo's proven acquire-then-serve model (the Phase 4 pattern from
+`wasm/range_library.js`): the complete container is downloaded and
+validated over the §3 discovery request plus 64 KiB §8-aligned block
+requests, and `musicpack_package_open_range()` then runs synchronously
+over the validated bytes. Demand-driven per-miss fetching (the Phase 5
+`networker.js` model) requires SharedArrayBuffer/Atomics.wait in a
+worker with cross-origin isolation (COOP/COEP) and a JS-side block cache
+duplicating the C cache; it remains the documented future path for
+progressive playback. Browser-specific limitations: `If-Range` and
+`Accept-Encoding: identity` are not CORS-safelisted request headers
+(cross-origin containers trigger a preflight the server must allow;
+`ifRange: false` opts out, leaving the total-size check plus the MPAK
+CRC/SHA-256 layers); `Content-Range` values beyond 2^53 are rejected as
+malformed; fetch combines duplicate response headers, which fails
+Content-Range parsing (fail-closed). The acquisition is bounded
+(`maxBytes`, default 2 GiB — a lying discovery total is rejected before
+any container-sized allocation), `Content-Type: multipart/byteranges`
+responses are explicitly rejected, and the synchronous WASM imports
+enforce one-active-source-per-Module (a second `install()` fails with a
+typed error until the active source is destroyed). The Emscripten smoke
+(`wasm/smoke_mpak.js`, run by `tests/run_mpak_smoke.sh`) uses the
+committed deterministic container fixture
+`tests/fixtures/mpak-range-test.mpak`.
 
 1. **Seam**: add `musicpack_range_source` (+ stdio adapter) and
    `musicpack_package_open_range` (mpak.h/`internal.h`; ~100 lines).
