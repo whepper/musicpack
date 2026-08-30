@@ -145,6 +145,27 @@ if(WIN32)
       ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
 endif()
 
+# ---- MPAK HTTP Range adapter tests (only when the adapter is built) -------
+if(TARGET musicpack_mpakhttp)
+  add_executable(mpc_mpakhttp_tests mpakhttp_tests.c)
+  target_link_libraries(mpc_mpakhttp_tests PRIVATE
+      musicpack_mpakhttp musicpack musepack)
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(mpc_mpakhttp_tests PRIVATE m)
+  endif()
+  if(WIN32)
+    target_link_libraries(mpc_mpakhttp_tests PRIVATE ws2_32)
+  endif()
+  target_include_directories(mpc_mpakhttp_tests PRIVATE
+      ${PROJECT_SOURCE_DIR}/core/libmusicpack)
+  add_test(NAME mpakhttp COMMAND mpc_mpakhttp_tests
+      ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sine44-q5.mpc)
+  if(WIN32)
+    set_tests_properties(mpakhttp PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:musepack>$<SEMICOLON>$<TARGET_FILE_DIR:musicpack>$<SEMICOLON>$ENV{PATH}")
+  endif()
+endif()
+
 # ---- native source decoding (FLAC/WAV/MPC) via the audio abstraction ------
 add_executable(mpc_audio_tests audio_tests.c)
 target_link_libraries(mpc_audio_tests PRIVATE musicpack musepack)

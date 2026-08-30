@@ -1,11 +1,14 @@
 # MPAK over HTTP Range — transport design spike
 
-Status: **design document, transport seam implemented** (not normative).
-The `musicpack_range_source` abstraction, the stdio adapter, and
-`musicpack_package_open_range()` are implemented in libmusicpack; no
-HTTP client exists in the library (§11/§14 — adapters belong to
-embedders). Scope: a follow-up implementation task for reading `.mpak`
-containers over HTTP using Range requests. This document inherits all
+Status: **design document; transport seam and HTTP adapter
+implemented** (not normative). The `musicpack_range_source`
+abstraction, the stdio adapter, and `musicpack_package_open_range()`
+are implemented in libmusicpack; the first HTTP adapter lives in the
+optional embedding-layer component `mpakhttp/` (libcurl, gated like
+musicpack-server's libmicrohttpd) and implements this document's
+discovery and fetch semantics — the core library remains network-free
+(§11/§14). Scope: reading `.mpak` containers over HTTP using Range
+requests. This document inherits all
 normative requirements from `specs/mpak-v1.md` and changes nothing about
 the MPAK v1 wire format, the logical MusicPack model
 (`specs/musicpack-v1.md`), or the Musepack integration.
@@ -484,12 +487,14 @@ base for unchanged behavior.
 
 ## 16. Concrete implementation plan (follow-up task)
 
-Implementation status: steps 1–3 are **implemented** (transport seam,
-scanner generalization through the container-I/O layer, remote/local
-member backend, block cache per §8, stdio adapter, and the unit tests
-of §12's first layer, including adversarial transport behavior). Steps
-4's parameters are implemented as specified; steps 5–8 (loopback HTTP
-integration tests, CLI URL support, browser adapter, docs) remain open.
+Implementation status: steps 1–5 are **implemented** — the transport
+seam, scanner generalization through the container-I/O layer, the
+remote/local member backend with the §8 block cache, the stdio adapter,
+and the §12 test layers (unit/adversarial over a scripted fake source,
+plus real loopback-HTTP integration tests against a deterministic mock
+server covering every §9 error row, changed-object detection, and
+MPC decode/seek over HTTP). Still open: CLI URL support, the browser
+adapter, and any C adapter beyond libcurl.
 
 1. **Seam**: add `musicpack_range_source` (+ stdio adapter) and
    `musicpack_package_open_range` (mpak.h/`internal.h`; ~100 lines).
