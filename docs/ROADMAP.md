@@ -1,6 +1,6 @@
 # MusicPack — Project Roadmap
 
-Last updated: 2026-08-28.
+Last updated: 2026-08-30.
 
 The Musepack codec foundation is no longer the primary active engineering area.
 **Musepack encoder optimization is complete** (see below), and the project has
@@ -50,6 +50,19 @@ The goal is evidence for future development, not speculative capability building
 FLAC → MusicPack Author → metadata → encode → .mpack → MusicPack Server → Web client → actual listening
 ```
 
+### Delivered during this phase (infrastructure)
+
+The MPAK v1 single-file container (`4be2f7a`) shipped, and `.mpak`
+packages can now be acquired over HTTP Range from two transports: the
+native libcurl embedding-layer adapter (`mpakhttp/`, `2634d5f`) and the
+browser/WASM transport (`demo/mpakrange.js` + `wasm/mpak_wasm.c`,
+`1079a81`/`e363831`, wired into the Emscripten build). Both follow the
+design in `specs/mpak-http-range-design.md`; `libmusicpack` stays
+network-free behind the `musicpack_range_source` seam (`2b45fb2`). This
+is dogfooding infrastructure — it lets the exact `.mpack` workflow run
+over real HTTP instead of local files, including remote-package reads in
+the browser.
+
 ### Areas to exercise
 
 - **Authoring** — importing real FLAC albums; MusicBrainz matching; release/edition
@@ -98,3 +111,5 @@ documented, to be reconsidered only after dogfooding produces evidence:
 | Final psychoacoustic investigation (ARM64 + x86-64) | ✅ | `psy-optimization-final.md`, `measurements/psy-model-profile/` |
 | CVD/CEP analysis | ✅ | `measurements/cvd-analysis-profile/arm64-apple-m5.md` |
 | MusicPack UI v2 (consumer P0–P5 + Author P6, docs P7) | ✅ | `ui-v2-design.md` |
+| MPAK v1 single-file container | ✅ | `specs/mpak-v1.md` |
+| MPAK over HTTP Range (seam + native `mpakhttp` + browser/WASM) | ✅ | `specs/mpak-http-range-design.md` |

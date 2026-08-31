@@ -366,7 +366,9 @@ conservative resolution in §15/D3 of a single MANF).
 ## 10. HTTP Range access model
 
 Recommended access pattern (illustrative, not an additional normative
-layer):
+layer). The implemented transport — the `musicpack_range_source` seam in
+libmusicpack, the native `mpakhttp` adapter, and the browser/WASM
+transport — is specified in `specs/mpak-http-range-design.md`:
 
 ```text
 1. GET  Range: bytes=0-(prefix-1)            e.g. prefix = 256 KiB

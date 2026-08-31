@@ -93,14 +93,16 @@ Since Phase 1, the canonical decoder-facing API lives in `include/musepack/`
 abstraction, implemented as a thin facade on `mpc_demux` in
 `libmpcdec/musepack_decoder.c`. New code should use this API. The historical
 `include/mpc/*.h` headers stay installed for compatibility. The decoder also
-builds to WebAssembly (`wasm/`, Emscripten) with a browser demo in `demo/`.
+builds to WebAssembly (`wasm/`, Emscripten) with a browser demo in `demo/`
+and a browser MPAK HTTP Range transport (`demo/mpakrange.js` → `wasm/mpak_wasm.c`).
 Library target is `musepack` (output `libmusepack`), exported as
 `Musepack::Decoder`; `mpcdec` remains an in-tree alias.
 
 ## Package library (`libmusicpack`)
 
 Since Phase 2, `.mpack` package semantics live in `core/libmusicpack/` (manifest,
-album/track model, assets, SHA-256, BS.1770 loudness, directory storage),
+album/track model, assets, SHA-256, BS.1770 loudness, directory storage and the
+MPAK v1 single-file container backend),
 exported as `MusicPack::Package`. The `musicpack` CLI (`info`/`verify`/
 `create`/`import`) and the `mpack` CTest suites cover it. The dependency
 direction is one-way: `libmusicpack` may use `libmusepack` (the Musepack
@@ -119,6 +121,35 @@ enforces declared payload size, hash, and bucket count.
 generated from source PCM during authoring. `libmusicpack` owns their
 format and validation. Servers and clients consume them; they must not
 independently regenerate package waveform data.
+
+## MPAK over HTTP Range
+
+`.mpak` containers are served and consumed over HTTP Range through a narrow
+transport seam: `musicpack_range_source` (`include/musicpack/range.h`) plus
+`musicpack_package_open_range()` live in `libmusicpack` — the core library
+stays network-free and platform-independent (no HTTP client code). Two
+embedding-layer adapters implement the discovery/fetch/validation semantics
+of `specs/mpak-http-range-design.md` (normative container rules are in
+`specs/mpak-v1.md`; nothing changes about the MPAK wire format):
+
+- `mpakhttp/` — the native host adapter (libcurl; exported as the optional
+  `mpakhttp` library, configured like the server's libmicrohttpd dependency).
+  Covered by `tests/mpakhttp_tests.c` (UNIX).
+- `demo/mpakrange.js` + `wasm/mpak_wasm.c` — the browser/Node transport for
+  the Emscripten module: `async acquire` → `install(Module)` → synchronous
+  reads behind `musicpack_package_open_range()`. Hardened rules to preserve:
+  bounded acquisition (`maxBytes`, default 2 GiB, checked before allocation),
+  one-active-source-per-Module (`install()` fails while another source is
+  installed), explicit rejection of multipart/byteranges and Content-Encoding
+  responses. Covered by `tests/run_mpakrange_smoke.sh` (Node, all platforms)
+  and `tests/run_mpak_smoke.sh` + `wasm/smoke_mpak.js` (Emscripten; uses the
+  committed fixture `tests/fixtures/mpak-range-test.mpak`).
+
+Do not add HTTP client code to `libmusicpack`, and do not blur the
+acquire-then-serve boundary: browser `fetch` is asynchronous while
+`musicpack_range_source.read` is synchronous, so progressive/streaming
+playback is out of scope without the SAB/COOP-COEP redesign already
+documented in the design spec.
 
 ## Native source decoding (no FFmpeg)
 

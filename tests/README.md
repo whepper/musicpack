@@ -8,7 +8,11 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Five native suites are run (plus `wasm_smoke` in the Emscripten build):
+Core suites (plus the MusicPack-era suites listed in the top-level
+`README.md` Testing section — `.mpack`/`mpack_*`, `mpak`, `mpakhttp`,
+`mpakrange_smoke`, `audio_decode`, `sonic_unit`, `waveform_unit`,
+`server_unit`/`server_integration`, author suites, and the Emscripten
+`mpak_wasm_smoke`):
 
 | Test            | What it checks                                             |
 |-----------------|------------------------------------------------------------|
@@ -20,6 +24,15 @@ Five native suites are run (plus `wasm_smoke` in the Emscripten build):
 | `integration`   | end-to-end encode/decode/seek/cut/compare on real files    |
 | `fuzz`          | decoder survives truncated and bit-flipped inputs          |
 | `compat`        | encoder output byte-identical to the reference encoder     |
+| `mpak`          | MPAK v1 container: header/INDX/MANF/DATA/TAIL, member      |
+|                 | reads, CRC-16, verification over the range seam            |
+| `mpakhttp`      | native `mpakhttp` libcurl adapter: discovery, ranges,      |
+|                 | validation, 416/200/multipart handling (UNIX)              |
+| `mpakrange_smoke`| browser transport (`demo/mpakrange.js`) in Node against a |
+|                 | deterministic loopback server: 206/Content-Range/ETag/     |
+|                 | error branches, bounded acquisition, ownership             |
+| `mpak_wasm_smoke`| Emscripten: open → verify → decode → seek a `.mpak` over  |
+|                 | HTTP Range (uses the committed fixture)                    |
 | `wasm_smoke`    | WASM build decodes a fixture; PCM ≈ golden WAV (Emscripten)|
 
 The `unit` and `api` suites are C programs and run on all platforms.

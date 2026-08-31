@@ -44,6 +44,10 @@ The guiding rule of this repository:
    the `musicpack` CLI authors, imports and
   verifies packages. The format is codec-aware rather than Musepack-only —
   Musepack is the foundation codec, but FLAC-backed packages are valid v1.
+  Packages are directory bundles by default and may be packed into a
+  **single-file MPAK v1 container** (`specs/mpak-v1.md`); `.mpak` containers
+  are acquirable over HTTP Range from the native `mpakhttp` adapter or the
+  browser/WASM transport (design: `specs/mpak-http-range-design.md`).
 - **The server** — `musicpack-server` indexes an `.mpack` collection into a
   SQLite collector library and serves it over a read-only HTTP API v1 with
   **direct streaming** (the original audio bytes, never transcoded).
@@ -411,7 +415,8 @@ organized by category rather than a single count:
 - **encoder / psy A/B** — analysis-filter and psychoacoustic scalar-vs-SIMD
   differentials (`enc_ab`, `psy_ab`), also fail-closed;
 - **`.mpack` package** — manifest, paths, checksums, loudness meter, handoff,
-  integration and fuzz-lite;
+  integration and fuzz-lite; the MPAK v1 container (`mpak`) and the HTTP
+  Range transports (`mpakhttp`, `mpakrange_smoke`);
 - **v1 conformance corpus** — 3 valid manifests, 42 invalid manifests, 8
   invalid asset cases, required to pass `info`/`verify` per case;
 - **hostile-package regression** — special files (FIFO/directory/symlink
@@ -429,11 +434,13 @@ organized by category rather than a single count:
   with the pristine reference encoder, and `enc_compat` for the extended
   q5/q6/q7 corpus (live against a same-toolchain reference build on CI, with a
   committed manifest as the local fallback);
-- **Wasm / web** — an Emscripten `wasm_smoke` suite (demand-driven
-  range-reader path: PCM identity, seek fetch-accounting, network-failure
-  injection), a `web_wasm_gapless` Node suite (gapless two-track continuity,
-  exact track-end frames, demand-reader seek accounting), and the web client's
-  own Vitest/Playwright suites.
+- **Wasm / web** — Emscripten `wasm_smoke` and `mpak_wasm_smoke` (demand-driven
+  range-reader path and MPAK-range open/verify/decode/seek: PCM identity,
+  seek fetch-accounting, network-failure injection), a `web_wasm_gapless`
+  Node suite (gapless two-track continuity, exact track-end frames,
+  demand-reader seek accounting), an `mpakrange` Node suite pinning the
+  browser HTTP Range transport against a deterministic loopback server, and
+  the web client's own Vitest/Playwright suites.
 
 Hosted CI covers Linux GCC, Linux Clang, macOS ARM64, Windows MSVC, a Linux
 SIMD-off build, Emscripten/Wasm, and the web client (Playwright). Sanitizer
@@ -474,9 +481,10 @@ ctest --test-dir build
 - `platform/` — platform-specific code:
   - `platform/win32/` — Windows compatibility shims
   - `platform/packaging/` — systemd service unit + optional environment template (see `docs/deployment.md`)
-- `wasm/` — Emscripten build of the decoder + WASM wrapper + smoke test
-- `demo/` — low-level browser playback proof-of-concept
-- `specs/` — `.mpack` v1 spec + JSON Schema, and the server API spec (`musicpack-api-v1.md`)
+- `wasm/` — Emscripten build of the decoder + WASM wrapper + MPAK-range wrapper + smoke tests
+- `demo/` — low-level browser playback proof-of-concept, plus the browser MPAK HTTP Range transport (`demo/mpakrange.js`)
+- `mpakhttp/` — optional embedding-layer HTTP Range adapter for `.mpak` containers (libcurl; gated like the server's libmicrohttpd)
+- `specs/` — `.mpack` v1 spec + JSON Schema, the MPAK v1 container spec (`mpak-v1.md`), the MPAK-over-HTTP-Range design (`mpak-http-range-design.md`), and the server API spec (`musicpack-api-v1.md`)
 - `tests/` — fixture generator, corpus generator, and regression harnesses
 - `legacy/` — retired autotools and Visual Studio 2005 build files
 
