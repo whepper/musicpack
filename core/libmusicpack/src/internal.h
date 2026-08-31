@@ -13,6 +13,13 @@
 
 #include "cJSON.h"
 
+/* Streaming I/O chunk for hashing and copying. Kept well below the default
+   64 KiB Emscripten stack: a 64 KiB local gave these helpers single frames
+   larger than the whole wasm stack, so the HTTP-Range reader wrote member
+   bytes over static memory during verify. SHA-256 output is independent of
+   the chunk size. */
+#define MUSICPACK_IO_CHUNK 16384u
+
 /* manifest.c */
 musicpack_status musicpack_manifest_parse_tree(const cJSON *root, musicpack_manifest *m);
 musicpack_status musicpack_manifest_write_with_original(const musicpack_manifest *m,

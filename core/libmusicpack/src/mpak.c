@@ -527,7 +527,7 @@ mpak_hash_range(const mpak_cio *cio, uint64_t offset, uint64_t length,
 {
     musicpack_sha256_ctx c;
     unsigned char digest[32];
-    unsigned char buf[65536];
+    unsigned char buf[MUSICPACK_IO_CHUNK];
     static const char hexc[] = "0123456789abcdef";
     uint64_t remaining = length;
     uint64_t pos = offset;
@@ -1801,7 +1801,7 @@ pack_copy_member(mpak_writer *w, const char *root, const pack_member *pm)
     char expect[MUSICPACK_SHA256_HEX_SIZE];
     char hex[MUSICPACK_SHA256_HEX_SIZE];
     FILE *in;
-    unsigned char buf[65536];
+    unsigned char buf[MUSICPACK_IO_CHUNK];
     uint64_t copied = 0;
     size_t n;
 
@@ -2208,7 +2208,7 @@ musicpack_mpak_unpack(const char *in_file, const char *out_dir,
     musicpack_mpak *mf = 0;
     musicpack_status s;
     char path_buf[MUSICPACK_PATH_MAX * 2 + 4];
-    unsigned char buf[65536];
+    unsigned char buf[MUSICPACK_IO_CHUNK];
     size_t i;
     int failed = 0;
 

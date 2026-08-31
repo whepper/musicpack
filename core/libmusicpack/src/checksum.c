@@ -51,6 +51,7 @@
 
 #include <musicpack/checksum.h>
 #include "sha256_internal.h"
+#include "internal.h"
 
 /* ------------------------------------------------------------------ */
 /* SHA-256 core                                                       */
@@ -205,7 +206,7 @@ musicpack_sha256_file(const char *path, char *hex, size_t cap)
 {
     musicpack_sha256_ctx c;
     unsigned char digest[32];
-    unsigned char buf[65536];
+    unsigned char buf[MUSICPACK_IO_CHUNK];
     static const char hexc[] = "0123456789abcdef";
     size_t n, i;
 
@@ -273,7 +274,7 @@ musicpack_sha256_file_range(const char *path, uint64_t offset, uint64_t length,
 {
     musicpack_sha256_ctx c;
     unsigned char digest[32];
-    unsigned char buf[65536];
+    unsigned char buf[MUSICPACK_IO_CHUNK];
     static const char hexc[] = "0123456789abcdef";
     uint64_t remaining;
     size_t i;

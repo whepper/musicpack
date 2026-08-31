@@ -16,10 +16,10 @@ set_target_properties(musepack_wasm PROPERTIES OUTPUT_NAME musepack)
 # MPAK-over-HTTP exports (mpak_wasm.c): musicpack_package_open_range(),
 # verification and track decode over the JS-import-backed range source.
 set(MPAK_WASM_EXPORTS
-    ,_mpak_wasm_open_range,_mpak_wasm_verify,_mpak_wasm_track_count,_mpak_wasm_track_open,_mpak_wasm_track_read,_mpak_wasm_track_seek_sample,_mpak_wasm_track_position,_mpak_wasm_track_sample_rate,_mpak_wasm_track_destroy,_mpak_wasm_close)
+    _mpak_wasm_open_range,_mpak_wasm_verify,_mpak_wasm_track_count,_mpak_wasm_track_open,_mpak_wasm_track_read,_mpak_wasm_track_seek_sample,_mpak_wasm_track_position,_mpak_wasm_track_sample_rate,_mpak_wasm_track_destroy,_mpak_wasm_close)
 
 set(MPC_WASM_EXPORTS
-    _mpc_wasm_create,_mpc_wasm_open,_mpc_wasm_open_range,_mpc_wasm_sample_rate,_mpc_wasm_channels,_mpc_wasm_stream_version,_mpc_wasm_length_samples,_mpc_wasm_position,_mpc_wasm_read,_mpc_wasm_seek_sample,_mpc_wasm_seek_seconds,_mpc_wasm_check,_mpc_wasm_destroy,_malloc,_free${MPAK_WASM_EXPORTS})
+    _mpc_wasm_create,_mpc_wasm_open,_mpc_wasm_open_range,_mpc_wasm_sample_rate,_mpc_wasm_channels,_mpc_wasm_stream_version,_mpc_wasm_length_samples,_mpc_wasm_position,_mpc_wasm_read,_mpc_wasm_seek_sample,_mpc_wasm_seek_seconds,_mpc_wasm_check,_mpc_wasm_destroy,_malloc,_free,${MPAK_WASM_EXPORTS})
 if(MPC_WASM_TEST_HOOKS)
   target_compile_definitions(musepack_wasm PRIVATE MPC_WASM_TEST_HOOKS)
   set(MPC_WASM_EXPORTS
@@ -37,6 +37,7 @@ endif()
 target_link_options(musepack_wasm PRIVATE
     "-O3"
     "-sALLOW_MEMORY_GROWTH=1"
+    "-sSTACK_SIZE=1048576"
     "-sFILESYSTEM=0"
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createMusepackModule"

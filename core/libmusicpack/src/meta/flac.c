@@ -15,6 +15,8 @@
 
 #include <musicpack/meta.h>
 
+#include "../internal.h"
+
 #define FLAC_BLOCK_MAX 4096
 
 static uint32_t
@@ -34,7 +36,7 @@ read_exact(FILE *f, void *dst, size_t n)
 static int
 skip_bytes(FILE *f, size_t n)
 {
-    char junk[65536];
+    char junk[MUSICPACK_IO_CHUNK];
     while (n > 0) {
         size_t chunk = n > sizeof junk ? sizeof junk : n;
         if (fread(junk, 1, chunk, f) != chunk)
