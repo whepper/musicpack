@@ -95,6 +95,27 @@ describe('AuthorApi command surface', () => {
     expect(calls[1]).toEqual({ cmd: 'read_image', args: { path: '/art.png' } });
   });
 
+  it('creates a single-file .mpak from a draft', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    const d = draft();
+    await api.createMpak(d, '/out/album.mpak');
+    expect(calls[0]).toEqual({
+      cmd: 'create_mpak',
+      args: { draftJson: JSON.stringify(d), outputMpak: '/out/album.mpak' },
+    });
+  });
+
+  it('packs an existing .mpack directory into a .mpak', async () => {
+    const calls: unknown[] = [];
+    const { api } = makeApi(calls);
+    await api.packPackage('/existing.mpack', '/out/album.mpak');
+    expect(calls[0]).toEqual({
+      cmd: 'pack_package',
+      args: { inputDir: '/existing.mpack', outputMpak: '/out/album.mpak' },
+    });
+  });
+
   it('runs and cancels sonic analysis', async () => {
     const calls: unknown[] = [];
     const { api } = makeApi(calls);

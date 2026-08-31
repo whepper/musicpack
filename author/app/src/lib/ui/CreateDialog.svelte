@@ -8,13 +8,17 @@ SPDX-License-Identifier: BSD-3-Clause
   import { api, draft, draftStore } from '../bootstrap';
   import { createOpen, createResult, encodeStaging } from '../authoring-state';
   import { defaultPackageName } from '../format';
-  import type { CreateResult, ValidationResult } from '../types';
+  import type { CreateResult, PackageFormat, ValidationResult } from '../types';
 
 
   let outputParent = $state<string | null>(null);
   let packageName = $state('');
   let creating = $state(false);
   let reVerifying = $state(false);
+  let exporting = $state(false);
+  /** Output packaging form. `.mpack` keeps the classic directory package;
+   * `.mpak` builds a verified single-file container from it. */
+  let format = $state<PackageFormat>('mpack');
   /** Save-as-copy switches an opened .mpack to the classic new-package
    * form; by default an opened package saves back into itself. */
   let copyFlow = $state(false);
@@ -56,7 +60,7 @@ SPDX-License-Identifier: BSD-3-Clause
   function outputPath(): string | null {
     if (!outputParent) return null;
     const name = packageName.trim() || 'Untitled';
-    return `${outputParent}/${name}.mpack`;
+    return `${outputParent}/${name}.${format}`;
   }
 
   async function chooseOutput(): Promise<void> {
@@ -65,6 +69,20 @@ SPDX-License-Identifier: BSD-3-Clause
     outputParent = parent;
     const d = draft.get();
     if (d) packageName = defaultPackageName(d);
+  }
+
+  /** Verification counts for a freshly produced package, shown in the result
+   * panel. Undefined when verification cannot run (the panel then shows 0). */
+  async function verifyCounts(
+    path?: string,
+  ): Promise<{ errors: number; warnings: number } | undefined> {
+    if (!path) return undefined;
+    try {
+      const v: ValidationResult = await api.verifyPackage(path);
+      return { errors: v.errors.length, warnings: v.warnings.length };
+    } catch {
+      return undefined;
+    }
   }
 
   async function runCreate(): Promise<void> {
@@ -76,10 +94,30 @@ SPDX-License-Identifier: BSD-3-Clause
     creating = true;
     let result: CreateResult;
     try {
-      result = await api.createPackage(d, out, {
-        replace: inPlace,
-        syncTags: inPlace,
-      });
+      if (inPlace) {
+        result = await api.createPackage(d, out, {
+          replace: true,
+          syncTags: true,
+        });
+      } else if (format === 'mpak') {
+        const p = await api.createMpak(d, out);
+        result = p.ok
+          ? {
+              ok: true,
+              outputPath: p.outputPath,
+              replaced: false,
+              verify: await verifyCounts(p.outputPath),
+            }
+          : {
+              ok: false,
+              error: p.error ?? { code: 'pack_failed', message: 'Pack failed.' },
+            };
+      } else {
+        result = await api.createPackage(d, out, {
+          replace: false,
+          syncTags: false,
+        });
+      }
     } catch (e) {
       result = {
         ok: false,
@@ -131,6 +169,43 @@ SPDX-License-Identifier: BSD-3-Clause
     }
   }
 
+  /** Converts an opened `.mpack` directory into a single-file `.mpak`
+   * container. The backend verifies the source, then packs it; the source
+   * directory is preserved. The user picks the output directory; the file
+   * name follows the package's default name. */
+  async function runExportMpak(): Promise<void> {
+    const src = editingPackage;
+    if (!src) return;
+    const parent = await api.pickOutputDirectory();
+    if (!parent) return;
+    const d = draft.get();
+    const name = d ? defaultPackageName(d) : 'Untitled';
+    const out = `${parent}/${name}.mpak`;
+    exporting = true;
+    let result: CreateResult;
+    try {
+      const p = await api.packPackage(src, out);
+      result = p.ok
+        ? {
+            ok: true,
+            outputPath: p.outputPath,
+            replaced: false,
+            verify: await verifyCounts(p.outputPath),
+          }
+        : {
+            ok: false,
+            error: p.error ?? { code: 'pack_failed', message: 'Pack failed.' },
+          };
+    } catch (e) {
+      result = {
+        ok: false,
+        error: { code: 'pack_failed', message: e instanceof Error ? e.message : 'Pack failed.' },
+      };
+    }
+    exporting = false;
+    createResult.set(result);
+  }
+
   function close(): void {
     // Reset the result and both flows so reopening the dialog always starts
     // fresh (no stale success/error state, no stale output path).
@@ -140,6 +215,8 @@ SPDX-License-Identifier: BSD-3-Clause
     packageName = '';
     creating = false;
     reVerifying = false;
+    exporting = false;
+    format = 'mpack';
     copyFlow = false;
   }
 
@@ -199,10 +276,24 @@ SPDX-License-Identifier: BSD-3-Clause
           <button class="btn ghost" onclick={() => (copyFlow = true)} disabled={creating}>
             Save as copy…
           </button>
+          <button class="btn ghost" onclick={runExportMpak} disabled={exporting}>
+            {exporting ? 'Packing…' : 'Export as .mpak…'}
+          </button>
           <button class="btn ghost" onclick={close}>Cancel</button>
         </div>
       {:else}
         <h2>Create MusicPack</h2>
+        <fieldset class="format-picker" style="border:0;padding:0;margin:0 0 0.75rem">
+          <legend class="smallcaps" style="padding:0;margin:0 0 0.35rem">Packaging format</legend>
+          <label style="display:block;margin:0.2rem 0">
+            <input type="radio" name="pkg-format" bind:group={format} value="mpack" />
+            <span class="smallcaps">.mpack</span> — directory package (folder of audio + manifest)
+          </label>
+          <label style="display:block;margin:0.2rem 0">
+            <input type="radio" name="pkg-format" bind:group={format} value="mpak" />
+            <span class="smallcaps">.mpak</span> — single-file container (verified, deterministic)
+          </label>
+        </fieldset>
         {#if outputParent}
           <label class="smallcaps" for="pkg-name">Package name</label>
           <input
@@ -214,14 +305,17 @@ SPDX-License-Identifier: BSD-3-Clause
           />
           <p class="path">{outputPath()}</p>
         {:else}
-          <p class="muted">Choose where to write the <span class="smallcaps">.mpack</span> directory.</p>
+          <p class="muted">
+            Choose where to write the <span class="smallcaps">.{format}</span>
+            {format === 'mpak' ? 'container' : 'directory'}.
+          </p>
         {/if}
         <div class="artwork-row">
           <button class="btn ghost" onclick={chooseOutput}>
             {outputParent ? 'Change output…' : 'Choose output…'}
           </button>
           <button class="btn" onclick={runCreate} disabled={!outputPath() || creating}>
-            {creating ? 'Creating…' : 'Create'}
+            {creating ? 'Creating…' : format === 'mpak' ? 'Create .mpak' : 'Create'}
           </button>
           <button class="btn ghost" onclick={close}>Cancel</button>
         </div>

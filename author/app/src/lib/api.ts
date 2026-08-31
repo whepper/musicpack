@@ -21,6 +21,7 @@ import type {
   IdentifyOptions,
   IdentifyResult,
   ModelStatus,
+  PackResult,
   ReadImageResult,
   RecentAlbum,
   SonicProgress,
@@ -114,8 +115,28 @@ export class AuthorApi {
     })) as CreateResult;
   }
 
+  /** Builds the draft and packs it into a single-file `.mpak` container.
+   * The backend builds to a private staging `.mpack`, packs it via the
+   * authoritative `musicpack pack`, and removes the staging directory. */
+  async createMpak(draft: Draft, outputMpak: string): Promise<PackResult> {
+    return (await this.invokeFn('create_mpak', {
+      draftJson: JSON.stringify(draft),
+      outputMpak,
+    })) as PackResult;
+  }
+
   async verifyPackage(path: string): Promise<ValidationResult> {
     return (await this.invokeFn('verify_package', { path })) as ValidationResult;
+  }
+
+  /** Converts an existing `.mpack` directory into a single-file `.mpak`
+   * container. The backend verifies the source first, then runs the
+   * authoritative `musicpack pack`; the source directory is preserved. */
+  async packPackage(inputDir: string, outputMpak: string): Promise<PackResult> {
+    return (await this.invokeFn('pack_package', {
+      inputDir,
+      outputMpak,
+    })) as PackResult;
   }
 
   async readImage(path: string): Promise<ReadImageResult> {

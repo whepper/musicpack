@@ -337,6 +337,104 @@ impl AuthorService {
             .map_err(|e| AuthorError::Output(format!("CLI returned non-JSON output: {e}")))
     }
 
+    /// User-facing failure detail from CLI stderr/stdout: drops the
+    /// unconditional `musicpack - MusicPack …` ABOUT banner that the CLI
+    /// writes to stderr on every invocation, falling back to stdout only when
+    /// nothing actionable remains on stderr.
+    fn cli_failure_detail(stderr: &str, stdout: &str) -> String {
+        let mut detail: Vec<String> = stderr
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && !s.starts_with("musicpack - MusicPack"))
+            .collect();
+        if detail.is_empty() && !stdout.trim().is_empty() {
+            detail.push(stdout.trim().to_string());
+        }
+        if detail.is_empty() {
+            "musicpack command failed".to_string()
+        } else {
+            detail.join("\n")
+        }
+    }
+
+    /// Runs `musicpack verify <dir> --json` and returns `Ok` only when the
+    /// package verifies clean. Unlike `run_json`, this parses the verdict even
+    /// when the process exits non-zero: the real `cmd_verify` emits
+    /// `{"ok":false,"errors":[…]}` on stdout and exits 1 for an invalid
+    /// package, so the actual verification diagnostics must surface rather
+    /// than the CLI banner. When no usable verdict JSON is produced the CLI
+    /// failure semantics (exit status + stderr detail) are preserved.
+    fn verify_source(&self, dir: &str) -> Result<(), AuthorError> {
+        let output = Command::new(self.cli_path())
+            .args(["verify", dir, "--json"])
+            .output()
+            .map_err(|e| AuthorError::Io(format!("cannot run `musicpack`: {e}")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
+            // cmd_verify's verdict object: {ok, errors[], warnings[]}.
+            if let Some(ok) = v.get("ok").and_then(|o| o.as_bool()) {
+                if ok {
+                    return Ok(());
+                }
+                let errors: Vec<&str> = v
+                    .get("errors")
+                    .and_then(|e| e.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                return Err(AuthorError::CliFailure {
+                    code: Some("invalid_package".to_string()),
+                    message: if errors.is_empty() {
+                        "source package failed verification".to_string()
+                    } else {
+                        format!("source package failed verification: {}", errors.join("; "))
+                    },
+                });
+            }
+            // A CLI error envelope (e.g. the package could not be opened):
+            // surface its code/message rather than the banner.
+            if let Some(e) = v.get("error") {
+                return Err(AuthorError::CliFailure {
+                    code: e.get("code").and_then(|c| c.as_str()).map(|s| s.to_string()),
+                    message: e
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("cannot verify source package")
+                        .to_string(),
+                });
+            }
+        }
+        // No usable verification JSON.
+        if output.status.success() {
+            return Err(AuthorError::Output(format!(
+                "verification returned no usable result for '{dir}'"
+            )));
+        }
+        Err(AuthorError::CliFailure {
+            code: None,
+            message: Self::cli_failure_detail(&stderr, &stdout),
+        })
+    }
+
+    /// Runs a non-JSON CLI command (e.g. `pack`) and maps its exit status to
+    /// an error. On failure the ABOUT banner is filtered from stderr and the
+    /// remaining lines become the reported detail.
+    fn run_status(&self, args: &[&str]) -> Result<(), AuthorError> {
+        let output = Command::new(self.cli_path())
+            .args(args)
+            .output()
+            .map_err(|e| AuthorError::Io(format!("cannot run `musicpack`: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Err(AuthorError::CliFailure {
+            code: None,
+            message: Self::cli_failure_detail(&stderr, &stdout),
+        })
+    }
+
     fn pace_musicbrainz(&mut self) {
         const MINIMUM_INTERVAL: Duration = Duration::from_secs(1);
         if let Some(last) = self.last_mb_request {
@@ -475,6 +573,18 @@ impl AuthorService {
         replace: bool,
         sync_tags: bool,
     ) -> Result<Value, AuthorError> {
+        self.build_draft_to(draft_json, output_dir, replace, sync_tags)
+    }
+
+    /// Runs `build-draft` into `output_dir`. Shared by the .mpack create path
+    /// and the .mpak create path (which builds into a private staging dir).
+    fn build_draft_to(
+        &mut self,
+        draft_json: &str,
+        output_dir: &str,
+        replace: bool,
+        sync_tags: bool,
+    ) -> Result<Value, AuthorError> {
         self.ensure_handshake()?;
         let tmp = self.temp_file("draft.json", draft_json)?;
         let mut args: Vec<String> = vec![
@@ -495,6 +605,60 @@ impl AuthorService {
         let result = self.run_json(&refs);
         let _ = std::fs::remove_file(&tmp);
         result
+    }
+
+    /// Verifies an existing `.mpack` directory and packs it into a
+    /// deterministic single-file `.mpak` via the authoritative CLI `pack`
+    /// command. The source directory is preserved. The CLI refuses to
+    /// overwrite an existing output, so no silent clobbering occurs.
+    pub fn pack_package(&mut self, input_dir: &str, output_mpak: &str) -> Result<Value, AuthorError> {
+        self.ensure_handshake()?;
+        // Never bypass validation: the source must verify clean before packing.
+        // `verify_source` surfaces the actual verification errors (the real CLI
+        // exits non-zero with `{"ok":false,"errors":[…]}` for an invalid
+        // package), and `pack` is not reached unless verification is clean.
+        self.verify_source(input_dir)?;
+        self.run_status(&["pack", input_dir, output_mpak])?;
+        Ok(serde_json::json!({ "ok": true, "outputPath": output_mpak }))
+    }
+
+    /// Creates a single-file `.mpak` from an authoring draft: builds the
+    /// draft into a private `.mpack` staging directory, packs it, then
+    /// removes the staging directory on success and failure alike.
+    pub fn create_mpak(&mut self, draft_json: &str, output_mpak: &str) -> Result<Value, AuthorError> {
+        self.ensure_handshake()?;
+        let src_dir = self.mpak_src_staging_path()?;
+        let src = src_dir.to_string_lossy().into_owned();
+        let result = self
+            .build_draft_to(draft_json, &src, false, false)
+            .and_then(|_| self.pack_package(&src, output_mpak));
+        // Remove the Author-owned intermediate .mpack on every path.
+        // build-draft stages as `<src>.build-<cli-pid>` but already `rm_rf`s
+        // its own staging on failure and renames it into place on success, so
+        // only the final source directory needs cleaning here.
+        let _ = std::fs::remove_dir_all(&src_dir);
+        result
+    }
+
+    /// A unique, not-yet-existing staging path for the .mpak source package.
+    /// build-draft creates the directory itself (and rejects one that already
+    /// exists), so this only reserves a name.
+    fn mpak_src_staging_path(&self) -> Result<PathBuf, AuthorError> {
+        for _ in 0..100 {
+            let n = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "musicpack-author-mpak-src-{}-{n}.mpack",
+                std::process::id()
+            ));
+            if !dir.exists() {
+                return Ok(dir);
+            }
+        }
+        Err(AuthorError::Io(
+            "cannot allocate a fresh .mpak source directory".to_string(),
+        ))
     }
 
     pub fn verify_package(&mut self, path: &str) -> Result<Value, AuthorError> {
@@ -1260,6 +1424,226 @@ mod tests {
             "flags absent by default: {argv}"
         );
         std::env::remove_var("MUSICPACK_TEST_ARGV");
+    }
+
+    /// A fake backend that logs every invocation (one line per call) and
+    /// answers the author commands. `verify_ok` controls the verify verdict;
+    /// `build_ok` controls build-draft. pack creates its output file so the
+    /// caller can observe it. `verify` matches the real CLI contract exactly:
+    /// a valid package emits `{"ok":true,...}` and exits 0; an invalid one
+    /// emits `{"ok":false,"errors":[…]}` and exits non-zero.
+    fn fake_pack_cli(tmp: &Path, log: &Path, verify_ok: bool, build_ok: bool) -> PathBuf {
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> \"{log}\"\n\
+             case \"$1\" in\n\
+               author-api-version) printf '{{\"musicpackVersion\":\"0.1.0\",\"authorApi\":7}}\\n'; exit 0;;\n\
+               verify)\n\
+                 if [ {v} = 1 ]; then printf '{{\"ok\":true,\"errors\":[],\"warnings\":[]}}\\n'; exit 0; \\\n\
+                 else printf '{{\"ok\":false,\"errors\":[\"audio/missing.mpc: file not found\"],\"warnings\":[]}}\\n'; exit 1; fi;;\n\
+               build-draft)\n\
+                 out=\"\"; prev=\"\"\n\
+                 for a in \"$@\"; do [ \"$prev\" = \"-o\" ] && out=\"$a\"; prev=\"$a\"; done\n\
+                 [ -n \"$out\" ] && mkdir -p \"$out\"\n\
+                 if [ {b} = 1 ]; then printf '{{\"ok\":true}}\\n'; exit 0; else printf '{{\"error\":{{\"code\":\"invalid_draft\",\"message\":\"boom\"}}}}\\n'; exit 1; fi;;\n\
+               pack) touch \"$3\" 2>/dev/null; exit 0;;\n\
+             esac\n\
+             printf '{{}}'\n\
+             exit 0\n",
+            log = log.display(),
+            v = if verify_ok { 1 } else { 0 },
+            b = if build_ok { 1 } else { 0 },
+        );
+        make_cli(tmp, "MacOS", &script)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_package_verifies_source_then_packs() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("argv.log");
+        let bin = fake_pack_cli(tmp.path(), &log, true, true);
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let out = tmp.path().join("album.mpak");
+
+        let res = svc
+            .pack_package("/src/pkg.mpack", out.to_str().unwrap())
+            .unwrap();
+        assert_eq!(res["outputPath"], out.to_str().unwrap());
+        assert!(out.exists(), "pack produced the output file");
+
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|s| s.to_string())
+            .collect();
+        let verify_idx = lines.iter().position(|l| l.starts_with("verify ")).unwrap();
+        let pack_idx = lines.iter().position(|l| l.starts_with("pack ")).unwrap();
+        assert!(verify_idx < pack_idx, "verify runs before pack");
+        assert!(lines[pack_idx].contains("pack /src/pkg.mpack"));
+        assert!(lines[pack_idx].contains(out.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_package_rejects_invalid_source_without_packing() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("argv.log");
+        // Invalid source: the fake emits ok:false + errors[] and exits 1,
+        // matching the real cmd_verify contract.
+        let bin = fake_pack_cli(tmp.path(), &log, false, true);
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let out = tmp.path().join("album.mpak");
+
+        let err = svc
+            .pack_package("/src/bad.mpack", out.to_str().unwrap())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid_package") || msg.contains("failed verification"),
+            "error identifies the invalid source: {msg}"
+        );
+        assert!(
+            msg.contains("audio/missing.mpc"),
+            "the actual verification diagnostic is surfaced, not the CLI banner: {msg}"
+        );
+        assert!(!out.exists(), "no output produced for an invalid source");
+        let log_text = fs::read_to_string(&log).unwrap();
+        assert!(
+            !log_text.lines().any(|l| l.starts_with("pack ")),
+            "pack was never invoked: {log_text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_mpak_builds_packs_and_cleans_staging() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("argv.log");
+        let bin = fake_pack_cli(tmp.path(), &log, true, true);
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let out = tmp.path().join("new.mpak");
+
+        let res = svc
+            .create_mpak("{\"schema\":\"musicpack-draft\"}", out.to_str().unwrap())
+            .unwrap();
+        assert_eq!(res["outputPath"], out.to_str().unwrap());
+        assert!(out.exists(), "pack produced the .mpak");
+
+        let log_text = fs::read_to_string(&log).unwrap();
+        assert!(log_text.contains("build-draft"), "draft was built");
+        assert!(
+            log_text.lines().any(|l| l.starts_with("pack ")),
+            "pack was invoked"
+        );
+
+        // The intermediate .mpack staging directory must be gone.
+        let prefix = format!("musicpack-author-mpak-src-{}-", std::process::id());
+        let leftovers: Vec<_> = fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .collect();
+        assert!(leftovers.is_empty(), "staging directory was cleaned up");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_mpak_cleans_staging_on_build_failure() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("argv.log");
+        let bin = fake_pack_cli(tmp.path(), &log, true, false); // build-draft fails
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(bin)));
+        let out = tmp.path().join("new.mpak");
+
+        let err = svc
+            .create_mpak("{\"schema\":\"musicpack-draft\"}", out.to_str().unwrap())
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"), "build error surfaced: {err}");
+        assert!(!out.exists(), "no .mpak produced on build failure");
+
+        let log_text = fs::read_to_string(&log).unwrap();
+        assert!(
+            !log_text.lines().any(|l| l.starts_with("pack ")),
+            "pack never ran after a failed build: {log_text}"
+        );
+        let prefix = format!("musicpack-author-mpak-src-{}-", std::process::id());
+        let leftovers: Vec<_> = fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging directory cleaned up on failure"
+        );
+    }
+
+    /// End-to-end check against the **real** `musicpack` CLI (not the fake):
+    /// a valid package packs deterministically to the established SHA-256,
+    /// and an invalid source is rejected with the real verification
+    /// diagnostic surfaced — proving `verify_source` matches the actual
+    /// `cmd_verify` contract (ok:false + `errors[]` on a non-zero exit).
+    /// Self-skips when the CLI or fixture is unavailable (e.g. a CI job that
+    /// builds Author without a prebuilt backend).
+    #[cfg(unix)]
+    #[test]
+    fn pack_package_uses_the_real_cli() {
+        use sha2::{Digest, Sha256};
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cli = std::env::var_os("MUSICPACK_CLI")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("build/core/musicpack/musicpack"));
+        let album = root.join("tests/reference/test-musicpack-album.mpack");
+        if !cli.exists() || !album.is_dir() {
+            eprintln!("skip: real musicpack CLI or fixture not present");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+
+        // 1. Valid source packs to the established deterministic container.
+        let good = tmp.path().join("good.mpak");
+        let mut svc = AuthorService::new(Ok(BackendLocation::Bundled(cli.clone())));
+        let res = svc
+            .pack_package(album.to_str().unwrap(), good.to_str().unwrap())
+            .expect("real CLI should pack a valid package");
+        assert_eq!(res["ok"], true);
+        let bytes = fs::read(&good).unwrap();
+        let hex: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, "079ec45b55d1cbd51c79ae40e1443b52e3dd79d4be1b2706b1e90995c0ed8756",
+            "deterministic .mpak hash must be unchanged"
+        );
+
+        // 2. Invalid source is rejected and the real error is surfaced.
+        let corrupt = tmp.path().join("bad.mpack");
+        let status = Command::new("cp")
+            .args(["-R", album.to_str().unwrap(), corrupt.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "fixture copy succeeded");
+        let victim = fs::read_dir(corrupt.join("audio"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().map(|x| x == "mpc").unwrap_or(false))
+            .expect("an .mpc audio member");
+        fs::write(&victim, b"not musepack").unwrap();
+
+        let bad_out = tmp.path().join("bad.mpak");
+        let err = svc
+            .pack_package(corrupt.to_str().unwrap(), bad_out.to_str().unwrap())
+            .expect_err("real CLI must reject a corrupted source");
+        assert!(
+            err.to_string().contains("checksum mismatch"),
+            "the real verification diagnostic is surfaced: {err}"
+        );
+        assert!(!bad_out.exists(), "no .mpak for an invalid source");
     }
 
     #[cfg(unix)]

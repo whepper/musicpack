@@ -4,7 +4,10 @@ MusicPack Author is the first-party **desktop GUI for authoring `.mpack`
 releases**. It turns a tagged lossless FLAC/WAV album — or an already-tagged
 Musepack album — into a curated, validated `.mpack` directory bundle,
 presenting the album as a release/edition being authored rather than exposing
-`manifest.json` as the UI. Since Phase 3 (the MVP) it also **encodes** FLAC/WAV
+`manifest.json` as the UI. It can also export that package as a deterministic
+single-file **`.mpak` container** (either when creating a new package or by
+converting an opened `.mpack`), using the authoritative `musicpack pack`
+implementation. Since Phase 3 (the MVP) it also **encodes** FLAC/WAV
 sources to Musepack SV8 (q6 default) in-app, so a terminal is never required.
 FLAC/WAV decoding is native (libmusicpack, vendored dr_flac + a small WAV
 reader) — no FFmpeg or other external multimedia tool is involved.
@@ -17,6 +20,8 @@ native decode (libmusicpack) + mpcenc        ← Phase 3: new in-app stage
 tag-rich Musepack album                      ← or an existing MPC album
    ↓
 .mpack (validated MusicPack v1 directory bundle)
+   ↓ (optional export / convert)
+.mpak (deterministic single-file container, via `musicpack pack`)
 ```
 
 The application is part of the MusicPack product family: the same visual
@@ -37,7 +42,7 @@ Tauri commands (src-tauri/src/lib.rs)   ← thin JSON surface
    │  AuthorService (src-tauri/src/author_service.rs)
    ▼
 musicpack backend                       ← inspect / validate-draft / encode-draft / waveform-draft /
-   ▼                                        build-draft / identify-draft / verify --json
+   ▼                                        build-draft / identify-draft / verify --json / pack
 libmusicpack (source of truth)          ← manifest semantics, hashes, BS.1770, waveform
    │
    └─ mpcenc (static sidecar)           ← Musepack encoder (encode-draft)
@@ -300,8 +305,10 @@ intentionally not identical to the stage order.
    reusing `.mpack` validation semantics through `validate-draft`; the
    authoritative gate is `musicpack_manifest_parse()` over a synthesized
    manifest. The GUI never invents required data to go green.
-8. **Create MusicPack** — choose an output location (the package name is
-   pre-filled from the album metadata, e.g. `Artist - Album.mpack`);
+8. **Create MusicPack** — choose the packaging form (**`.mpack`** directory
+   package or **`.mpak`** single-file container) and an output location (the
+   package name is pre-filled from the album metadata, e.g. `Artist - Album`,
+   and the extension follows the chosen form). For `.mpack`,
     `build-draft` copies and hashes every manifest-referenced asset (audio,
     artwork, booklet, lyrics, extras, and analysis), measures BS.1770-5
     loudness (album as one concatenated program), writes `manifest.json`, then
@@ -315,7 +322,12 @@ intentionally not identical to the stage order.
     back on any failure), and `--sync-tags` re-projects the final manifest
     onto embedded APEv2 tags — only where they actually differ, so untouched
     tracks keep their bytes. Measured loudness and sonic/waveform documents
-    are carried through unchanged; audio is never re-encoded.
+    are carried through unchanged; audio is never re-encoded. For `.mpak`,
+    the same build runs into a private staging directory which is then packed
+    via the authoritative `musicpack pack` and removed, so no intermediate
+    `.mpack` is left next to the container. An opened package can also be
+    converted with **Export as .mpak…**, which verifies the source and runs
+    `musicpack pack`, leaving the `.mpack` directory untouched.
 
 ## MusicBrainz identity
 

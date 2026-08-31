@@ -283,6 +283,34 @@ fn verify_package(state: State<AppState>, path: String) -> Result<serde_json::Va
 }
 
 #[tauri::command]
+fn create_mpak(
+    state: State<AppState>,
+    draft_json: String,
+    output_mpak: String,
+) -> Result<serde_json::Value, String> {
+    state
+        .service
+        .lock()
+        .unwrap()
+        .create_mpak(&draft_json, &output_mpak)
+        .map_err(cli_err)
+}
+
+#[tauri::command]
+fn pack_package(
+    state: State<AppState>,
+    input_dir: String,
+    output_mpak: String,
+) -> Result<serde_json::Value, String> {
+    state
+        .service
+        .lock()
+        .unwrap()
+        .pack_package(&input_dir, &output_mpak)
+        .map_err(cli_err)
+}
+
+#[tauri::command]
 fn read_image(path: String) -> Result<ReadImage, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("cannot read image: {e}"))?;
     if bytes.len() > MAX_IMAGE_BYTES {
@@ -1038,6 +1066,8 @@ pub fn run() {
             identify_draft,
             create_package,
             verify_package,
+            create_mpak,
+            pack_package,
             read_image,
             sonic_analyze,
             sonic_cancel,

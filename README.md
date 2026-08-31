@@ -68,7 +68,9 @@ The guiding rule of this repository:
   `build-draft`, `identify-draft`) behind a clean service, so `libmusicpack`
   stays the only authority on package semantics. Source files are never
   modified; package finalization is transactional and verified before it is
-  reported successful.
+  reported successful. It can also export the package as a deterministic
+  single-file `.mpak` container (via the CLI `pack` command), either when
+  creating a new package or by converting an opened `.mpack`.
 - **WASM + demo** — the decoder builds to WebAssembly (Emscripten); `demo/` is
   a low-level playback proof-of-concept kept as a development/test artifact.
 

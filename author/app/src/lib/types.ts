@@ -233,6 +233,19 @@ export interface CreateResult {
   error?: { code?: string; message?: string };
 }
 
+/** Result of packing a `.mpack` directory into a single-file `.mpak`
+ * container (either a fresh build or a conversion of an existing package). */
+export interface PackResult {
+  ok: boolean;
+  outputPath?: string;
+  error?: { code?: string; message?: string };
+}
+
+/** Output packaging form chosen in the Create dialog. `.mpack` is the
+ * directory package (the default authoring output); `.mpak` is the
+ * deterministic single-file container built from a verified `.mpack`. */
+export type PackageFormat = 'mpack' | 'mpak';
+
 export interface ReadImageResult {
   mime: string;
   dataBase64: string;
