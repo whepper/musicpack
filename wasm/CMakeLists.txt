@@ -38,6 +38,7 @@ target_link_options(musepack_wasm PRIVATE
     "-O3"
     "-sALLOW_MEMORY_GROWTH=1"
     "-sSTACK_SIZE=1048576"
+    "-sSTACK_OVERFLOW_CHECK=1"
     "-sFILESYSTEM=0"
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createMusepackModule"

@@ -211,6 +211,20 @@ test_parse_invalid(void)
               "{\"format\":\"musicpack\",\"version\":1.5,\"album\":{"
               "\"title\":\"T\",\"artists\":[{\"name\":\"A\"}]},\"media\":[]}", &s) == 0
           && s == MUSICPACK_ERR_VERSION, "non-integer version rejected safely");
+    {
+        /* Nesting past CJSON_NESTING_LIMIT (100) must be rejected by the
+           depth cap, not recurse until the (fixed, 1 MiB) wasm stack overflows
+           the way a 64 KiB stack local once did. */
+        char deep[301];
+        size_t i;
+        for (i = 0; i < 150; i++)
+            deep[i] = '[';
+        for (i = 0; i < 150; i++)
+            deep[150 + i] = ']';
+        deep[300] = '\0';
+        CHECK(musicpack_manifest_parse(deep, &s) == 0
+              && s == MUSICPACK_ERR_JSON, "over-nested manifest rejected");
+    }
 }
 
 static void

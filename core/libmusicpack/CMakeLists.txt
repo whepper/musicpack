@@ -68,6 +68,16 @@ endif()
 # Bound JSON nesting for untrusted input.
 target_compile_definitions(musicpack PRIVATE CJSON_NESTING_LIMIT=100)
 
+# Emscripten's module stack is fixed (see wasm/CMakeLists.txt STACK_SIZE); a
+# large stack local here once overflowed it and clobbered static memory via the
+# HTTP-Range reader. Fail the build if any of our sources reintroduces a frame
+# past 32 KiB (the whole library currently peaks at ~25 KiB). Vendored code is
+# excluded below (compiled with -w).
+if(EMSCRIPTEN)
+  target_compile_options(musicpack PRIVATE
+      -Wframe-larger-than=32768 -Werror=frame-larger-than)
+endif()
+
 # MSVC does not define M_PI in <math.h>; vendored libebur128 uses it.
 if(MSVC)
   target_compile_definitions(musicpack PRIVATE _USE_MATH_DEFINES)
